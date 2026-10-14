@@ -6,8 +6,8 @@ Spec set v1.2, 2026-10-14. One spec per component in `design/ARCHITECTURE.md` §
 
 ## Summary
 
-- **16 open architecture decisions** across 13 components. Allen decided AD-F1.1, AD-F5.1, AD-K1.1 and AD-F5.2 (below). Each has options, a recommendation, why it needs you, what settles it, and what changes if it's decided late.
-- **Both sides of the 12 open non-builder decisions are in [`DECISIONS.md`](DECISIONS.md)**, with what evidence would tip each one.
+- **18 open architecture decisions** across 13 components (AD-K5.2, scenario knowledge as data, and AD-K5.3, the surprise contract, were proposed 2026-10-14; see `design/GENERALIZATION.md` and `design/SURPRISES.md`). Allen decided AD-F1.1, AD-F5.1, AD-K1.1 and AD-F5.2 (below). Each has options, a recommendation, why it needs you, what settles it, and what changes if it's decided late.
+- **Both sides of the 14 open non-builder decisions are in [`DECISIONS.md`](DECISIONS.md)**, with what evidence would tip each one.
 - **3 should be settled before any code is written:** AD-F2.1, AD-F2.2 and AD-C1.2.
 - **4 belong with Allen's builder agent:** AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1.
 - **3 can be settled by a spike or bake-off** before Allen chooses: AD-F2.2, AD-B1.1 and AD-K2.1.
@@ -34,7 +34,9 @@ Spec set v1.2, 2026-10-14. One spec per component in `design/ARCHITECTURE.md` §
 | [AD-F3.1](F3-test-harness.md) One server pool for the harness and the builder's simulator? | One pool, two job types | Allen together with the builder agent | the harness build-out |
 | [AD-K2.1](K2-commander-api.md) Imperative commands, or a desired-state manifest? | The manifest hybrid, after a bake-off against a fake HQ | the bake-off, then Allen's call | the LLM commander (§7 step 5) |
 | [AD-K2.2](K2-commander-api.md) Share the commander seat between Allen and the LLM, and on what terms? | Shared, with each goal owned by a person or the LLM, plus approval classes | Allen's call | the LLM commander |
-| [AD-K5.1](K5-operation-service.md) LLM officers at operation level in v1? | No; keep the interface ready for them | Allen's call | the LLM commander |
+| [AD-K5.1](K5-operation-service.md) LLM officers at operation level in v1? | No; keep the interface ready for them (reopened by AD-K5.2) | Allen's call | the LLM commander |
+| [AD-K5.2](K5-operation-service.md) Scenario knowledge as data (profile rows, closed verb set) or as method and mob-module code? | Data; the paper test in `design/GENERALIZATION.md` §7 passed (2026-10-14) | the paper test, then Allen's call | K5 methods and B5 modules (before they are written) |
+| [AD-K5.3](K5-operation-service.md) Surprises: contain and price, or classify and resolve? | Contain and price; escalate on cost; fix in cost-ranked batches with token budgets (`design/SURPRISES.md`) | F3 runs with injected surprises, then Allen's call | K5 recovery rules and F4 triage (before they are written) |
 | [AD-B1.1](B1-movement.md) Reuse Azalea's pathfinder, or write our own? | Reuse Azalea's, confirmed by the Azalea reality check; widen its compute pool, add a shared cache later | a CPU benchmark, then Allen's call | survival core (§7 step 2) |
 | [AD-F6.1](F6-bus-deployment.md) Where does the bus's third quorum member live? | Defer; add a third small VPS once several always-on hosts run | Allen's call | distribution across hosts (§7 step 4) |
 | [AD-C3.1](C3-logistics.md) Central depots, or storage per operation? | Per operation for small swarms, depots once several operations share a base | Allen's call | the first base with several operations |

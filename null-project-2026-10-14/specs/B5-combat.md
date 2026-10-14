@@ -62,13 +62,13 @@ Attack cooldown per weapon, critical hits (falling, not sprinting), sweep attack
 
 ### 4.2 PvE per mob type
 
-Per mob, a behaviour module: creepers (keep distance, strike and back off, shield the blast), skeletons and strays (close distance using cover or shield), endermen (don't look, fight under a 2-high roof or in water), spiders, witches, drowned, piglins (gold armour), hoglins, guardians, phantoms, breezes (deflected wind charges; never fight breezes tagged as cargo), and the rest. Unknown mob types fall back to generic melee with a retreat threshold.
+Per mob, a behaviour module: creepers (keep distance, strike and back off, shield the blast), skeletons and strays (close distance using cover or shield), endermen (don't look, fight under a 2-high roof or in water), spiders, witches, drowned, piglins (gold armour), hoglins, guardians, phantoms, breezes (deflected wind charges; never fight breezes tagged as cargo), and the rest. Unknown mob types fall back to generic melee with a retreat threshold. *Proposed (AD-K5.2): this fallback becomes the main path. A mob's behaviour is a threat-profile row in F5 (attack kind, damage types, counters, habits) read by one parameterised `engage`, with per-mob code kept only as optional tuning (design/GENERALIZATION.md §3.2, §3.3).*
 
 ### 4.3 Boss fights (blaze, wither, dragon)
 
 - Blaze: fire resistance, cover from fireballs, snowballs or melee.
 - Wither: summoning location policy, phases, ranged and melee split.
-- Ender dragon: crystal destruction (with caged crystals), perch timing, beds are a known strategy but explosive and need policy. C6 owns the swarm-level plan; B5 owns each bot's part.
+- Ender dragon: crystal destruction (with caged crystals), perch timing, beds are a known strategy but explosive and need policy. C6 owns the swarm-level plan; B5 owns each bot's part. *Proposed (AD-K5.2): these are profile rows and compositions of the generic verbs, not separate modules, except where a fight has phases that no profile field can express (the dragon).*
 
 ### 4.4 Ranged combat
 

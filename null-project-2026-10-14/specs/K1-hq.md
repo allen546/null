@@ -103,6 +103,8 @@ From the program DAG and operation ETAs. HQ moves bots onto the critical path wi
 > Enters the system as: answers to tickets, approvals, or new policies and priorities through K2.
 > Null's side: every ticket is merged across affected bots and operations, carries the remedies already tried and the options with consequences, and has a default from policy with a deadline, so the swarm keeps going if the commander is slow (COMMANDER_INTERFACE §5, §9). Expected losses never escalate (§3.11).
 
+*Proposed (AD-K5.3, not adopted): a surprise escalates only when K7's re-plan around its quarantine leaves the approved quote's limits, when containment is failing (one source keeps triggering quarantines), or when swarm-wide containment cost rises. The ticket's default is "stay contained" (design/SURPRISES.md §2.4, §3).*
+
 ### 4.11 Failover
 
 HQ runs with a standby; the standby takes over from the shared log. While HQ is down, operations keep running their current goals and nothing new is allocated (§3.8).

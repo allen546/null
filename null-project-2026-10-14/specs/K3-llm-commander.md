@@ -69,6 +69,8 @@ Chat, signs, books, item and player names never appear inline: only inside a del
 
 A token budget for reads and a cap on tool calls per wake, enforced by the gateway and stated in the prompt; when spent, reads return "budget spent, decide now" (COMMANDER_INTERFACE §7.4).
 
+*Proposed (AD-K5.3, not adopted): there is also a budget per period for wakes caused by surprises. As it is spent, the price threshold for escalating rises. When it runs out, the swarm runs contain-only, and only hard routes reach a person (design/SURPRISES.md §5).*
+
 ### 4.7 Strategy (the commander's own thinking)
 
 > **Interface input (runtime decision).** Who: LLM (a person can sit above it, approve its proposals, or take over).

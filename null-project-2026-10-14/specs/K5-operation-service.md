@@ -20,6 +20,28 @@
 
 ## Architecture decisions
 
+### ⚑ AD-K5.2 Scenario knowledge as data, or as method code?
+
+- **Options:**
+  - (a) Method code per goal kind and module per mob, as written above.
+  - (b) A closed verb set, with mob and structure knowledge as profile rows (F5) and goal kinds as operator data. New scenarios add rows, not code. Plans outside the recipe graph are composed (commander or officer) and quoted.
+- **Recommendation:** (b). The paper test in GENERALIZATION §7 passed on 2026-10-14 (no new verb or method; 9 new fields, falling per task), with revisions folded into GENERALIZATION.md (`design/GENERALIZATION_PAPER_TEST.md`).
+- **Why it needs Allen:** It decides where the skill-code budget goes, and it reopens AD-K5.1 because composition for non-recipe tasks is what officers are for.
+- **Settled by:** The paper test, then Allen's call.
+- **If decided late:** B5's per-mob modules and K5's methods get written first and then replaced.
+- **Both sides:** [DECISIONS.md](DECISIONS.md#ad-k52-scenario-knowledge-as-data-or-as-method-code).
+
+### ⚑ AD-K5.3 Surprises: contain and price, or classify and resolve?
+
+- **Options:**
+  - (a) As written: known failure classes with their recovery rules; anything else is requeued once, then `blocked(unknown_failure)`, with one triage ticket per new signature (F4 §4.8). Each new kind is fixed by a new class.
+  - (b) The surprise contract: anything outside a job's expected envelope is contained (back off, quarantine, requeue elsewhere) and priced as a re-plan. It escalates only when the price leaves the approved quote's limits, when containment is failing, or when swarm-wide containment cost rises. Fixes come from a cost-ranked batch review with token budgets.
+- **Recommendation:** (b). Diagnosing every kind of surprise costs tokens that grow with the number of kinds, and in an open world that number has no end. Containment costs efficiency instead, and K7 can price that.
+- **Why it needs Allen:** It sets where tokens and engineering time go, and it accepts detours and abandoned places as the normal cost of not understanding.
+- **Settled by:** Allen's call, informed by F3 runs with injected surprises (design/SURPRISES.md §9).
+- **If decided late:** Per-kind failure classes and triage tickets pile up first and are then replaced.
+- **Both sides:** [DECISIONS.md](DECISIONS.md#ad-k53-surprises-contain-and-price-or-classify-and-resolve).
+
 ### ⚑ AD-K5.1 LLM officers at the operation level in the first version?
 
 - **Options:**
@@ -60,6 +82,7 @@ An operation does most of the scheduling, scoped to one goal in one area (ARCHIT
 - Decomposes the operation's sub-goal into jobs over the skill catalogue and recipe graph (§3.6). Decides *how*, never *where from* (sources are K7's).
 - Replans when jobs fail rather than planning everything up front. Never re-derives sources.
 - Methods are code per goal kind (build, mine district, base, convoy, chamber capture, defence), versioned with the skill library.
+- *Proposed (AD-K5.2, not adopted):* methods are operator data over a closed verb set (preconditions, effects, cost), so a new goal kind adds rows and not method code. Tasks the operator data doesn't cover are composed as typed plans by the commander or an officer, then validated and quoted (design/GENERALIZATION.md §3, §4).
 
 ### 4.2 Scheduler
 
@@ -80,6 +103,8 @@ Region, block, container, item, entity and bot claims for the operation's region
 ### 4.6 Recovery rules
 
 Per job kind: requeue, reassign, release claims, recover items, mark a region dangerous, checkpoint resume for cargo jobs. Novel failures fall back to F4 §4.8's generic handling.
+
+*Proposed (AD-K5.3, not adopted): the generic handling is containment. The bot backs off to its last safe position, the place is quarantined with an expiry, claims are released and the job is placed elsewhere. The operation prices the quarantine against its quotas, and escalates to HQ only when its quotas become infeasible (design/SURPRISES.md §2).*
 
 ### 4.7 Escalation
 

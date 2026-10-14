@@ -79,6 +79,8 @@ A catalogue mapping failure classes to recovery rules, owned jointly with K5's r
 
 Grouping: novel failures with the same signature (skill, error, region, time window) are merged into one ticket, so 37 bots hitting the same new problem make one ticket, not 37.
 
+*Proposed (AD-K5.3, not adopted): novel failures are contained (back off, quarantine, requeue elsewhere) instead of "requeue once, then blocked", and they go to an incident log with an evidence bundle instead of a ticket each. Triage becomes a periodic batch review that clusters incidents by a signature without region, ranks clusters by total cost, and spends a fixed token budget on the top ones. Fixes take the cheapest rung that removes the cost (design/SURPRISES.md §4).*
+
 ## 5. Failure handling
 
 Telemetry must not take down the swarm: if the metrics pipeline is down, processes buffer a bounded amount and then drop metrics, never block.

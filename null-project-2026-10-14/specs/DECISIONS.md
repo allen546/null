@@ -1,6 +1,6 @@
 # Open architecture decisions: both sides
 
-Spec set v1.2, 2026-10-14. Allen asked for both sides of every open architecture decision except the builder ones (AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1 stay with Allen and the builder agent). That leaves 14: the original 12, plus AD-F5.2 and AD-K1.1, added from the spec audit. AD-K1.1 and AD-F5.2 are now decided. Each entry gives the strongest case for each option, what evidence would tip it, and where the specs lean now. The lean is a default, not a verdict.
+Spec set v1.2, 2026-10-14. Allen asked for both sides of every open architecture decision except the builder ones (AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1 stay with Allen and the builder agent). That leaves 16: the original 12, plus AD-F5.2 and AD-K1.1, added from the spec audit, and AD-K5.2 and AD-K5.3, proposed 2026-10-14. AD-K1.1 and AD-F5.2 are now decided, so 14 are open. Each entry gives the strongest case for each option, what evidence would tip it, and where the specs lean now. The lean is a default, not a verdict.
 
 Context used throughout (Allen, 2026-10-13): local testing is per component, not a full 2,000-bot run. Allen estimates one laptop can carry about 1,000 bots at roughly 1 MB of extra memory each, so the limits are CPU and above all bandwidth, not memory. The server is not an architecture question, and Null runs on a specialized Azalea build that speaks 1.21.11 natively.
 
@@ -20,6 +20,8 @@ Context used throughout (Allen, 2026-10-13): local testing is per component, not
 | [AD-K2.1](#ad-k21-imperative-commands-or-a-desired-state-manifest) commander API | manifest hybrid | the bake-off |
 | [AD-K2.2](#ad-k22-share-the-commander-seat-and-on-what-terms) shared seat | ownership per goal | Allen preferring one holder at a time |
 | [AD-K5.1](#ad-k51-llm-officers-at-the-operation-level-in-v1) LLM officers | no in v1 | the commander's context overflowing with one kind of operation |
+| [AD-K5.2](#ad-k52-scenario-knowledge-as-data-or-as-method-code) scenario knowledge | data: profile rows and a closed verb set (proposed) | the paper test in `design/GENERALIZATION.md` §7 failing |
+| [AD-K5.3](#ad-k53-surprises-contain-and-price-or-classify-and-resolve) surprises | contain and price; escalate on cost; fix in cost-ranked batches (proposed) | F3 runs where containment loses more than diagnosing would |
 | [AD-F5.2](#ad-f52-how-does-the-version-boundary-work-when-skills-are-bevy-plugins) version boundary | **decided:** no Bevy or Azalea in decision code; named mechanism crates import them directly; cargo-deny allowlist | (Allen, 2026-10-14; simulator spike and live join check passed) |
 | [AD-K1.1](#ad-k11-does-one-hq-cover-one-server-world-or-several) HQ scope | **decided:** one HQ per deployment, spanning servers | (Allen, 2026-10-13) |
 
@@ -268,6 +270,53 @@ Spec: [K5](K5-operation-service.md).
 **What would tip it.** The commander's context filling up with one kind of operation it keeps having to steer by hand.
 
 **Lean.** No officers in v1, with the officer interface kept identical to the commander's so they can be added per operation.
+
+
+## AD-K5.2 Scenario knowledge as data, or as method code?
+
+Spec: [K5](K5-operation-service.md). Proposal: [design/GENERALIZATION.md](../design/GENERALIZATION.md). Raised by Allen, 2026-10-14: there isn't a budget to write skill code for every possible scenario.
+
+**For method and module code (v1.2 as written).**
+- Behaviour that matters (a blaze fight, a convoy) is hard physics and tactics, and a dedicated module can be tuned and tested in isolation.
+- Deterministic and reviewable: no LLM in the loop for known goal kinds, and tests stay repeatable.
+- Nothing new to build: it is how K5 §4.1 and B5 §4.2 are already written.
+
+**For data and a closed verb set.**
+- Scenarios are unbounded and the code budget is not. A new mob or structure should cost a row, and the first encounter should be handled by a bounded generic default.
+- Most of what makes a fight different is a few facts (attack kind, damage types, counters), which are data already available from game data plus a few fields.
+- K7 can only quote what it can expand. Operator data with pre/effects/cost is quotable. Free-form method code is not.
+- Measured outcomes can ratchet rows, so repeat tasks get cheaper without code changes.
+
+**What would tip it.**
+- The paper test (GENERALIZATION §7): five unseen tasks, pass is at most one new verb across them and no new method.
+- Whether the generic `engage` loses too many bots on first encounters compared with a tuned module, measured in F3 on fixed-seed fortresses.
+- Whether LLM-composed plans stay inside their budgets (needs the AD-K5.1 officer interface).
+
+**Paper test (2026-10-14, [design/GENERALIZATION_PAPER_TEST.md](../design/GENERALIZATION_PAPER_TEST.md)).** Passed: across the five tasks, 0 new verbs and 0 methods. The cost moved into 9 new interpreted fields (3, 3, 0, 2, 1 per task), 5 planner features and 1 plan construct, all shared framework code. Every mob in B5's module list mapped onto those fields except the dragon and the wither, which stay modules. GENERALIZATION.md was revised: fields count against the budget, the grammar is a closed list, and outcomes go to K7's rate store instead of F5.
+
+**Lean.** Data, with per-mob and per-method code allowed only as tuning that a profile row points to, plus the two named boss exceptions. This also reopens AD-K5.1: composition for non-recipe tasks is the job an officer would do. Still open to evidence: a second paper run (do new fields per task keep falling?) and F3's first-encounter losses.
+
+## AD-K5.3 Surprises: contain and price, or classify and resolve?
+
+Spec: [K5](K5-operation-service.md), with F4 §4.7–4.8 and K1 §4.10. Proposal: [design/SURPRISES.md](../design/SURPRISES.md). Raised by Allen, 2026-10-14: there aren't the tokens to resolve surprises by trial and error.
+
+**For classifying and resolving (v1.2 as written).**
+- A diagnosed surprise gets the right response: a trap is disarmed or mapped, a player is answered, a mechanic is fixed. Containment only avoids it.
+- Avoiding places has a cumulative cost. On a busy server or in a contested region, quarantines pile up and the swarm loses ground it needs.
+- Containment can be steered: an opponent who sets off quarantines on purpose can push the swarm out of an area.
+- It is how F4 §4.7–4.8 and K5 §4.6 are already written.
+
+**For containing and pricing.**
+- Diagnosis costs tokens or a person's time for every kind of surprise, and an open world has no end of kinds. The builder's F7 runs show the rate: one new kind per run, one session each.
+- Minecraft's world is large and its resources repeat, so moving away is usually the cheapest response, and it needs no understanding.
+- K7 can price a quarantine as a re-plan. So the escalation rule ("avoiding this costs more than the approved quote allows") is computable, and the tokens spent follow what is at stake.
+- Batching by cost turns the long tail into a ranked list. Only the top clusters get a fix, each with a harness scenario rebuilt from recorded evidence, so trial and error moves into F3.
+
+**What would tip it.**
+- F3 runs with injected surprises (SURPRISES §9): commander wakes and tokens per run-hour, and containment cost, against the same runs handled by per-kind triage.
+- How fast quarantines accumulate on a busy server, measured on a live profile after the live gate.
+
+**Lean.** Contain and price, with known failure classes kept and grown only from the top of the batch review.
 
 ## AD-F5.2 How does the version boundary work when skills are Bevy plugins?
 

@@ -88,9 +88,13 @@ Inventory slots (36 per bot, plus shulkers) and walking distance are the real co
 
 Bots are interchangeable bodies running the same **skill library**. A skill is deterministic code with a typed contract (§1.3). The universal builder is one capability among many; so is "beat the ender dragon", which is itself a composition of smaller skills. The commander and the orchestrator compose skills; they never write per-tick behaviour.
 
+*Proposed (not adopted): a new scenario may add data but not a verb or a method. Mob and structure knowledge become profile rows in F5, and per-scenario code shrinks to a closed verb set. See [GENERALIZATION.md](GENERALIZATION.md) and AD-K5.2.*
+
 ### 1.7 Failure is the normal case
 
 Things that will happen every hour: a bot dies, disconnects, gets stuck, is kicked by anti-cheat, runs out of food, finds its chest looted, gets ambushed, finds the server restarted. Each needs a defined recovery: requeue the job, release claims, recover the corpse's items, mark the region dangerous, tell the commander if it repeats. A design that treats these as exceptions will not survive a day on an SMP.
+
+*Proposed (not adopted, AD-K5.3): failures that match no known class are contained, not diagnosed. The bot backs off, the place is quarantined, and the job goes elsewhere. Escalation depends on what avoiding the place costs, not on how often it happens, and fixes come from a cost-ranked batch review with a token budget. See [SURPRISES.md](SURPRISES.md).*
 
 ### 1.8 Adversaries and secrecy (faction play)
 
@@ -208,6 +212,8 @@ A **goal** is what the commander asks for: `Obtain(item, n)`, `Build(schematic, 
 - **Operations** decompose their sub-goal into jobs with an HTN planner over the skill catalogue and the recipe graph (the tech-tree DAG: wood → stone → iron → diamonds → nether → blaze rods and pearls → stronghold → fight). They re-plan when jobs fail, rather than planning everything up front, but they never re-derive sources.
 
 Both planners are ordinary deterministic code. The LLM sits above HQ (§4).
+
+*Proposed (not adopted, AD-K5.2):* operation "methods" stop being code per goal kind. They become operator data (verbs with preconditions, effects and cost) that K7 and K5 expand, and tasks outside the recipe graph are composed as typed plans of verbs by the commander or an officer, validated and quoted like any other. See [GENERALIZATION.md](GENERALIZATION.md).
 
 ### 3.7 State is sharded by region
 
@@ -648,3 +654,8 @@ Folded in from decisions Allen made and from proposals in the component specs, t
 - **Live gate**: a person signs off before a component runs on a live server (§10 F3; F3 §4.9).
 - **Risks** updated: vanilla movement checks, several vanilla servers instead of Folia or Paper, Azalea's bus factor (§8).
 - The reflex switch contract (`specs/CONVENTIONS.md` §4) was already summarised in v0.7 §5 and is unchanged.
+
+### Proposed after v0.8 (not adopted)
+
+- **Generalization floor** (2026-10-14): scenario knowledge as data and a closed verb set, instead of code per scenario. Would touch §1.6, §3.6, K5 §4.1, B5 §4.2–4.3, F5 §4.3 and C6. See [GENERALIZATION.md](GENERALIZATION.md) and AD-K5.2.
+- **Surprise contract** (2026-10-14): detect, contain, price, then escalate or only record; fixes from a cost-ranked batch review with token budgets. Would touch §1.7, F4 §4.7–4.8, K5 §4.6–4.7, K1 §4.10, K3, K7, F2, B1, F3 and C8. See [SURPRISES.md](SURPRISES.md) and AD-K5.3.
