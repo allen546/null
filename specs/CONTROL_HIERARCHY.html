@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Null Control Hierarchy</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column; three wide figures in scroll wells, each answering one question; reference tables below. */
+:root {
+  --bg: #f4f6f8;
+  --sunk: #e9edf1;
+  --panel: #ffffff;
+  --fg: #16202a;
+  --muted: #56626e;
+  --line: #c3ccd5;
+  --down: #1d5ea6;
+  --up: #9a5b06;
+  --alert: #b3261e;
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1318; --sunk: #121920; --panel: #18212b; --fg: #e5eaf0; --muted: #98a4b0;
+    --line: #2e3a46; --down: #6ea9ec; --up: #e2a54e; --alert: #f07468; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1318; --sunk: #121920; --panel: #18212b; --fg: #e5eaf0; --muted: #98a4b0;
+  --line: #2e3a46; --down: #6ea9ec; --up: #e2a54e; --alert: #f07468; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 var(--body); }
+.wrap {
+  max-width: 1000px; margin: 0 auto; display: grid; gap: 48px;
+  padding-block: 40px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+header { display: grid; gap: 14px; }
+.eyebrow { font: 500 12px/1 var(--mono); text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); }
+h1 { margin: 0; font: 700 clamp(30px, 4.4vw, 44px)/1.08 var(--display); letter-spacing: -0.015em; text-wrap: balance; }
+h2 { margin: 0; font: 600 23px/1.2 var(--display); text-wrap: balance; }
+p { margin: 0; max-width: 68ch; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 14px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.sw { width: 26px; border-top: 3px solid currentColor; }
+.c-down { color: var(--down); } .c-up { color: var(--up); } .c-alert { color: var(--alert); }
+section { display: grid; gap: 14px; min-width: 0; }
+figure { margin: 0; display: grid; gap: 12px; min-width: 0; }
+.well { overflow-x: auto; background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; padding: 14px; }
+.well svg { display: block; width: 100%; min-width: 720px; height: auto; }
+figcaption { max-width: 76ch; font-size: 14px; color: var(--muted); }
+ol.rules { margin: 0; padding-left: 1.4em; display: grid; gap: 8px; max-width: 76ch; }
+ol.rules li::marker { font-family: var(--mono); color: var(--muted); }
+.cite { font: 12px var(--mono); color: var(--muted); white-space: nowrap; }
+ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: 76ch; }
+.table-well { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; min-width: 820px; font-size: 14px; line-height: 1.45; }
+th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: 0; }
+th { font: 500 11px/1.3 var(--mono); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); background: var(--sunk); }
+td:first-child { font-weight: 700; white-space: nowrap; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+code { font: 13px var(--mono); }
+footer { display: grid; gap: 8px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 20px; }
+footer p { max-width: 80ch; }
+a { color: var(--down); }
+a:focus-visible, .well:focus-visible, .table-well:focus-visible { outline: 2px solid var(--down); outline-offset: 2px; }
+
+/* SVG parts, themed through the same tokens */
+.box { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; }
+.box-cmd { stroke: var(--fg); stroke-width: 1.6; }
+.box-person { stroke-dasharray: 6 4; stroke: var(--muted); }
+.t-title { font: 600 15px var(--display); fill: var(--fg); }
+.t-sub { font: 400 12px var(--body); fill: var(--muted); }
+.t-tag { font: 500 12px var(--mono); fill: var(--fg); }
+.t-note { font: italic 400 11.5px var(--body); fill: var(--muted); }
+.t-col { font: 600 12px var(--display); fill: var(--fg); }
+.t-down { font: 400 12px var(--body); fill: var(--down); }
+.t-up { font: 400 12px var(--body); fill: var(--up); }
+.t-alert { font: 700 12px var(--body); fill: var(--alert); }
+.a-down { stroke: var(--down); stroke-width: 2; fill: none; }
+.a-up { stroke: var(--up); stroke-width: 2; fill: none; }
+.a-alert { stroke: var(--alert); stroke-width: 2; fill: none; }
+.mk-down { fill: var(--down); } .mk-up { fill: var(--up); } .mk-alert { fill: var(--alert); }
+.guide { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 4; }
+.skip { fill: var(--sunk); stroke: var(--muted); stroke-width: 1.2; }
+.dot-down { fill: var(--down); } .dot-alert { fill: var(--alert); }
+</style>
+</head>
+<body>
+<main class="wrap">
+
+<header>
+  <div class="eyebrow">Null · overview of ARCHITECTURE v0.8 and INTERRUPTS · 2026-10-14</div>
+  <h1>Null control hierarchy</h1>
+  <p>Control runs from one commander (an LLM, or a person, with a person above it for approvals) down to raw Azalea bot operations on a vanilla server. Each level talks only to its parent and its children. Intent goes down, and down never carries per-bot actions. Fixed-size summaries and escalations go up, and only what the level above can act on gets passed up.</p>
+  <div class="legend" aria-label="Legend">
+    <span class="c-down"><i class="sw" aria-hidden="true"></i><span style="color:var(--fg)">down: intent, quotas, jobs, commands</span></span>
+    <span class="c-up"><i class="sw" aria-hidden="true"></i><span style="color:var(--fg)">up: summaries, outcomes, escalations</span></span>
+    <span class="c-alert"><i class="sw" aria-hidden="true"></i><span style="color:var(--fg)">non-maskable: straight to a person</span></span>
+  </div>
+</header>
+
+<section aria-labelledby="chain">
+  <h2 id="chain">The chain, top to bottom</h2>
+  <figure>
+    <div class="well" tabindex="0">
+    <svg viewBox="0 0 820 1028" role="img" aria-label="Nine levels from a person and the commander down to the vanilla server. At each boundary, intent moves down and summaries move up, and the transport between levels changes from the command API and the bus to in-process calls, the game tick and the Minecraft protocol.">
+      <defs>
+        <marker id="f1-dn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="mk-down"/></marker>
+        <marker id="f1-up" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="mk-up"/></marker>
+      </defs>
+
+      <!-- levels -->
+      <rect class="box box-person" x="200" y="20" width="600" height="60" rx="6"/>
+      <text class="t-title" x="216" y="44">Person (operator)</text>
+      <text class="t-sub" x="216" y="64">approvals, relations, server rules, permits, fixes</text>
+      <text class="t-tag" x="784" y="44" text-anchor="end">above the loop</text>
+      <text class="t-sub" x="784" y="64" text-anchor="end">can also take the seat</text>
+
+      <rect class="box box-cmd" x="200" y="136" width="600" height="60" rx="6"/>
+      <text class="t-title" x="216" y="160">Commander</text>
+      <text class="t-sub" x="216" y="180">K3 LLM adapter · K2 command API</text>
+      <text class="t-tag" x="784" y="160" text-anchor="end">1 · wakes, minutes</text>
+      <text class="t-sub" x="784" y="180" text-anchor="end">LLM, or a person</text>
+
+      <rect class="box" x="200" y="252" width="600" height="60" rx="6"/>
+      <text class="t-title" x="216" y="276">HQ + program service</text>
+      <text class="t-sub" x="216" y="296">K1 allocation, digest · K7 goal expansion, quotes</text>
+      <text class="t-tag" x="784" y="276" text-anchor="end">1 · ~10 s</text>
+      <text class="t-sub" x="784" y="296" text-anchor="end">deterministic</text>
+
+      <rect class="box" x="200" y="368" width="600" height="60" rx="6"/>
+      <text class="t-title" x="216" y="392">Operation service</text>
+      <text class="t-sub" x="216" y="412">K5 HTN planner, scheduler, claims, ledger, recovery</text>
+      <text class="t-tag" x="784" y="392" text-anchor="end">10–30 · ~1–2 s</text>
+      <text class="t-sub" x="784" y="412" text-anchor="end">LLM officer optional</text>
+
+      <rect class="box" x="200" y="484" width="600" height="60" rx="6"/>
+      <text class="t-title" x="216" y="508">Squad leader</text>
+      <text class="t-sub" x="216" y="528">K6 job batches, local retries, tactics (C7 plays)</text>
+      <text class="t-tag" x="784" y="508" text-anchor="end">100–200 · 0.1–1 s</text>
+      <text class="t-sub" x="784" y="528" text-anchor="end">inside the swarm node</text>
+
+      <rect class="box" x="200" y="600" width="600" height="60" rx="6"/>
+      <text class="t-title" x="216" y="624">Bot agent (decision code)</text>
+      <text class="t-sub" x="216" y="644">reflexes · skill executor · perception · fallback</text>
+      <text class="t-tag" x="784" y="624" text-anchor="end">2,000 · every tick</text>
+      <text class="t-sub" x="784" y="644" text-anchor="end">50 ms</text>
+
+      <rect class="box" x="200" y="716" width="600" height="60" rx="6"/>
+      <text class="t-title" x="216" y="740">Mechanism crates</text>
+      <text class="t-sub" x="216" y="760">mc-adapter · mc-nav · mc-act</text>
+      <text class="t-tag" x="784" y="740" text-anchor="end">AD-F5.2 boundary</text>
+      <text class="t-sub" x="784" y="760" text-anchor="end">only these import Azalea</text>
+
+      <rect class="box" x="200" y="832" width="600" height="60" rx="6"/>
+      <text class="t-title" x="216" y="856">Azalea (Null's fork)</text>
+      <text class="t-sub" x="216" y="876">Bevy ECS: physics, pathfinder, inventory, shared chunks</text>
+      <text class="t-tag" x="784" y="856" text-anchor="end">a few to ~40 nodes</text>
+      <text class="t-sub" x="784" y="876" text-anchor="end">per server and version</text>
+
+      <rect class="box" x="200" y="948" width="600" height="60" rx="6"/>
+      <text class="t-title" x="216" y="972">Vanilla server 1.21.11</text>
+      <text class="t-sub" x="216" y="992">the world, and the other players in it</text>
+      <text class="t-tag" x="784" y="972" text-anchor="end">pure vanilla</text>
+      <text class="t-sub" x="784" y="992" text-anchor="end">no op, no plugins</text>
+
+      <!-- boundary 0: person / commander (top 80, bottom 136) -->
+      <line class="a-down" x1="440" y1="84" x2="440" y2="130" marker-end="url(#f1-dn)"/>
+      <line class="a-up" x1="560" y1="132" x2="560" y2="86" marker-end="url(#f1-up)"/>
+      <text class="t-down" x="430" y="103" text-anchor="end">approvals, permits,</text>
+      <text class="t-down" x="430" y="118" text-anchor="end">relations, rules, prompt</text>
+      <text class="t-up" x="570" y="103">approval tickets,</text>
+      <text class="t-up" x="570" y="118">proposals</text>
+      <text class="t-note" x="16" y="111">console, CLI (K4)</text>
+
+      <!-- boundary 1: commander / HQ (196, 252) -->
+      <line class="a-down" x1="440" y1="200" x2="440" y2="246" marker-end="url(#f1-dn)"/>
+      <line class="a-up" x1="560" y1="248" x2="560" y2="202" marker-end="url(#f1-up)"/>
+      <text class="t-down" x="430" y="219" text-anchor="end">goals, quote approvals,</text>
+      <text class="t-down" x="430" y="234" text-anchor="end">policies, allocate, halt</text>
+      <text class="t-up" x="570" y="219">fixed-size digest (~3–4k tokens),</text>
+      <text class="t-up" x="570" y="234">escalation tickets, milestones</text>
+      <text class="t-note" x="16" y="227">command API (K2)</text>
+
+      <!-- boundary 2: HQ / operation (312, 368) -->
+      <line class="a-down" x1="440" y1="316" x2="440" y2="362" marker-end="url(#f1-dn)"/>
+      <line class="a-up" x1="560" y1="364" x2="560" y2="318" marker-end="url(#f1-up)"/>
+      <text class="t-down" x="430" y="335" text-anchor="end">sub-goal, quotas, budget,</text>
+      <text class="t-down" x="430" y="350" text-anchor="end">region, sources, bot quotas</text>
+      <text class="t-up" x="570" y="335">summary row, merged exceptions,</text>
+      <text class="t-up" x="570" y="350">escalations with remedies tried</text>
+      <text class="t-note" x="16" y="343">bus (NATS)</text>
+
+      <!-- boundary 3: operation / squad (428, 484) -->
+      <line class="a-down" x1="440" y1="432" x2="440" y2="478" marker-end="url(#f1-dn)"/>
+      <line class="a-up" x1="560" y1="480" x2="560" y2="434" marker-end="url(#f1-up)"/>
+      <text class="t-down" x="430" y="451" text-anchor="end">job batches: contracts with</text>
+      <text class="t-down" x="430" y="466" text-anchor="end">budgets and reflex settings</text>
+      <text class="t-up" x="570" y="451">batch outcomes, merged</text>
+      <text class="t-up" x="570" y="466">observations, exceptions</text>
+      <text class="t-note" x="16" y="459">bus, or in the node</text>
+
+      <!-- boundary 4: squad / bot (544, 600) -->
+      <line class="a-down" x1="440" y1="548" x2="440" y2="594" marker-end="url(#f1-dn)"/>
+      <line class="a-up" x1="560" y1="596" x2="560" y2="550" marker-end="url(#f1-up)"/>
+      <text class="t-down" x="430" y="567" text-anchor="end">RunJob, SetReflexes,</text>
+      <text class="t-down" x="430" y="582" text-anchor="end">play roles at 4–10 Hz</text>
+      <text class="t-up" x="570" y="567">outcomes, ReflexSuppressed,</text>
+      <text class="t-up" x="570" y="582">observations, evidence bundles</text>
+      <text class="t-note" x="16" y="575">in-process ECS events</text>
+
+      <!-- boundary 5: bot / mechanism crates (660, 716) -->
+      <line class="a-down" x1="440" y1="664" x2="440" y2="710" marker-end="url(#f1-dn)"/>
+      <line class="a-up" x1="560" y1="712" x2="560" y2="666" marker-end="url(#f1-up)"/>
+      <text class="t-down" x="430" y="683" text-anchor="end">BotCommands,</text>
+      <text class="t-down" x="430" y="698" text-anchor="end">applied the same tick</text>
+      <text class="t-up" x="570" y="683">BotView,</text>
+      <text class="t-up" x="570" y="698">borrowed with no copy</text>
+      <text class="t-note" x="16" y="691">one host in the game tick</text>
+
+      <!-- boundary 6: mechanism crates / Azalea (776, 832) -->
+      <line class="a-down" x1="440" y1="780" x2="440" y2="826" marker-end="url(#f1-dn)"/>
+      <line class="a-up" x1="560" y1="828" x2="560" y2="782" marker-end="url(#f1-up)"/>
+      <text class="t-down" x="430" y="799" text-anchor="end">component writes, path</text>
+      <text class="t-down" x="430" y="814" text-anchor="end">goals, raw packet sequences</text>
+      <text class="t-up" x="570" y="799">position, physics, inventory,</text>
+      <text class="t-up" x="570" y="814">entities, chunk storage</text>
+      <text class="t-note" x="16" y="807">Rust calls, same process</text>
+
+      <!-- boundary 7: Azalea / server (892, 948) -->
+      <line class="a-down" x1="440" y1="896" x2="440" y2="942" marker-end="url(#f1-dn)"/>
+      <line class="a-up" x1="560" y1="944" x2="560" y2="898" marker-end="url(#f1-up)"/>
+      <text class="t-down" x="430" y="915" text-anchor="end">packets: move, click,</text>
+      <text class="t-down" x="430" y="930" text-anchor="end">use item, open container</text>
+      <text class="t-up" x="570" y="915">chunks, entities, block</text>
+      <text class="t-up" x="570" y="930">updates, position corrections</text>
+      <text class="t-note" x="16" y="923">Minecraft protocol</text>
+    </svg>
+    </div>
+    <figcaption>Each level reports a summary whose size depends on how many children it has, not on how many bots sit under it. That's why the commander's digest stays at about 3–4k tokens whether there are 20 bots or 2,000. The left column says how messages cross each boundary. Everything from the squad leader down runs in one swarm node process, so tactics never cross the network.</figcaption>
+  </figure>
+</section>
+
+<section aria-labelledby="rules">
+  <h2 id="rules">Rules that keep this shape</h2>
+  <ol class="rules">
+    <li>A layer may only be as slow as the layer it waits on is patient. Reflexes never wait on the network, tactics never wait on the LLM, and no LLM is consulted inside a fight. <span class="cite">ARCH §1.4 · C7 §4.6</span></li>
+    <li>Down carries intent, never per-bot actions: goals, quotas, job batches. Commands name goals, operations, regions and selectors, never lists of bots. <span class="cite">ARCH §3.1, §4.1</span></li>
+    <li>A level escalates only what its parent can act on, after trying its own remedies, and it lists them. HQ moves bots between operations; a squad re-paths a stuck bot. <span class="cite">ARCH §3.1</span></li>
+    <li>Interrupts escalate on price, not on occurrence. Anything a job didn't expect is contained first and only reaches the commander when avoiding it breaks the approved quote. <span class="cite">INTERRUPTS §2.4</span></li>
+    <li>Settings flow down by scope (swarm, operation, squad, job, bot) and the most specific wins. The commander sets swarm and operation scope; operations and squads set the rest through job contracts and plays. <span class="cite">CONVENTIONS §4</span></li>
+  </ol>
+</section>
+
+<section aria-labelledby="interrupts">
+  <h2 id="interrupts">How an interrupt moves up</h2>
+  <figure>
+    <div class="well" tabindex="0">
+    <svg viewBox="0 0 820 604" role="img" aria-label="An interrupt starts at the bot, which contains it and writes an evidence bundle to the incident log. It passes up one level at a time only when the level below can't absorb it, reaching the commander only when the quote's limits break. Staff messages, kicks and approvals go straight to a person. The incident log feeds a scheduled batch review whose fixes a person approves.">
+      <defs>
+        <marker id="f2-up" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="mk-up"/></marker>
+        <marker id="f2-al" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="mk-alert"/></marker>
+      </defs>
+
+      <!-- escalation ladder, top = person -->
+      <rect class="box box-person" x="60" y="20" width="300" height="64" rx="6"/>
+      <text class="t-title" x="72" y="40">Person</text>
+      <text class="t-sub" x="72" y="58">approval classes, other players,</text>
+      <text class="t-sub" x="72" y="74">server rules, data and code fixes</text>
+
+      <rect class="box box-cmd" x="60" y="120" width="300" height="64" rx="6"/>
+      <text class="t-title" x="72" y="140">Commander</text>
+      <text class="t-sub" x="72" y="158">pick a costed option, set a policy,</text>
+      <text class="t-sub" x="72" y="174">buy evidence, or ask a person</text>
+
+      <rect class="box" x="60" y="220" width="300" height="64" rx="6"/>
+      <text class="t-title" x="72" y="240">HQ + program service</text>
+      <text class="t-sub" x="72" y="258">re-plan the program around it</text>
+      <text class="t-sub" x="72" y="274">price = change in the quote</text>
+
+      <rect class="box" x="60" y="320" width="300" height="64" rx="6"/>
+      <text class="t-title" x="72" y="340">Operation (K5)</text>
+      <text class="t-sub" x="72" y="358">re-plan locally</text>
+      <text class="t-sub" x="72" y="374">price against its quotas</text>
+
+      <rect class="box" x="60" y="420" width="300" height="64" rx="6"/>
+      <text class="t-title" x="72" y="440">Squad leader</text>
+      <text class="t-sub" x="72" y="458">quarantine: F2 mark with expiry</text>
+      <text class="t-sub" x="72" y="474">reassign the job in its batch</text>
+
+      <rect class="box" x="60" y="520" width="300" height="64" rx="6"/>
+      <text class="t-title" x="72" y="540">Bot</text>
+      <text class="t-sub" x="72" y="558">reflexes, safe stop, back off</text>
+      <text class="t-sub" x="72" y="574">job ends interrupted(incident)</text>
+
+      <!-- passes up only when -->
+      <line class="a-up" x1="210" y1="517" x2="210" y2="490" marker-end="url(#f2-up)"/>
+      <text class="t-up" x="222" y="506">always reports</text>
+      <line class="a-up" x1="210" y1="417" x2="210" y2="390" marker-end="url(#f2-up)"/>
+      <text class="t-up" x="222" y="406">only if the job can't be placed in the batch</text>
+      <line class="a-up" x1="210" y1="317" x2="210" y2="290" marker-end="url(#f2-up)"/>
+      <text class="t-up" x="222" y="306">only if its quotas become infeasible</text>
+      <line class="a-up" x1="210" y1="217" x2="210" y2="190" marker-end="url(#f2-up)"/>
+      <text class="t-up" x="222" y="199">only if the quote's limits break, containment</text>
+      <text class="t-up" x="222" y="213">is failing, or swarm cost is rising</text>
+      <line class="a-up" x1="210" y1="117" x2="210" y2="90" marker-end="url(#f2-up)"/>
+      <text class="t-up" x="222" y="106">only for approvals, players, rules</text>
+
+      <!-- non-maskable route -->
+      <path class="a-alert" d="M58,552 H30 V52 H54" marker-end="url(#f2-al)"/>
+      <text class="t-alert" x="20" y="302" text-anchor="middle" transform="rotate(-90 20 302)">non-maskable: staff messages, kicks, approvals</text>
+
+      <!-- record and review -->
+      <rect class="box" x="600" y="520" width="200" height="64" rx="6"/>
+      <text class="t-title" x="612" y="542">Incident log (F4)</text>
+      <text class="t-sub" x="612" y="560">replay window, job,</text>
+      <text class="t-sub" x="612" y="576">expected vs observed</text>
+      <line class="a-up" x1="362" y1="552" x2="594" y2="552" marker-end="url(#f2-up)"/>
+      <text class="t-up" x="478" y="544" text-anchor="middle">every interrupt's evidence</text>
+
+      <rect class="box" x="600" y="380" width="200" height="80" rx="6"/>
+      <text class="t-title" x="612" y="402">Batch review</text>
+      <text class="t-sub" x="612" y="422">on a schedule, token budget</text>
+      <text class="t-sub" x="612" y="440">clusters ranked by total price</text>
+      <line class="a-up" x1="700" y1="517" x2="700" y2="466" marker-end="url(#f2-up)"/>
+      <text class="t-up" x="712" y="496">clusters</text>
+
+      <rect class="box" x="600" y="220" width="200" height="110" rx="6"/>
+      <text class="t-title" x="612" y="242">Fix ladder</text>
+      <text class="t-tag" x="612" y="262">0 stay contained</text>
+      <text class="t-tag" x="612" y="279">1 policy · 2 data</text>
+      <text class="t-tag" x="612" y="296">3 class · 4 code</text>
+      <text class="t-sub" x="612" y="318">each fix adds an F3 scenario</text>
+      <line class="a-up" x1="700" y1="377" x2="700" y2="336" marker-end="url(#f2-up)"/>
+      <text class="t-up" x="712" y="360">cheapest rung</text>
+
+      <path class="a-up" d="M700,217 V52 H366" marker-end="url(#f2-up)"/>
+      <text class="t-up" x="533" y="44" text-anchor="middle">a person approves rungs 2–4</text>
+    </svg>
+    </div>
+    <figcaption>The bot contains every interrupt the same way, whatever caused it: reflexes, a safe stop, back off, quarantine the place, requeue the job elsewhere. Each level above prices what avoiding the place costs, and passes it up only when it can't absorb that cost. The commander's ticket defaults to "stay contained", so a slow answer costs throughput, never safety. Anti-cheat setbacks skip all of this and go to engineering as bugs.</figcaption>
+  </figure>
+</section>
+
+<section aria-labelledby="skips">
+  <h2 id="skips">What skips levels</h2>
+  <figure>
+    <div class="well" tabindex="0">
+    <svg viewBox="0 0 820 318" role="img" aria-label="Five paths skip levels: halt and recall go from the commander straight to the bots; an errand trigger goes from the commander straight to the squad; the builder's certified packet stream goes from the operation straight to Azalea; a reflex acts at the bot before anyone above hears; non-maskable interrupts go from the bot straight to a person.">
+      <defs>
+        <marker id="f3-dn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="mk-down"/></marker>
+        <marker id="f3-al" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="mk-alert"/></marker>
+      </defs>
+      <text class="t-col" x="80" y="26" text-anchor="middle">Person</text>
+      <text class="t-col" x="190" y="26" text-anchor="middle">Commander</text>
+      <text class="t-col" x="300" y="26" text-anchor="middle">HQ</text>
+      <text class="t-col" x="410" y="26" text-anchor="middle">Operation</text>
+      <text class="t-col" x="520" y="26" text-anchor="middle">Squad</text>
+      <text class="t-col" x="630" y="26" text-anchor="middle">Bot</text>
+      <text class="t-col" x="740" y="26" text-anchor="middle">Azalea</text>
+      <line class="guide" x1="80" y1="38" x2="80" y2="308"/>
+      <line class="guide" x1="190" y1="38" x2="190" y2="308"/>
+      <line class="guide" x1="300" y1="38" x2="300" y2="308"/>
+      <line class="guide" x1="410" y1="38" x2="410" y2="308"/>
+      <line class="guide" x1="520" y1="38" x2="520" y2="308"/>
+      <line class="guide" x1="630" y1="38" x2="630" y2="308"/>
+      <line class="guide" x1="740" y1="38" x2="740" y2="308"/>
+
+      <!-- halt / recall -->
+      <text class="t-down" x="410" y="70" text-anchor="middle">halt / recall: never gated, never budgeted (K2 §4.9)</text>
+      <line class="a-down" x1="190" y1="82" x2="622" y2="82" marker-end="url(#f3-dn)"/>
+      <circle class="dot-down" cx="190" cy="82" r="4.5"/>
+      <circle class="skip" cx="300" cy="82" r="4"/><circle class="skip" cx="410" cy="82" r="4"/><circle class="skip" cx="520" cy="82" r="4"/>
+
+      <!-- errand trigger -->
+      <text class="t-down" x="355" y="125" text-anchor="middle">trigger(errand, step): no planning in between (K2 §4.8)</text>
+      <line class="a-down" x1="190" y1="137" x2="512" y2="137" marker-end="url(#f3-dn)"/>
+      <circle class="dot-down" cx="190" cy="137" r="4.5"/>
+      <circle class="skip" cx="300" cy="137" r="4"/><circle class="skip" cx="410" cy="137" r="4"/>
+
+      <!-- builder replay -->
+      <text class="t-down" x="575" y="180" text-anchor="middle">builder replay: certified packet stream; B1 and all reflexes off (B1 §4.8)</text>
+      <line class="a-down" x1="410" y1="192" x2="732" y2="192" marker-end="url(#f3-dn)"/>
+      <circle class="dot-down" cx="410" cy="192" r="4.5"/>
+      <circle class="skip" cx="520" cy="192" r="4"/><circle class="skip" cx="630" cy="192" r="4"/>
+
+      <!-- reflex -->
+      <text class="t-down" x="620" y="251" text-anchor="end">a reflex acts in the same tick without asking anyone (CONVENTIONS §4)</text>
+      <line class="a-down" x1="630" y1="247" x2="732" y2="247" marker-end="url(#f3-dn)"/>
+      <circle class="dot-down" cx="630" cy="247" r="4.5"/>
+
+      <!-- non-maskable -->
+      <text class="t-alert" x="355" y="284" text-anchor="middle">non-maskable interrupts: staff messages, kicks, approvals (INTERRUPTS §3)</text>
+      <line class="a-alert" x1="630" y1="296" x2="88" y2="296" marker-end="url(#f3-al)"/>
+      <circle class="dot-alert" cx="630" cy="296" r="4.5"/>
+      <circle class="skip" cx="520" cy="296" r="4"/><circle class="skip" cx="410" cy="296" r="4"/><circle class="skip" cx="300" cy="296" r="4"/><circle class="skip" cx="190" cy="296" r="4"/>
+    </svg>
+    </div>
+    <figcaption>Filled dots mark where a path starts; hollow dots mark levels it passes without being asked. These are the only paths that don't go one level at a time. Each exists because the levels it skips would be too slow or have no say: an emergency stop, a timed operator step, a builder replay that must be exact, a reflex that must act within a tick, and things only a person may answer.</figcaption>
+  </figure>
+</section>
+
+<section aria-labelledby="levels">
+  <h2 id="levels">The levels</h2>
+  <div class="table-well" tabindex="0">
+  <table>
+    <thead><tr><th>Level</th><th>What it does</th><th>Runs where</th><th>Decides every</th><th>At 2,000 bots</th></tr></thead>
+    <tbody>
+      <tr><td>Person</td><td>Approves the approval class (attack a player, arm a machine, break player-made blocks outside a permit, large builds, scarce spending), grants permits, sets relations and server rules, approves data and code fixes from the batch review; policy fixes stay within limits a person set. Can hold the commander seat.</td><td>console, CLI, in-game whispers (K4)</td><td>when asked</td><td class="num">1 or more</td></tr>
+      <tr><td>Commander</td><td>Sets goals and priorities, approves quotes, writes policies, allocates bots, answers escalations. Sees the fixed-size digest plus capped <code>inspect</code> and <code>query</code>.</td><td>commander gateway (VPS)</td><td>minutes; woken by escalations, milestones, heartbeats, people</td><td class="num">1</td></tr>
+      <tr><td>HQ + program service</td><td>K1: goal tree, bots allocated to operations as quotas, transfers, policies, cross-operation claims, coarse map, digest. K7: expands goals into the production graph, picks sources, quotes, cuts programs into operations by place, prices interrupt quarantines.</td><td>VPS, with a standby</td><td>~10 s</td><td class="num">1</td></tr>
+      <tr><td>Operation</td><td>One goal in one area: HTN planner, scheduler, presence, ledger and world shard, claims, recovery rules, gates. Prices interrupts against its quotas.</td><td>host with most of its bots; lean: inside the node (AD-F2.1)</td><td>~1–2 s</td><td class="num">10–30</td></tr>
+      <tr><td>Squad leader</td><td>Assigns jobs to 5–20 bots, retries locally first, runs the tactics loop and plays, sets reflexes at squad scope, merges observations, registers quarantines.</td><td>inside the swarm node; never spans nodes</td><td>0.1–1 s (4–10 Hz in a fight)</td><td class="num">100–200</td></tr>
+      <tr><td>Bot agent</td><td>Reflexes (switchable), one job at a time as a skill, local perception, link-loss fallback. Plain Rust against <code>BotView</code> and <code>BotCommands</code>.</td><td>swarm node; one host system runs every bot in the game tick (F1 §4.5)</td><td>every tick (50 ms)</td><td class="num">2,000</td></tr>
+      <tr><td>Mechanism crates</td><td><code>mc-adapter</code> builds the view and applies commands; <code>mc-nav</code> holds pathfinder move families; <code>mc-act</code> sends raw packets and menus and holds the replay switch.</td><td>same process</td><td>every tick</td><td class="num">—</td></tr>
+      <tr><td>Azalea fork</td><td>Protocol client, physics, inventory, pathfinder, chunk storage shared within one swarm process.</td><td>one swarm process per server and version</td><td>every tick</td><td class="num">a few to ~40 nodes</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section aria-labelledby="boundaries">
+  <h2 id="boundaries">What crosses each boundary</h2>
+  <div class="table-well" tabindex="0">
+  <table>
+    <thead><tr><th>Boundary</th><th>Moves down</th><th>Moves up</th><th>How</th></tr></thead>
+    <tbody>
+      <tr><td>Person ↔ commander</td><td>approvals, permits, relations and war, server rules and profiles, the commander prompt</td><td>approval tickets; non-maskable routes; proposed relations; fixes to approve</td><td>console, CLI (K4)</td></tr>
+      <tr><td>Commander ↔ HQ</td><td><code>set_goal</code>, <code>quote</code>, <code>approve</code>, <code>set_policy</code>, <code>allocate</code>, <code>annotate</code>, <code>errand</code>, <code>halt</code>, <code>recall</code></td><td>the digest (one row per program or operation, top merged exceptions, deltas since the last wake); escalation tickets with costed options, a default and a deadline; milestones</td><td>command API (K2) through the gateway (K3)</td></tr>
+      <tr><td>HQ ↔ operation</td><td>sub-goal, quotas, budget, region; sources chosen by K7; bot quotas by role, never jobs; transfer orders; gates</td><td>fixed summary fields (state, headcount, progress, stock, health); merged exceptions; escalations for what HQ can act on, with remedies tried</td><td>bus (NATS)</td></tr>
+      <tr><td>Operation ↔ squad</td><td>job batches; each job a contract with inputs, preconditions, a success test, a budget, <code>reflexes_off</code> and <code>reflexes_assumed_on</code>; errand preparation</td><td>batch outcomes, merged observations, exceptions, quarantines</td><td>bus, or in-process if the operation runs inside the node</td></tr>
+      <tr><td>Squad ↔ bot</td><td><code>RunJob</code>, <code>SetReflexes</code>, play roles</td><td>outcomes (succeeded, failed, blocked, preempted, interrupted), <code>ReflexSuppressed</code>, throttled observations, stuck events, evidence bundles</td><td>in-process ECS events</td></tr>
+      <tr><td>Bot ↔ mechanism crates</td><td><code>BotCommands</code>, applied as direct component writes in the same tick</td><td><code>BotView</code>, borrowed from Azalea's components with no copy</td><td>one host system in the game tick</td></tr>
+      <tr><td>Mechanism crates ↔ Azalea</td><td>component writes, pathfinder goals, raw packet sequences, the replay switch</td><td>position, physics state, inventory, entities, chunks</td><td>Rust calls; only these crates import Azalea and Bevy</td></tr>
+      <tr><td>Azalea ↔ server</td><td>movement, clicks, use-item and container packets</td><td>chunks, entities, block updates, position corrections</td><td>Minecraft protocol 1.21.11</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section aria-labelledby="llm">
+  <h2 id="llm">Where an LLM is allowed</h2>
+  <ul class="plain">
+    <li><strong>The commander</strong>: goals, policies, quote approvals and escalations, through the same API a person uses. <span class="cite">K3 §4.7</span></li>
+    <li><strong>Operation officers</strong>, optional, for fuzzy work such as diplomacy or a raid, each seeing only its own squads. Still open; the lean is not in v1. <span class="cite">K5 §4.10 · AD-K5.1</span></li>
+    <li><strong>Reading people</strong>: threat assessment, and a diplomacy officer whose messages pass a person's gate. <span class="cite">C8 §4.3, §4.7</span></li>
+    <li><strong>The batch review of interrupts</strong>: offline, on a token budget; it proposes fixes and a person approves them. <span class="cite">F4 §4.8</span></li>
+  </ul>
+  <p>Everything from HQ down is deterministic code, and nothing on a loop faster than a few seconds waits for a model.</p>
+</section>
+
+<footer>
+  <p>Drawn from <a href="ARCHITECTURE.md">ARCHITECTURE.md</a> v0.8 (§1.4, §2–§5, §9), <a href="INTERRUPTS.md">INTERRUPTS.md</a>, CONVENTIONS §4 and the K, F and B specs, 2026-10-14. Where this page and those documents disagree, the documents win.</p>
+  <p>Not shown as adopted: AD-K5.2 (<a href="proposals/GENERALIZATION.md">proposals/GENERALIZATION.md</a>) would replace K5's per-goal-kind HTN methods with operator data, and would let the commander or an officer compose plans for tasks that data doesn't cover.</p>
+</footer>
+
+</main>
+</body>
+</html>
