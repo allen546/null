@@ -25,6 +25,7 @@
 - **Options:**
   - (a) v0.7's imperative tools (set_goal, allocate, approve and so on).
   - (b) COMMANDER_INTERFACE's hybrid: a manifest the commander patches, a ticket inbox, and a read-only tree to browse.
+- **Deferred (Allen, 2026-10-15):** until the bake-off, which runs before the LLM commander is built. Not on the early path; the recommendation stays as the default.
 - **Recommendation:** (b), which COMMANDER_INTERFACE argues fixes the commander's amnesia and thrashing, but run the bake-off (F3 §4.7) first, since it's cheap against a fake HQ.
 - **Why it needs Allen:** It decides how both you and the LLM command the swarm, and v0.7 hasn't adopted it.
 - **Settled by:** The bake-off, then Allen's call.
@@ -53,7 +54,7 @@ The commander talks only to HQ, through one typed command set (ARCHITECTURE §4.
 
 **Read:** `status()`, `inspect(target)`, `query(question)`, `explain(goal_or_operation)`.
 
-**Write:** `set_goal` / `cancel_goal` / `reprioritise`, `quote(goal)`, `annotate` / `remove_annotation`, `errand(...)`, `trigger(errand, step)`, `allocate`, `set_policy(scope, ...)`, `approve` / `reject`, `halt(scope)` / `recall(scope)`.
+**Write:** `set_goal` / `cancel_goal` / `reprioritise`, `quote(goal)`, `annotate` / `remove_annotation`, `errand(...)`, `trigger(errand, step)`, `submit_plan(stretch)` (a stretch of goals and a verb plan, validated and quoted before it runs; AD-K5.2, Allen, 2026-10-15), `allocate`, `set_policy(scope, ...)`, `approve` / `reject`, `halt(scope)` / `recall(scope)`.
 
 Targets are goals, operations, regions and selectors, never lists of bots. Per-bot control exists only as a person's debugging tool (§4.1).
 

@@ -125,4 +125,4 @@ Placement logic, block states, break speeds, drop rules, acknowledgement protoco
 
 ## 9. Open questions
 
-None beyond AD-B6.1.
+None. AD-B6.1 was decided 2026-10-15.

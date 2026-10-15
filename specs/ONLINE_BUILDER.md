@@ -413,6 +413,8 @@ The stuck report contains the state, s, every plan tried with its first dirty di
 
 ## 9. Open questions
 
+*Superseded (2026-10-15): v4.1 is replaced by [proposals/WORLD_TRANSFORMATION.md](proposals/WORLD_TRANSFORMATION.md) (Allen, 2026-10-14). These questions are kept as a record; any that still matter must be raised again in that design.*
+
 1. **Time-critical pairs.** Examples: capping lava within ticks, blocking a piston before its next pulse. These aren't certifiable in v4; they end in stuck reports. A future timed compound action would need its own proof against live timing.
 2. **Never-quiet builds.** Clocks have to be built inert, with the loop left open and closed last. Otherwise they aren't certifiable.
 3. **Time-of-day blocks.** Daylight detectors change with the time of day, not with the build. v4 needs them isolated from everything they could power until the build ends, or the build isn't certifiable.

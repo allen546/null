@@ -1,6 +1,6 @@
 # World transformation: the builder, generalized
 
-> **Status (2026-10-14): proposal, in design with Allen.** Replaces the role of [ONLINE_BUILDER.md](../ONLINE_BUILDER.md) v4.1, which Allen now treats as a specialized attempt that won't generalize. Nothing here is measured. Game facts from memory are marked `[c]`. Decisions Allen made in the design session are marked **(Allen, 2026-10-14)**; everything else is proposed. The tests in §8 are recorded, not started.
+> **Status (2026-10-15): proposal, in design with Allen; decisions so far are marked with Allen's name and date.** Replaces the role of [ONLINE_BUILDER.md](../ONLINE_BUILDER.md) v4.1, which Allen now treats as a specialized attempt that won't generalize. Nothing here is measured. Game facts from memory are marked `[c]`. Decisions Allen made in the design session are marked **(Allen, 2026-10-14)**; everything else is proposed. The tests in §8 are recorded, not started.
 
 ## 1. Why v4.1 is replaced
 
@@ -159,7 +159,7 @@ Open:
 5. ~~AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1 need answers in this frame.~~ Decided (Allen, 2026-10-15): C1.1, parallel work across inert boundaries (§6) and any interleaving in printable regions; C1.2, a builder bot restocks on need; B6.1, a table for common states and probing for the rest; F3.1, one server pool. See C1, B6 and F3.
 
 Items 1 to 4 are deferred (Allen, 2026-10-15).
-6. Whether access by placement options, strict layers and scaffolding temps (§5.3) holds for large technical builds. If it proves unsafe, devise something else (Allen, 2026-10-15). The §8 access tests decide.
+6. Whether access by placement options, strict layers and scaffolding temps (§5.3) holds for large technical builds. If it proves unsafe, devise something else (Allen, 2026-10-15). Waits on the T-ACC test (§8).
 
 ## 8. Tests (recorded, not started)
 

@@ -203,9 +203,9 @@ Measure deaths beyond what reflexes absorb, commander wakes and tokens per run-h
 - Default quarantine size and expiry. Whether marks caused by players expire in wall time, since players act in wall time, not game time.
 - How "unexpected damage" is judged while threat profiles are still `[c]`. A profile that is wrong turns every fight into an interrupt until it is measured.
 - Whether the batch review can run on a smaller model.
-- How a quarantine interacts with other operations' claims and with a convoy's right of way.
-- When a trapped bot is worth the risk to the bots that would rescue it.
+- **Decided (Allen, 2026-10-15):** a convoy has right of way through a quarantine, and a quarantine blocks only new claims, never claims already held.
+- **Decided (Allen, 2026-10-15):** a trapped bot is rescued only when K7 prices its cargo and gear above the expected losses of the rescue; otherwise it is written off.
 
 ## 11. Note for the builder
 
-The builder can't move its site, so its containment is skipping. A stuck step is set aside together with every step that depends on it, the rest of the build is finished, and the stuck clusters from the whole run are reviewed in one batch. One F7 run would then show every stuck class at once instead of one per run. Whether skipping is safe for redstone is open in the builder redesign (`proposals/WORLD_TRANSFORMATION.md`), because a skipped cell can change what later steps power. The builder decisions (AD-C1.1, AD-C1.2, AD-B6.1, AD-F3.1) stay with that agent.
+The builder can't move its site, so its containment is skipping. A stuck step is set aside together with every step that depends on it, the rest of the build is finished, and the stuck clusters from the whole run are reviewed in one batch. One F7 run would then show every stuck class at once instead of one per run. Whether skipping is safe for redstone is open in the builder redesign (`proposals/WORLD_TRANSFORMATION.md`), because a skipped cell can change what later steps power. The builder decisions (AD-C1.1, AD-C1.2, AD-B6.1, AD-F3.1) were decided 2026-10-15 in that design's frame; failure handling is its §5.6.

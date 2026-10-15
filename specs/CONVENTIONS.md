@@ -50,6 +50,8 @@ Each spec has an **Architecture decisions** section after its judgment map. A de
 - it's open to other opinions: the options have real trade-offs and none clearly dominates;
 - it belongs to someone else, or it would change a decision recorded in ARCHITECTURE.md.
 
+**Open questions (§9) that aren't flagged** are measurements or implementation details. They are deferred to the build by default and need no decision now (Allen, 2026-10-15). A spec at this level doesn't list individual risks such as possible memory leaks.
+
 And getting it wrong would be costly to undo. Each one is written as:
 
 ```
@@ -170,6 +172,7 @@ A job contract declares what it needs:
 
 - `reflexes_off: [...]`: reflexes that must be off while it runs (builder replay: `all`; cargo loading: `combat.defend_self`; an errand trigger step: `all`).
 - `reflexes_assumed_on: [...]`: reflexes the job's budget and safety assume (long mining assumes `upkeep.eat`).
+- `quiet: [zone, ...]`: zones where the job must make no sound or vibration (sculk, wardens). Every skill that places, breaks, drops, jumps or raises a shield checks it, defaults included (GENERALIZATION §0.5; Allen, 2026-10-15).
 
 The squad leader applies `reflexes_off` when the job starts and restores the bot's settings when it ends. If a policy has switched off a reflex the job assumes, the scheduler doesn't silently run it: the job comes back `blocked(reflex_policy: upkeep.eat off)`, so the conflict is visible.
 

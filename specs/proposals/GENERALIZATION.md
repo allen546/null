@@ -43,10 +43,18 @@ Example, "speedrun with the swarm": the commander writes stretch 1 as "diamond a
 - Write a closed list of predicate terms and a closed list of budget kinds (paper test 2 §5 items 2 and 5).
 - First measurement (F3, fixed seeds): give the LLM the goal "16 blaze rods". Count its milestones, the validator's rejections, the losses and the tokens. The quality of the LLM's plans for the hard steps is the main unknown in this shape.
 
-### 0.5 Still open
+### 0.5 Decided details (Allen, 2026-10-15)
+
+- **Plan submission:** a new K2 command, `submit_plan(stretch)`. `errand` stays the operator's tool.
+- **Saved routines need no human review.** They are data; the validator and the permission checks (AD-K2.2) still apply, and a person can disable a routine.
+- **Counter rules live in F5**, because they follow from game facts.
+- **`carry` takes entity cargo** (leashed or ridden animals, C9). No `herd` verb.
+- **`quiet(zone)` is a job constraint** in CONVENTIONS §4.4, next to `reflexes_off`; every skill that emits sound or vibration must honour it.
+- **Deferred:** a rule for conditional mob states (the wither's arrow immunity, the shulker's closed shell) until a third case appears.
+
+### 0.6 Still open
 
 - When the commander's load justifies officers (AD-K5.1 keeps them out of v1).
-- How the commander submits a plan: a new K2 command, or `errand` extended (§8).
 - How a new goal is matched to a saved routine, and whether that routine is still valid in a changed world.
 - Construction and redstone. Paper test 3 had no construction task. For order-sensitive builds, [WORLD_TRANSFORMATION.md](WORLD_TRANSFORMATION.md) §5 uses rules and refusal, not search.
 - Which entity attributes the server sends to clients (`[c]`: max health and speed are probably sent, attack damage probably not).
@@ -90,7 +98,7 @@ A **verb** is a job kind with a typed contract (ARCHITECTURE §1.3: inputs, prec
 | `engage` | target selector, **threat profile**, standoff, retreat floor, spare set (entities not to provoke) | B5, C7 |
 | `clear` | region, what counts as hostile, loss cap, protected conditions (§3.3) | B5, B6, B1 |
 | `collect` | item, source (block, mob, container, ground), count | B4, B3 |
-| `carry` | item set, from, to (container, stand, or ground near an entity) | C3, C9 |
+| `carry` | item set or entity cargo (leashed or ridden animals), from, to (container, stand, or ground near an entity) | C3, C9 |
 | `hold` | position or region, presence band, `until` predicate | K6 |
 | `retreat` | rally point, reason | B5, B2 |
 | `prepare` | capability set (derived from profiles, §3.2) | C6, B3, C3 |
@@ -255,7 +263,7 @@ This is a paper test against the spec set, cheap to run. A second paper run on f
 ## 8. Open points
 
 - Is `engage` one verb with profiles, or does ranged vs melee vs area need separate mechanisms behind it? Decide when B5 is built.
-- Whether routines saved from LLM plans need human review before reuse (C11 §4.6 says person-authored for descriptors).
+- ~~Whether routines saved from LLM plans need human review before reuse.~~ No review (§0.5).
 - How plan `on_fail` handlers interact with K5 recovery rules so the two don't both retry.
-- Whether counter rules are stable enough across versions to live in F5, or belong in packs. (Profiles' game facts belong in F5; outcome measurements don't, §3.4.)
-- How the commander submits a plan: a new K2 command, or `errand` extended. `errand` is already a small plan format (generic steps at markers, prepared, then triggered).
+- ~~Whether counter rules live in F5 or in packs.~~ F5 (§0.5).
+- ~~How the commander submits a plan.~~ A new K2 command, `submit_plan` (§0.5).

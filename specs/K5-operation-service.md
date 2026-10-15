@@ -98,7 +98,7 @@ A crashed operation restarts and rebuilds its state from its log; meanwhile its 
 > **Interface input (runtime decision).** Who: LLM (an officer scoped to one operation), optional; a person can sit above it.
 > Why: some operations involve work no HTN method covers well: diplomacy, an unusual one-off build sequence, a raid plan against a particular base. ARCHITECTURE §4.3 allows an LLM officer with the same bounded interface, scoped to the operation.
 > Enters the system as: the officer's decisions through the same typed commands an operation accepts (quotas within budget, job priorities, escalation answers), never per-bot control.
-> Null's side: the default is a deterministic operation; officers are opt-in per operation, see only their ~10 squads, and their memos pass the quarantine rule (COMMANDER_INTERFACE §7.1, open question on officer injection).
+> Null's side: the default is a deterministic operation; officers (not in v1, AD-K5.1; the interface stays ready) are opt-in per operation, see only their ~10 squads, and their memos pass the quarantine rule (COMMANDER_INTERFACE §7.1, open question on officer injection).
 
 ## 5. Failure handling
 

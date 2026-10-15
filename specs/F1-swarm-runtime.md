@@ -185,5 +185,4 @@ Login flow, protocol and physics come from Azalea through F5. Kick reason format
 
 ## 9. Open questions
 
-- Does Azalea's swarm mode cope with bots joining and leaving one process at hundreds per hour without leaking memory? Load test (F6).
 - Can one node hold bots in two dimensions efficiently, or should dimensions split by node?

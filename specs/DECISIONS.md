@@ -1,6 +1,6 @@
 # Open architecture decisions: both sides
 
-Spec set v1.2, 2026-10-14. Allen asked for both sides of every open architecture decision except the builder ones (AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1). Those were with Allen's builder agent; since 2026-10-14 they are still open, to be answered in the world-transformation design ([proposals/WORLD_TRANSFORMATION.md](proposals/WORLD_TRANSFORMATION.md) §7 item 5). That leaves 16: the original 12, plus AD-F5.2 and AD-K1.1, added from the spec audit, and AD-K5.2 and AD-K5.3, proposed 2026-10-14. AD-K1.1, AD-F5.2, AD-K5.3, AD-K5.2, AD-F2.1, AD-K2.2 and AD-K5.1 are now decided, so 9 were open; AD-F2.2 and AD-B1.1 were then decided from the Azalea benchmark, so 7 are open. Of those, AD-B5.1, AD-C3.1, AD-C7.1, AD-C8.1, AD-C9.1 and AD-F6.1 are deferred (Allen, 2026-10-15), and AD-K2.1 waits on its bake-off. Each entry gives the strongest case for each option, what evidence would tip it, and where the specs lean now. The lean is a default, not a verdict.
+Spec set v1.2, 2026-10-14. Allen asked for both sides of every open architecture decision except the builder ones (AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1). Those were with Allen's builder agent; since 2026-10-14 they are still open, to be answered in the world-transformation design ([proposals/WORLD_TRANSFORMATION.md](proposals/WORLD_TRANSFORMATION.md) §7 item 5). That leaves 16: the original 12, plus AD-F5.2 and AD-K1.1, added from the spec audit, and AD-K5.2 and AD-K5.3, proposed 2026-10-14. AD-K1.1, AD-F5.2, AD-K5.3, AD-K5.2, AD-F2.1, AD-K2.2 and AD-K5.1 are now decided, so 9 were open; AD-F2.2 and AD-B1.1 were then decided from the Azalea benchmark, so 7 are open. Of those, AD-B5.1, AD-C3.1, AD-C7.1, AD-C8.1, AD-C9.1 and AD-F6.1 are deferred (Allen, 2026-10-15), and AD-K2.1 is deferred until its bake-off (Allen, 2026-10-15). Each entry gives the strongest case for each option, what evidence would tip it, and where the specs lean now. The lean is a default, not a verdict.
 
 Context used throughout (Allen, 2026-10-13): local testing is per component, not a full 2,000-bot run. Allen estimates one laptop can carry about 1,000 bots at roughly 1 MB of extra memory each, so the limits are CPU and above all bandwidth, not memory. The server is not an architecture question, and Null runs on a specialized Azalea build that speaks 1.21.11 natively.
 
@@ -17,7 +17,7 @@ Context used throughout (Allen, 2026-10-13): local testing is per component, not
 | [AD-C7.1](#ad-c71-what-coordinates-fights-bigger-than-one-squad) big fights | **deferred** (Allen, 2026-10-15); lean: bigger squads first, spread out (updated) | measured losses from slow cross-squad reaction |
 | [AD-C8.1](#ad-c81-should-bots-talk-to-people-in-v1) bot chat | **deferred** (Allen, 2026-10-15); lean: silent in v1 | a target server where silence causes trouble |
 | [AD-C9.1](#ad-c91-can-one-convoys-escort-span-two-nodes) convoy escort | **deferred** (Allen, 2026-10-15); lean: one node only | node failures common enough to lose convoys |
-| [AD-K2.1](#ad-k21-imperative-commands-or-a-desired-state-manifest) commander API | manifest hybrid | the bake-off |
+| [AD-K2.1](#ad-k21-imperative-commands-or-a-desired-state-manifest) commander API | **deferred until the bake-off** (Allen, 2026-10-15); lean: manifest hybrid | the bake-off |
 | [AD-K2.2](#ad-k22-share-the-commander-seat-and-on-what-terms) commander seat | **decided:** the LLM in full control; the person holds halt and recall; boundaries are permission checks set once (no attacking a player first, no breaking others' builds) | (Allen, 2026-10-15) |
 | [AD-K5.1](#ad-k51-llm-officers-at-the-operation-level-in-v1) LLM officers | **decided:** none in v1; the commander alone | (Allen, 2026-10-15) |
 | [AD-K5.2](#ad-k52-scenario-knowledge-as-data-or-as-method-code) scenario knowledge | **decided:** facts as data from the jar, observation and the LLM prior; code only for cost-ranked important skills; goals to state and check tasks; the LLM plans in stretches behind a validator and quotes ([GENERALIZATION.md](proposals/GENERALIZATION.md) §0) | (Allen, 2026-10-15) |
@@ -221,6 +221,8 @@ Spec: [C9](C9-entity-logistics.md).
 **Lean.** One node only, with node failure handled by park points and checkpoints.
 
 ## AD-K2.1 Imperative commands, or a desired-state manifest?
+
+**Deferred by Allen, 2026-10-15, until the bake-off**, which runs before the LLM commander is built.
 
 Spec: [K2](K2-commander-api.md). The full comparison is in COMMANDER_INTERFACE.md.
 

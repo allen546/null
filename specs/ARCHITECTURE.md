@@ -270,7 +270,7 @@ The builder is a **capability service** that operations call:
 
 At this scale a big build is one build operation plus several supply operations feeding it. Most bots are suppliers; a few builder squads place blocks.
 
-Open interface questions for the builder (being redesigned as world transformation in `proposals/WORLD_TRANSFORMATION.md`; C1 specifies the interface, and AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1 were decided 2026-10-15 in that design's frame; see C1, B6 and F3):
+Interface questions for the builder (being redesigned as world transformation in `proposals/WORLD_TRANSFORMATION.md`; C1 specifies the interface, and AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1 were decided 2026-10-15 in that design's frame; see C1, B6 and F3):
 
 - **Multi-bot building.** Does the builder partition into regions that bots build in parallel, or is the guarantee per-bot, with only one bot in a redstone region at a time and others doing decorative shell or logistics? At hundreds of bots, the decorative shell needs a parallel mode.
 - **From prototype to survival.** `ONLINE_BUILDER.md` v4.1 builds in creative with `/forceload` because it is a prototype (see the top of this doc). The final builder has to take items from logistics, spend real time breaking temps, and handle the drops they leave. It also has to keep the site loaded by having a bot nearby instead of using `/forceload`. The builder interface should carry per-step item needs and break-time from the start, so the switch doesn't change the contract.
@@ -534,7 +534,7 @@ A useful observation: for big builds, most bots are **suppliers**, not builders.
 How that shapes the design:
 
 - **Swarm nodes.** Each node is one Azalea swarm process hosting ~50–300 bots and their squad leaders (§3.8). Shared world memory only works within a process, which is why bots are placed on nodes by region.
-- **Squad leaders run inside the node**, so squad-to-bot traffic never crosses the network. Whether squad tactics are decision code over a `SquadView` (the judge's lean) or mechanism code is still open (AD-F5.2 debate).
+- **Squad leaders run inside the node**, so squad-to-bot traffic never crosses the network. Whether squad tactics are decision code over a `SquadView` or mechanism code is an implementation choice, not architecture (AD-F5.2, decided 2026-10-14; F5 §9).
 - **Everything above the squad talks over the bus** (NATS), using serialisable message types. In a small deployment HQ and operations can still run in the node process, using the same types.
 - **Skills and reflexes are decision code, not Bevy plugins** (AD-F5.2). They are plain Rust against Null's `BotView` (read) and `BotCommands` (act), called once per bot per tick by one host system inside the game tick, which borrows Azalea's components with no copy and no extra tick (§5). Turning a reflex off is a switch the host reads, not a code path.
 - **The commander gateway** exposes the command API (HTTP or WebSocket) to the CLI and the LLM adapter.
