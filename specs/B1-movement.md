@@ -19,18 +19,9 @@
 
 ## Architecture decisions
 
-### ⚑ AD-B1.1 Reuse Azalea's pathfinder, or write our own?
+### AD-B1.1 Reuse Azalea's pathfinder, or write our own? (decided)
 
-- **Options:**
-  - (a) Use Azalea's built-in pathfinder behind B1's interface.
-  - (b) Write our own (Baritone-style) from the start.
-  - (c) Start with (a) and replace it when its limits show.
-- **Recommendation:** (c), now with evidence (Azalea reality check, 2026-10-13). Cost layers fit through custom move functions (`successors_fn`); missing moves (ladders, doors, bridging, portals, boats) are additions to an open move table. Computation isn't shared across bots, and searches run on a pool capped by default at 25% of cores, at most 4 threads. First fork changes: raise the pool size, then add a process-wide section cache once CPU is measured. B1's interface is ours either way, so a swap stays local.
-- **Why it needs Allen:** It's a build-or-reuse bet on a pre-1.0 library, and movement is where most anti-cheat risk sits.
-- **Settled by:** The extension-point question is answered; what remains is a CPU benchmark of pathing at the planned node size.
-- **If decided late:** Cheap, as long as the interface holds.
-- **Both sides:** [DECISIONS.md](DECISIONS.md#ad-b11-reuse-azaleas-pathfinder-or-write-our-own).
-
+**Decided by Allen, 2026-10-15: (a), reuse Azalea's pathfinder behind B1's interface, from the Azalea benchmark ([reference/BENCH_AZALEA_2026-10-15.md](reference/BENCH_AZALEA_2026-10-15.md)).** Keep the default search pool (25% of cores, at most 4 threads; 3 on the benchmark machine). Don't widen it: completed searches level off at about 22–28 per second whatever the pool size, and more threads slow the ECS tick, cut packet reads and drop bots at 100 bots. The first fork change is a process-wide section cache, invalidated on block updates: 99% of section building was repeated work, about a third of A* CPU. Watch A* that runs on the main thread (p99 13–22 ms against a 50 ms tick). B1's interface stays ours, so a later swap stays local. No ⚑. The options were (a) Azalea's pathfinder, (b) our own from the start, and (c) start with (a) and replace it when its limits show. Both sides are kept in [DECISIONS.md](DECISIONS.md#ad-b11-reuse-azaleas-pathfinder-or-write-our-own).
 
 ---
 

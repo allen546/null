@@ -25,17 +25,9 @@
 
 **Decided by Allen, 2026-10-15: fixed tiles (b).** Tiles (for example 512 × 512 blocks per dimension) are the unit of storage. An operation is the current writer for the tiles it covers, and a background store keeps tiles that no operation covers. The linked question is settled with it, as the lean said: each operation's service runs inside the node process, with operations sized to fit one node, so belief sits next to the chunk data and only diffs and summaries leave the node. No ⚑. The options were (a) one shard per operation (v0.7), (b) fixed tiles, and (c) one global store per dimension with regional caches. Both sides are kept in [DECISIONS.md](DECISIONS.md#ad-f21-shard-belief-by-operation-or-by-fixed-map-tiles).
 
-### ⚑ AD-F2.2 Extend Azalea's world storage, or keep a separate belief store?
+### AD-F2.2 Extend Azalea's world storage, or keep a separate belief store? (decided)
 
-- **Options:**
-  - (a) Add timestamps and provenance inside Azalea's shared world storage. Less memory, but tight coupling to Azalea internals, against the rule that only the adapter touches Azalea.
-  - (b) A separate store fed through the adapter, holding only what Azalea doesn't keep (timestamps, provenance, containers, points of interest) and reading block states from Azalea through the adapter.
-- **Recommendation:** (b), plus a small `ChunkStorageTrait` plug-in so chunk block data outlives every bot's view. Azalea's chunks hold only block states, biomes and heightmaps and it discards game time, light and block entities, so belief has no home there; those are captured from packet observers. Keeping belief out of Azalea's code keeps upstream merges cheap. Hot-path reads go through the adapter to Azalea's loaded chunks (Azalea reality check, 2026-10-13).
-- **Why it needs Allen:** It decides how much of the specialized Azalea build we change. Memory is a small factor at about 1 MB per extra bot (Allen, 2026-10-13).
-- **Settled by:** Mostly settled by the Azalea reality check; a spike measures the cost of cloning packets for the observers.
-- **If decided late:** Every skill's queries go through whichever store is chosen.
-- **Both sides:** [DECISIONS.md](DECISIONS.md#ad-f22-extend-azaleas-world-storage-or-keep-a-separate-store).
-
+**Decided by Allen, 2026-10-15: (b), a separate belief store fed by a packet observer, from the Azalea benchmark ([reference/BENCH_AZALEA_2026-10-15.md](reference/BENCH_AZALEA_2026-10-15.md) §5).** The observer takes the `chan` form: the ECS system only clones the packet's `Arc` and sends it to a worker thread, which deduplicates and stores. Its cost on the ECS thread was 1.2 ms per second at 100 bots, with no change to the tick. Deduplication is required: 96% of chunk packets repeat a chunk another bot already sent. Kept from the recommendation: a small `ChunkStorageTrait` plug-in so chunk block data outlives every bot's view, and hot-path reads through the adapter to Azalea's loaded chunks. No ⚑. The options were (a) timestamps and provenance inside Azalea's world storage, and (b) a separate store. Both sides are kept in [DECISIONS.md](DECISIONS.md#ad-f22-extend-azaleas-world-storage-or-keep-a-separate-store).
 
 ---
 
@@ -124,6 +116,7 @@ Layers per region: lava and fire, fall heights, water depth, light level (for mo
 ### 4.9 Change detection
 
 - When a bot re-observes a region, F2 computes changed cells against the previous belief.
+- Changes are found by comparing decoded block states, never chunk bytes. In a world with no changes, about 3% of repeated chunk packets arrived with different bytes ([reference/BENCH_AZALEA_2026-10-15.md](reference/BENCH_AZALEA_2026-10-15.md) §5).
 - Changes inside a region where our own jobs ran are matched against those jobs' expected changes. Unmatched changes are emitted as `unexplained_change(region, cells, window)`.
 - F2 does not decide whether an unexplained change was griefing, a creeper or another player's legitimate work. It reports.
 

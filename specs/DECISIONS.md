@@ -1,6 +1,6 @@
 # Open architecture decisions: both sides
 
-Spec set v1.2, 2026-10-14. Allen asked for both sides of every open architecture decision except the builder ones (AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1). Those were with Allen's builder agent; since 2026-10-14 they are still open, to be answered in the world-transformation design ([proposals/WORLD_TRANSFORMATION.md](proposals/WORLD_TRANSFORMATION.md) §7 item 5). That leaves 16: the original 12, plus AD-F5.2 and AD-K1.1, added from the spec audit, and AD-K5.2 and AD-K5.3, proposed 2026-10-14. AD-K1.1, AD-F5.2, AD-K5.3, AD-K5.2, AD-F2.1, AD-K2.2 and AD-K5.1 are now decided, so 9 are open. Of those, AD-B5.1, AD-C3.1, AD-C7.1, AD-C8.1, AD-C9.1 and AD-F6.1 are deferred (Allen, 2026-10-15), and AD-F2.2, AD-B1.1 and AD-K2.1 wait on a measurement. Each entry gives the strongest case for each option, what evidence would tip it, and where the specs lean now. The lean is a default, not a verdict.
+Spec set v1.2, 2026-10-14. Allen asked for both sides of every open architecture decision except the builder ones (AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1). Those were with Allen's builder agent; since 2026-10-14 they are still open, to be answered in the world-transformation design ([proposals/WORLD_TRANSFORMATION.md](proposals/WORLD_TRANSFORMATION.md) §7 item 5). That leaves 16: the original 12, plus AD-F5.2 and AD-K1.1, added from the spec audit, and AD-K5.2 and AD-K5.3, proposed 2026-10-14. AD-K1.1, AD-F5.2, AD-K5.3, AD-K5.2, AD-F2.1, AD-K2.2 and AD-K5.1 are now decided, so 9 were open; AD-F2.2 and AD-B1.1 were then decided from the Azalea benchmark, so 7 are open. Of those, AD-B5.1, AD-C3.1, AD-C7.1, AD-C8.1, AD-C9.1 and AD-F6.1 are deferred (Allen, 2026-10-15), and AD-K2.1 waits on its bake-off. Each entry gives the strongest case for each option, what evidence would tip it, and where the specs lean now. The lean is a default, not a verdict.
 
 Context used throughout (Allen, 2026-10-13): local testing is per component, not a full 2,000-bot run. Allen estimates one laptop can carry about 1,000 bots at roughly 1 MB of extra memory each, so the limits are CPU and above all bandwidth, not memory. The server is not an architecture question, and Null runs on a specialized Azalea build that speaks 1.21.11 natively.
 
@@ -9,9 +9,9 @@ Context used throughout (Allen, 2026-10-13): local testing is per component, not
 | decision | lean | what would change it |
 |---|---|---|
 | [AD-F2.1](#ad-f21-shard-belief-by-operation-or-by-fixed-map-tiles) shard key | **decided:** fixed tiles; operation service inside the node | (Allen, 2026-10-15) |
-| [AD-F2.2](#ad-f22-extend-azaleas-world-storage-or-keep-a-separate-store) world storage | separate store, plus a chunk-storage plug-in (updated) | settled enough; a spike measures the packet-observer cost |
+| [AD-F2.2](#ad-f22-extend-azaleas-world-storage-or-keep-a-separate-store) world storage | **decided:** separate store fed by a `chan` packet observer, plus a chunk-storage plug-in | (Allen, 2026-10-15; Azalea benchmark) |
 | [AD-F6.1](#ad-f61-where-does-the-buss-third-quorum-member-live) third quorum member | **deferred** (Allen, 2026-10-15); lean: defer until several VPSes | an early need for multi-host durability |
-| [AD-B1.1](#ad-b11-reuse-azaleas-pathfinder-or-write-our-own) pathfinder | reuse, confirmed (updated) | a CPU benchmark showing pathing dominates the tick |
+| [AD-B1.1](#ad-b11-reuse-azaleas-pathfinder-or-write-our-own) pathfinder | **decided:** reuse Azalea's; default pool; shared section cache first | (Allen, 2026-10-15; Azalea benchmark) |
 | [AD-B5.1](#ad-b51-hand-written-combat-doctrine-or-learned-policies) combat | **deferred** (Allen, 2026-10-15); lean: doctrine plus a learned-micro seam | doctrine losing to strong players |
 | [AD-C3.1](#ad-c31-central-depots-or-storage-per-operation) storage | **deferred** (Allen, 2026-10-15); lean: hybrid | carrier bot-hours measured in the harness |
 | [AD-C7.1](#ad-c71-what-coordinates-fights-bigger-than-one-squad) big fights | **deferred** (Allen, 2026-10-15); lean: bigger squads first, spread out (updated) | measured losses from slow cross-squad reaction |
@@ -56,6 +56,8 @@ Spec: [F2](F2-world-model.md). ARCHITECTURE v0.7 shards by operation.
 
 ## AD-F2.2 Extend Azalea's world storage, or keep a separate store?
 
+**Decided by Allen, 2026-10-15: a separate store, fed by a packet observer in the `chan` form** (the ECS forwards each packet's `Arc` to a worker thread). The benchmark measured the observer at 1.2 ms per second of ECS time at 100 bots with no change to the tick; 96% of chunk packets are repeats, so the store deduplicates ([reference/BENCH_AZALEA_2026-10-15.md](reference/BENCH_AZALEA_2026-10-15.md) §5). The analysis below is kept for the record.
+
 Spec: [F2](F2-world-model.md).
 
 **For extending Azalea's storage.**
@@ -76,7 +78,7 @@ Spec: [F2](F2-world-model.md).
 - The extend side gained one real point: Azalea now has a pluggable `ChunkStorageTrait` (upstream branch tip, not in the 0.15.1 release), so a persistent chunk store is a plug-in, not a patch.
 - Game time, light and block entities can be captured from packet observers with no fork patch. The cost to measure is that packets are cloned on the hot path.
 
-**Updated lean.** A separate store for belief, plus a small `ChunkStorageTrait` plug-in so chunk block data outlives every bot's view. Hot-path reads still go straight to Azalea's loaded chunks. This is now close to settled; the remaining spike only measures the observer cost.
+**Updated lean (before the decision).** A separate store for belief, plus a small `ChunkStorageTrait` plug-in so chunk block data outlives every bot's view. Hot-path reads still go straight to Azalea's loaded chunks. This is now close to settled; the remaining spike only measures the observer cost.
 
 ## AD-F6.1 Where does the bus's third quorum member live?
 
@@ -98,6 +100,8 @@ Spec: [F6](F6-bus-deployment.md).
 
 ## AD-B1.1 Reuse Azalea's pathfinder, or write our own?
 
+**Decided by Allen, 2026-10-15: reuse Azalea's pathfinder, keep the default pool, and add a shared section cache first.** The benchmark showed completed searches level off at 22–28 per second whatever the pool size, while more threads slow the tick and drop bots; 99% of section building was repeated work ([reference/BENCH_AZALEA_2026-10-15.md](reference/BENCH_AZALEA_2026-10-15.md) §4). The analysis below is kept for the record.
+
 Spec: [B1](B1-movement.md).
 
 **For reusing Azalea's pathfinder.**
@@ -113,14 +117,14 @@ Spec: [B1](B1-movement.md).
 
 **What would tip it.** A spike: can Azalea's pathfinder take pluggable cost functions and share computation across bots in one process? If yes, extend it. If not, the swarm-aware version is ours.
 
-**Lean.** Start with Azalea's behind B1's interface, and plan a swarm-aware shared cache as the first likely replacement once CPU is measured.
+**Lean (before the decision).** Start with Azalea's behind B1's interface, and plan a swarm-aware shared cache as the first likely replacement once CPU is measured.
 
 **Update: the spike question is answered by the Azalea reality check.**
 - Pluggable costs: yes, mostly. A custom move function (`successors_fn`) can drop or re-price edges for claims, keep-out, hazards and cargo lines of sight, and per-bot state can carry a shared claims map. The base cost constants and the passability test aren't pluggable.
 - Shared computation across bots: no. Each search builds its own cache, and searches run on a pool that by default gets 25% of cores, at most 4 threads, so hundreds of bots pathing at once would queue. The pool size is a setting in the fork, and a process-wide section cache is a natural fork addition.
 - Missing moves: ladders and vines, doors and gates, bridging and pillaring, portals and boats. Moves are an open table, so these are additions, not a rewrite. With mining on (its default) it digs through doors and player builds, so B1 turns mining off outside digging jobs.
 
-**Updated lean.** Reuse, now with evidence, matching your preference for Azalea's built-ins. First fork changes: the compute-pool size, then a shared section cache once CPU is measured. Writing our own is only back on the table if the benchmark shows pathing dominating the tick even with those.
+**Updated lean (before the decision).** Reuse, now with evidence, matching your preference for Azalea's built-ins. First fork changes: the compute-pool size, then a shared section cache once CPU is measured. Writing our own is only back on the table if the benchmark shows pathing dominating the tick even with those.
 
 ## AD-B5.1 Hand-written combat doctrine, or learned policies?
 
