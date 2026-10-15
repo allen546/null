@@ -1,6 +1,6 @@
 # Open architecture decisions: both sides
 
-Spec set v1.2, 2026-10-14. Allen asked for both sides of every open architecture decision except the builder ones (AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1 stay with Allen and the builder agent). That leaves 16: the original 12, plus AD-F5.2 and AD-K1.1, added from the spec audit, and AD-K5.2 and AD-K5.3, proposed 2026-10-14. AD-K1.1, AD-F5.2 and AD-K5.3 are now decided, so 13 are open. Each entry gives the strongest case for each option, what evidence would tip it, and where the specs lean now. The lean is a default, not a verdict.
+Spec set v1.2, 2026-10-14. Allen asked for both sides of every open architecture decision except the builder ones (AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1). Those were with Allen's builder agent; since 2026-10-14 they are still open, to be answered in the world-transformation design ([proposals/WORLD_TRANSFORMATION.md](proposals/WORLD_TRANSFORMATION.md) §7 item 5). That leaves 16: the original 12, plus AD-F5.2 and AD-K1.1, added from the spec audit, and AD-K5.2 and AD-K5.3, proposed 2026-10-14. AD-K1.1, AD-F5.2, AD-K5.3, AD-K5.2, AD-F2.1, AD-K2.2 and AD-K5.1 are now decided, so 9 are open. Of those, AD-B5.1, AD-C3.1, AD-C7.1, AD-C8.1, AD-C9.1 and AD-F6.1 are deferred (Allen, 2026-10-15), and AD-F2.2, AD-B1.1 and AD-K2.1 wait on a measurement. Each entry gives the strongest case for each option, what evidence would tip it, and where the specs lean now. The lean is a default, not a verdict.
 
 Context used throughout (Allen, 2026-10-13): local testing is per component, not a full 2,000-bot run. Allen estimates one laptop can carry about 1,000 bots at roughly 1 MB of extra memory each, so the limits are CPU and above all bandwidth, not memory. The server is not an architecture question, and Null runs on a specialized Azalea build that speaks 1.21.11 natively.
 
@@ -8,19 +8,19 @@ Context used throughout (Allen, 2026-10-13): local testing is per component, not
 
 | decision | lean | what would change it |
 |---|---|---|
-| [AD-F2.1](#ad-f21-shard-belief-by-operation-or-by-fixed-map-tiles) shard key | fixed tiles, operation service inside the node (updated) | operations rarely re-cut and cross-region reads rare |
+| [AD-F2.1](#ad-f21-shard-belief-by-operation-or-by-fixed-map-tiles) shard key | **decided:** fixed tiles; operation service inside the node | (Allen, 2026-10-15) |
 | [AD-F2.2](#ad-f22-extend-azaleas-world-storage-or-keep-a-separate-store) world storage | separate store, plus a chunk-storage plug-in (updated) | settled enough; a spike measures the packet-observer cost |
-| [AD-F6.1](#ad-f61-where-does-the-buss-third-quorum-member-live) third quorum member | defer until several VPSes | an early need for multi-host durability |
+| [AD-F6.1](#ad-f61-where-does-the-buss-third-quorum-member-live) third quorum member | **deferred** (Allen, 2026-10-15); lean: defer until several VPSes | an early need for multi-host durability |
 | [AD-B1.1](#ad-b11-reuse-azaleas-pathfinder-or-write-our-own) pathfinder | reuse, confirmed (updated) | a CPU benchmark showing pathing dominates the tick |
-| [AD-B5.1](#ad-b51-hand-written-combat-doctrine-or-learned-policies) combat | doctrine plus a learned-micro seam | doctrine losing to strong players |
-| [AD-C3.1](#ad-c31-central-depots-or-storage-per-operation) storage | hybrid | carrier bot-hours measured in the harness |
-| [AD-C7.1](#ad-c71-what-coordinates-fights-bigger-than-one-squad) big fights | bigger squads first, spread out (updated) | measured losses from slow cross-squad reaction |
-| [AD-C8.1](#ad-c81-should-bots-talk-to-people-in-v1) bot chat | silent in v1 | a target server where silence causes trouble |
-| [AD-C9.1](#ad-c91-can-one-convoys-escort-span-two-nodes) convoy escort | one node only | node failures common enough to lose convoys |
+| [AD-B5.1](#ad-b51-hand-written-combat-doctrine-or-learned-policies) combat | **deferred** (Allen, 2026-10-15); lean: doctrine plus a learned-micro seam | doctrine losing to strong players |
+| [AD-C3.1](#ad-c31-central-depots-or-storage-per-operation) storage | **deferred** (Allen, 2026-10-15); lean: hybrid | carrier bot-hours measured in the harness |
+| [AD-C7.1](#ad-c71-what-coordinates-fights-bigger-than-one-squad) big fights | **deferred** (Allen, 2026-10-15); lean: bigger squads first, spread out (updated) | measured losses from slow cross-squad reaction |
+| [AD-C8.1](#ad-c81-should-bots-talk-to-people-in-v1) bot chat | **deferred** (Allen, 2026-10-15); lean: silent in v1 | a target server where silence causes trouble |
+| [AD-C9.1](#ad-c91-can-one-convoys-escort-span-two-nodes) convoy escort | **deferred** (Allen, 2026-10-15); lean: one node only | node failures common enough to lose convoys |
 | [AD-K2.1](#ad-k21-imperative-commands-or-a-desired-state-manifest) commander API | manifest hybrid | the bake-off |
-| [AD-K2.2](#ad-k22-share-the-commander-seat-and-on-what-terms) shared seat | ownership per goal | Allen preferring one holder at a time |
-| [AD-K5.1](#ad-k51-llm-officers-at-the-operation-level-in-v1) LLM officers | no in v1 | the commander's context overflowing with one kind of operation |
-| [AD-K5.2](#ad-k52-scenario-knowledge-as-data-or-as-method-code) scenario knowledge | data: profile rows and a closed verb set (proposed) | the paper test in `proposals/GENERALIZATION.md` §7 failing |
+| [AD-K2.2](#ad-k22-share-the-commander-seat-and-on-what-terms) commander seat | **decided:** the LLM in full control; the person holds halt and recall; boundaries are permission checks set once (no attacking a player first, no breaking others' builds) | (Allen, 2026-10-15) |
+| [AD-K5.1](#ad-k51-llm-officers-at-the-operation-level-in-v1) LLM officers | **decided:** none in v1; the commander alone | (Allen, 2026-10-15) |
+| [AD-K5.2](#ad-k52-scenario-knowledge-as-data-or-as-method-code) scenario knowledge | **decided:** facts as data from the jar, observation and the LLM prior; code only for cost-ranked important skills; goals to state and check tasks; the LLM plans in stretches behind a validator and quotes ([GENERALIZATION.md](proposals/GENERALIZATION.md) §0) | (Allen, 2026-10-15) |
 | [AD-F5.2](#ad-f52-how-does-the-version-boundary-work-when-skills-are-bevy-plugins) version boundary | **decided:** no Bevy or Azalea in decision code; named mechanism crates import them directly; cargo-deny allowlist | (Allen, 2026-10-14; simulator spike and live join check passed) |
 | [AD-K1.1](#ad-k11-does-one-hq-cover-one-server-world-or-several) HQ scope | **decided:** one HQ per deployment, spanning servers | (Allen, 2026-10-13) |
 | [AD-K5.3](#ad-k53-interrupts-contain-and-price-or-classify-and-resolve) interrupts | **decided:** contain and price; escalate on cost; fix in cost-ranked batches ([INTERRUPTS.md](INTERRUPTS.md)) | (Allen, 2026-10-14) |
@@ -28,6 +28,8 @@ Context used throughout (Allen, 2026-10-13): local testing is per component, not
 ---
 
 ## AD-F2.1 Shard belief by operation, or by fixed map tiles?
+
+**Decided by Allen, 2026-10-15: fixed tiles**, with the operation service inside the node process (the linked question). The analysis below is kept for the record.
 
 Spec: [F2](F2-world-model.md). ARCHITECTURE v0.7 shards by operation.
 
@@ -44,7 +46,7 @@ Spec: [F2](F2-world-model.md). ARCHITECTURE v0.7 shards by operation.
 
 **What would tip it.** How often operations get re-cut, merged or retired in practice, and how much of the read load crosses operation boundaries. Both can be counted in the harness from a recorded program run.
 
-**Lean.** Fixed tiles for belief, with the claims registry and the event log staying per operation as v0.7 has them. This keeps v0.7's single-writer rule (the operation holding the claims writes the tile) while making the data outlive the operation.
+**Lean (before the decision).** Fixed tiles for belief, with the claims registry and the event log staying per operation as v0.7 has them. This keeps v0.7's single-writer rule (the operation holding the claims writes the tile) while making the data outlive the operation.
 
 **Update: where belief lives (spec audit #3).** The shard key alone doesn't settle the traffic. v0.7 puts each shard in the operation service, a separate process, while raw observations must stay off the bus. Chunk contents can't cross from node to service within the low-KB/s budget, and diffing a re-seen chunk against belief needs belief next to the chunk, which is in the node. Two ways out:
 - (a) Belief lives in the node, per tile; the operation service keeps claims and the ledger and queries nodes.
@@ -235,6 +237,8 @@ Spec: [K2](K2-commander-api.md). The full comparison is in COMMANDER_INTERFACE.m
 
 ## AD-K2.2 Share the commander seat, and on what terms?
 
+**Decided by Allen, 2026-10-15: the LLM is in full control, and the person holds the kill switch** (halt and recall, K2 §4.9). There is no shared seat. Boundaries are permission checks on low-level skills that a person sets once and may disable; the defaults are no attacking a player first and no breaking someone else's build, judged by comparing Null's belief with the current world (K2 §4.4, B4 §4.8, B5 §4.7). The analysis below is kept for the record.
+
 Spec: [K2](K2-commander-api.md).
 
 **For one holder at a time.**
@@ -251,9 +255,11 @@ Spec: [K2](K2-commander-api.md).
 
 **What would tip it.** How Allen actually wants to work alongside the LLM. This one is preference more than evidence.
 
-**Lean.** Shared with ownership per goal, plus approval classes for risky actions whoever owns the goal.
+**Lean (before the decision).** Shared with ownership per goal, plus approval classes for risky actions whoever owns the goal.
 
 ## AD-K5.1 LLM officers at the operation level in v1?
+
+**Decided by Allen, 2026-10-15: no officers in v1.** The commander alone plans the steps that have no model (AD-K5.2), and the officer interface stays identical so officers can be added later. The analysis below is kept for the record.
 
 Spec: [K5](K5-operation-service.md).
 
@@ -269,10 +275,18 @@ Spec: [K5](K5-operation-service.md).
 
 **What would tip it.** The commander's context filling up with one kind of operation it keeps having to steer by hand.
 
-**Lean.** No officers in v1, with the officer interface kept identical to the commander's so they can be added per operation.
+**Lean (before the decision).** No officers in v1, with the officer interface kept identical to the commander's so they can be added per operation.
 
 
 ## AD-K5.2 Scenario knowledge as data, or as method code?
+
+**Decided by Allen, 2026-10-15: neither as first framed.** Minecraft's scenarios can't be listed, so neither code nor handwritten data per scenario scales. High-level tasks can't be listed either, so HTN methods per goal kind break, as code or as data. The decided shape is in [GENERALIZATION.md](proposals/GENERALIZATION.md) §0:
+- Facts are data whose values come from the game jar, from observation, or from the LLM's prior (unconfirmed). A field that needs handwritten values per row is not allowed.
+- Skills are code only where the interrupt contract's cost-ranked review shows a need, plus the named boss exceptions. The generic default is the main path.
+- Goals (end condition, constraints, milestones) are the language to state and check tasks. There is no general goal-state planner.
+- The LLM is the main planner for steps with no model. It plans in stretches. Each stretch is validated and quoted, runs with the existing searches as subroutines, and wakes the LLM on K3 §4.2's triggers. Plans that work are saved as routines with parameters.
+
+This reopens AD-K5.1: whether the planner is the commander alone in v1, or officers per operation. The analysis below is kept for the record.
 
 Spec: [K5](K5-operation-service.md). Proposal: [proposals/GENERALIZATION.md](proposals/GENERALIZATION.md). Raised by Allen, 2026-10-14: there isn't a budget to write skill code for every possible scenario.
 
@@ -294,7 +308,11 @@ Spec: [K5](K5-operation-service.md). Proposal: [proposals/GENERALIZATION.md](pro
 
 **Paper test (2026-10-14, [proposals/GENERALIZATION_PAPER_TEST.md](proposals/GENERALIZATION_PAPER_TEST.md)).** Passed: across the five tasks, 0 new verbs and 0 methods. The cost moved into 9 new interpreted fields (3, 3, 0, 2, 1 per task), 5 planner features and 1 plan construct, all shared framework code. Every mob in B5's module list mapped onto those fields except the dragon and the wither, which stay modules. GENERALIZATION.md was revised: fields count against the budget, the grammar is a closed list, and outcomes go to K7's rate store instead of F5.
 
-**Lean.** Data, with per-mob and per-method code allowed only as tuning that a profile row points to, plus the two named boss exceptions. This also reopens AD-K5.1: composition for non-recipe tasks is the job an officer would do. Still open to evidence: a second paper run (do new fields per task keep falling?) and F3's first-encounter losses.
+**Paper test 2 (2026-10-14, [proposals/GENERALIZATION_PAPER_TEST_2.md](proposals/GENERALIZATION_PAPER_TEST_2.md)).** Five new tasks: 0 verbs and 0 methods. New fields fell from 9 to 4, but total framework items rose from 18 to 24, and each new domain still cost 1 to 2 fields. The number of domains has no limit.
+
+**Paper test 3 (2026-10-15, [proposals/GENERALIZATION_PAPER_TEST_3.md](proposals/GENERALIZATION_PAPER_TEST_3.md)).** The ten tasks written as goals and broken into 74 steps. Existing searches solve 54 steps (42 in a pessimistic recount). The LLM or a coded skill must carry 27% to 43% of all steps, or 39% to 55% without travel, gear and the final craft. The share by bot-hours and by risk is probably higher. Most of that share has no model to search, so the LLM writes the plan and does not take over a search. No validator could confirm any hard step before it ran. The test had no construction task.
+
+**Lean (before the decision).** Data, with per-mob and per-method code allowed only as tuning that a profile row points to, plus the two named boss exceptions. This also reopens AD-K5.1: composition for non-recipe tasks is the job an officer would do. Still open to evidence: a second paper run (do new fields per task keep falling?) and F3's first-encounter losses.
 
 ## AD-K5.3 Interrupts: contain and price, or classify and resolve?
 

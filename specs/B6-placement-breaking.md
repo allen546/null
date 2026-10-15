@@ -19,17 +19,9 @@
 
 ## Architecture decisions
 
-### ⚑ AD-B6.1 Precompute placement recipes per version, or probe them on demand?
+### AD-B6.1 Precompute placement recipes per version, or probe them on demand? (decided)
 
-- **Options:**
-  - (a) A table of every block state's recipe, generated once per version by probing in the simulator.
-  - (b) Probe on demand while planning.
-  - (c) A table for common states and probing for the rest.
-- **Recommendation:** (c). B6 accepts any of them, so the interface doesn't depend on the choice.
-- **Why it needs Allen:** Allen's builder agent owns placement internals.
-- **Settled by:** Allen's builder agent.
-- **If decided late:** B6's interface doesn't change.
-
+**Decided by Allen, 2026-10-15: (c), a table for common states and probing for the rest.** No ⚑. The options were (a) a full table per version, (b) probing on demand, and (c) both. B6's interface is the same for all three.
 
 ---
 

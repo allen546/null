@@ -7,7 +7,7 @@
 
 | § | subsection | verdict | why |
 |---|---|---|---|
-| 4.1 | HTN planner | Deterministic | Methods over the skill catalogue and recipe graph; replans on failure |
+| 4.1 | HTN planner | Deterministic | Expands steps that existing searches solve; the LLM plans steps with no model (AD-K5.2); replans on failure |
 | 4.2 | Scheduler | Deterministic | Jobs to squads by role, location and claims |
 | 4.3 | Presence scheduling | Deterministic | Location constraints over time, as a constraint scheduler |
 | 4.4 | Ledger and world shard | Deterministic | Per-operation state with an event log |
@@ -20,42 +20,27 @@
 
 ## Architecture decisions
 
-### ⚑ AD-K5.2 Scenario knowledge as data, or as method code?
+### AD-K5.2 Scenario knowledge as data, or as method code? (decided)
 
-- **Options:**
-  - (a) Method code per goal kind and module per mob, as written above.
-  - (b) A closed verb set, with mob and structure knowledge as profile rows (F5) and goal kinds as operator data. New scenarios add rows, not code. Plans outside the recipe graph are composed (commander or officer) and quoted.
-- **Recommendation:** (b). The paper test in GENERALIZATION §7 passed on 2026-10-14 (no new verb or method; 9 new fields, falling per task), with revisions folded into GENERALIZATION.md (`proposals/GENERALIZATION_PAPER_TEST.md`).
-- **Why it needs Allen:** It decides where the skill-code budget goes, and it reopens AD-K5.1 because composition for non-recipe tasks is what officers are for.
-- **Settled by:** The paper test, then Allen's call.
-- **If decided late:** B5's per-mob modules and K5's methods get written first and then replaced.
-- **Both sides:** [DECISIONS.md](DECISIONS.md#ad-k52-scenario-knowledge-as-data-or-as-method-code).
+**Decided by Allen, 2026-10-15** in the shape of [proposals/GENERALIZATION.md](proposals/GENERALIZATION.md) §0. No ⚑. Neither option as first framed scales, because scenarios and high-level tasks can't be listed. Facts are data from the jar, from observation and from the LLM's prior. Skills are code only where the cost-ranked interrupt review shows a need. Goals state and check tasks. The LLM plans the steps that have no model, in validated and quoted stretches, with the existing searches as subroutines. The options were (a) method code per goal kind and a module per mob, and (b) a closed verb set with profile rows and operator data per goal kind. Both sides and the three paper tests are in [DECISIONS.md](DECISIONS.md#ad-k52-scenario-knowledge-as-data-or-as-method-code).
 
 ### AD-K5.3 Interrupts: contain and price, or classify and resolve? (decided)
 
 **Decided by Allen, 2026-10-14: contain and price.** Adopted as the interrupt contract ([INTERRUPTS.md](INTERRUPTS.md)); it was proposed as "the surprise contract". No ⚑. The options were (a) known failure classes plus one triage ticket per new signature, each kind fixed by a new class, and (b) contain anything outside a job's expected envelope, price it as a re-plan, escalate only on cost, and fix in cost-ranked batches with token budgets. Both sides are kept in [DECISIONS.md](DECISIONS.md#ad-k53-interrupts-contain-and-price-or-classify-and-resolve).
 
-### ⚑ AD-K5.1 LLM officers at the operation level in the first version?
+### AD-K5.1 LLM officers at the operation level in the first version? (decided)
 
-- **Options:**
-  - (a) No. Every operation is deterministic, and the only LLM is the commander.
-  - (b) Optional officers for fuzzy operations (diplomacy, raids, unusual builds), as ARCHITECTURE §4.3 allows.
-- **Recommendation:** (a) for v1, keeping the officer interface identical to the commander's so (b) can be added.
-- **Why it needs Allen:** Officers add cost, a new path for injected text, and more autonomy below the commander.
-- **Settled by:** Allen's call.
-- **If decided late:** Easy to add later if the interface stays the same.
-- **Both sides:** [DECISIONS.md](DECISIONS.md#ad-k51-llm-officers-at-the-operation-level-in-v1).
-
+**Decided by Allen, 2026-10-15: the commander alone (a).** In v1 the only LLM is the commander. It plans the steps that have no model for every operation (AD-K5.2). The officer interface stays identical to the commander's, so officers can be added per operation if the commander's context or wake budget overflows. No ⚑. The options were (a) no officers, and (b) optional officers for fuzzy operations (ARCHITECTURE §4.3). Both sides are kept in [DECISIONS.md](DECISIONS.md#ad-k51-llm-officers-at-the-operation-level-in-v1).
 
 ---
 
 ## 1. Purpose
 
-An operation does most of the scheduling, scoped to one goal in one area (ARCHITECTURE §3.3). It's cut by place, not by step: one area, one set of claims. It runs an HTN planner to meet the quotas the program service gave it, schedules jobs onto squads, keeps its own ledger, world shard and claims, and applies recovery rules.
+An operation does most of the scheduling, scoped to one goal in one area (ARCHITECTURE §3.3). It's cut by place, not by step: one area, one set of claims. It runs an HTN planner to meet the quotas the program service gave it (since AD-K5.2: deterministic expansion plus LLM-planned stretches, no methods per goal kind), schedules jobs onto squads, keeps its own ledger, world shard and claims, and applies recovery rules.
 
 ## 2. Scope
 
-**Owns:** the HTN planner and its methods for the operation's goal kind; the scheduler; presence scheduling; its ledger and world model shard (with C3, F2); its claims registry; recovery rules; escalation to HQ; handover gates; restart from its log; optional officer integration.
+**Owns:** the HTN planner (expansion through existing searches, validation and running of LLM-planned stretches, saved routines; AD-K5.2); the scheduler; presence scheduling; its ledger and world model shard (with C3, F2); its claims registry; recovery rules; escalation to HQ; handover gates; restart from its log; optional officer integration.
 
 **Does not own:** where inputs come from (K7 decides sources); allocation between operations (K1); per-bot execution (K6, skills).
 
@@ -74,8 +59,7 @@ An operation does most of the scheduling, scoped to one goal in one area (ARCHIT
 
 - Decomposes the operation's sub-goal into jobs over the skill catalogue and recipe graph (§3.6). Decides *how*, never *where from* (sources are K7's).
 - Replans when jobs fail rather than planning everything up front. Never re-derives sources.
-- Methods are code per goal kind (build, mine district, base, convoy, chamber capture, defence), versioned with the skill library.
-- *Proposed (AD-K5.2, not adopted):* methods are operator data over a closed verb set (preconditions, effects, cost), so a new goal kind adds rows and not method code. Tasks the operator data doesn't cover are composed as typed plans by the commander or an officer, then validated and quoted (proposals/GENERALIZATION.md §3, §4).
+- *Changed by AD-K5.2 (Allen, 2026-10-15):* there is no method per goal kind. Steps that an existing search solves (K7's recipe graph, B1, C5, B4) expand deterministically. The LLM commander (alone in v1, AD-K5.1) plans the steps that have no model, as a stretch of goals and a plan over the closed verb set. The stretch is validated and quoted before it runs (proposals/GENERALIZATION.md §0). Plans that work are saved as routines with parameters (C11 §4.4), and these routines act as a cache of methods. Before the decision, this bullet read: "Methods are code per goal kind (build, mine district, base, convoy, chamber capture, defence), versioned with the skill library."
 
 ### 4.2 Scheduler
 
@@ -131,7 +115,7 @@ A crashed operation restarts and rebuilds its state from its log; meanwhile its 
 
 ## 7. Version-sensitive parts
 
-HTN methods use features through F5 queries.
+Expansion and saved routines use features through F5 queries.
 
 ## 8. Tests
 
@@ -141,4 +125,4 @@ HTN methods use features through F5 queries.
 
 ## 9. Open questions
 
-- How large can one operation's HTN method set get before it should split into goal-kind plugins? Measure when the third goal kind is written.
+- How a new goal is matched to a saved routine, and when a saved routine is stale in a changed world (AD-K5.2; proposals/GENERALIZATION.md §0.5). The earlier question, how large a method set gets before splitting into goal-kind plugins, no longer applies.

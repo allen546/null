@@ -8,7 +8,7 @@
 | § | subsection | verdict | why |
 |---|---|---|---|
 | 4.1 | Weapon mechanics | Measured | Cooldowns, crits, sweeps, mace and spear behaviour are game rules, confirmed in the harness |
-| 4.2 | PvE per mob type | Deterministic | Each mob's behaviour is fixed code; counter-play is known community knowledge |
+| 4.2 | PvE per mob type | Deterministic | One parameterised `engage` over threat-profile rows; per-mob code only where the cost-ranked review shows a need (AD-K5.2) |
 | 4.3 | Boss fights (blaze, wither, dragon) | Deterministic | Known patterns with known solutions, timed by measurement |
 | 4.4 | Ranged combat | Deterministic | Projectile ballistics are game physics |
 | 4.5 | Shields, totems and retreat | Deterministic | Thresholds are policy values; the mechanics are fixed |
@@ -25,6 +25,7 @@
   - (a) Hand-written doctrine files run deterministically (B5 §4.8, C7 §4.5).
   - (b) Trained policies (reinforcement or imitation learning on recorded fights) for PvP.
   - (c) Hand-written doctrine, with a seam where a learned policy can replace one technique later.
+- **Deferred (Allen, 2026-10-15):** not on the early path. The recommendation below stays as the default until this is taken up.
 - **Recommendation:** (c). Doctrine is auditable and testable against the harness's adversaries. Learned policies need a training pipeline, many fights and their own evaluation, which is a project of its own.
 - **Why it needs Allen:** It decides whether the project builds a machine-learning pipeline: a big investment and a different kind of work.
 - **Settled by:** Allen's call.
@@ -40,7 +41,7 @@ B5 is one bot fighting: against every mob type, against the bosses on the way to
 
 ## 2. Scope
 
-**Owns:** weapon mechanics; per-mob PvE behaviour; boss fight skills for a single bot's part; ranged combat; pearls; shield, totem and retreat behaviour; target selection with cargo exclusion; rules of engagement as applied per bot; PvP technique; combat reflexes.
+**Owns:** weapon mechanics; PvE behaviour (generic `engage` over profile rows, per-mob tuning where needed); boss fight skills for a single bot's part; ranged combat; pearls; shield, totem and retreat behaviour; target selection with cargo exclusion; rules of engagement as applied per bot; PvP technique; combat reflexes.
 
 **Does not own:** formation and focus fire (C7, K6); deciding to fight a player (policy and approval, K2); threat assessment (C8).
 
@@ -62,13 +63,13 @@ Attack cooldown per weapon, critical hits (falling, not sprinting), sweep attack
 
 ### 4.2 PvE per mob type
 
-Per mob, a behaviour module: creepers (keep distance, strike and back off, shield the blast), skeletons and strays (close distance using cover or shield), endermen (don't look, fight under a 2-high roof or in water), spiders, witches, drowned, piglins (gold armour), hoglins, guardians, phantoms, breezes (deflected wind charges; never fight breezes tagged as cargo), and the rest. Unknown mob types fall back to generic melee with a retreat threshold. *Proposed (AD-K5.2): this fallback becomes the main path. A mob's behaviour is a threat-profile row in F5 (attack kind, damage types, counters, habits) read by one parameterised `engage`, with per-mob code kept only as optional tuning (proposals/GENERALIZATION.md §3.2, §3.3).*
+Per mob, a behaviour module: creepers (keep distance, strike and back off, shield the blast), skeletons and strays (close distance using cover or shield), endermen (don't look, fight under a 2-high roof or in water), spiders, witches, drowned, piglins (gold armour), hoglins, guardians, phantoms, breezes (deflected wind charges; never fight breezes tagged as cargo), and the rest. Unknown mob types fall back to generic melee with a retreat threshold. *Decided (AD-K5.2, Allen, 2026-10-15): this fallback is the main path. A mob's behaviour is a threat-profile row in F5 read by one parameterised `engage`. The row's values come from the game jar (tags, damage types), from observation (damage events) or from the LLM's prior, never written per mob. Per-mob code is written only where the cost-ranked interrupt review shows a need (proposals/GENERALIZATION.md §0, §3.2, §3.3). The list above is the starting set to test against, not a list of modules to write.*
 
 ### 4.3 Boss fights (blaze, wither, dragon)
 
 - Blaze: fire resistance, cover from fireballs, snowballs or melee.
 - Wither: summoning location policy, phases, ranged and melee split.
-- Ender dragon: crystal destruction (with caged crystals), perch timing, beds are a known strategy but explosive and need policy. C6 owns the swarm-level plan; B5 owns each bot's part. *Proposed (AD-K5.2): these are profile rows and compositions of the generic verbs, not separate modules, except where a fight has phases that no profile field can express (the dragon).*
+- Ender dragon: crystal destruction (with caged crystals), perch timing, beds are a known strategy but explosive and need policy. C6 owns the swarm-level plan; B5 owns each bot's part. *Decided (AD-K5.2, 2026-10-15): these are profile rows and compositions of the generic verbs, not separate modules, except the named exceptions whose phases no profile field can express (the dragon and the wither; proposals/GENERALIZATION.md §0, §5).*
 
 ### 4.4 Ranged combat
 
@@ -92,7 +93,7 @@ Ballistic aim with gravity and drag from game data, leading moving targets, cros
 > **Interface input (runtime decision).** Who: either (an LLM officer or the commander for routine cases, a person for anything that would start a war).
 > Why: a player hitting a bot might be attacking, testing, griefing, or an ally's stray arrow; whether to treat it as hostile is a question of intent and politics that no rule settles in every case.
 > Enters the system as: a merged escalation ticket from C8 with the sighting, damage and history, answered by setting the player's relation (C8) or a policy; the default answer is in policy.
-> Null's side: by default (ARCHITECTURE §4.2) bots defend themselves only, against the attacker only, only while attacked, and disengage when it stops; the incident goes to C8 for attribution; nothing escalates to attacking a player without approval.
+> Null's side: by default (ARCHITECTURE §4.2) bots defend themselves only, against the attacker only, only while attacked, and disengage when it stops; the incident goes to C8 for attribution; nothing escalates to attacking a player without approval. *Changed by AD-K2.2 (Allen, 2026-10-15):* there is no runtime approval. "No attacking a player first" is a default permission check on targeting, which a person sets once and may disable. Defending and retaliating against an attacker stay as policy allows.
 
 ### 4.8 PvP against real players
 

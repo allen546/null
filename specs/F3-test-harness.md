@@ -20,16 +20,9 @@
 
 ## Architecture decisions
 
-### ⚑ AD-F3.1 One server pool for the test harness and the builder's simulator?
+### AD-F3.1 One server pool for the test harness and the builder's simulator? (decided)
 
-- **Options:**
-  - (a) One pool of private servers that runs both harness scenarios and the builder's simulator trials.
-  - (b) Separate fleets.
-- **Recommendation:** (a), one pool with two job types. Both need the exact live jar and settings per version, and certification replays will need many simulator instances.
-- **Why it needs Allen:** Allen's builder agent owns the simulator, so both sides need to agree, and it decides how much hardware simulation takes.
-- **Settled by:** Allen together with the builder agent.
-- **If decided late:** Duplicated server provisioning, profile copying and version matrices.
-
+**Decided by Allen, 2026-10-15: (a), one pool with two job types.** Both job types need the exact live jar and settings per version. The world-transformation redesign uses a simulator at most once per pack per version, and only if Null checks pack claims ([proposals/WORLD_TRANSFORMATION.md](proposals/WORLD_TRANSFORMATION.md) §5.4), so the simulator job type stays small. No ⚑. The options were (a) one pool and (b) separate fleets.
 
 ---
 

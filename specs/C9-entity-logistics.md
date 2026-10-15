@@ -27,6 +27,7 @@
 - **Options:**
   - (a) Never. A convoy is capped at what one node can escort, and long trains split into several convoys.
   - (b) Allowed, with the operation coordinating escorts on two nodes and cargo tracked by UUID across them.
+- **Deferred (Allen, 2026-10-15):** not on the early path. The recommendation below stays as the default until this is taken up.
 - **Recommendation:** (a). It keeps the per-tick formation check in one process, which is what protects the cargo, and 256 breezes already move in batches of 32.
 - **Why it needs Allen:** It trades convoy size against complexity, and it's an exception to the rule that squads never span nodes.
 - **Settled by:** Allen's call.

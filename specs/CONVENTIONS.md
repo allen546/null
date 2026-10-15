@@ -48,7 +48,7 @@ Each spec has an **Architecture decisions** section after its judgment map. A de
 
 - it can't be settled yet (it waits on a measurement, a spike, or a fact only Allen knows, such as which servers);
 - it's open to other opinions: the options have real trade-offs and none clearly dominates;
-- it belongs to someone else (Allen's builder agent), or it would change a decision recorded in ARCHITECTURE.md.
+- it belongs to someone else, or it would change a decision recorded in ARCHITECTURE.md.
 
 And getting it wrong would be costly to undo. Each one is written as:
 
@@ -58,7 +58,7 @@ And getting it wrong would be costly to undo. Each one is written as:
 - Options: (a) … (b) … (c) …
 - Recommendation: which option, and why
 - Why it needs Allen: one line
-- Settled by: your call | a spike or measurement | Allen's builder agent
+- Settled by: your call | a spike or measurement | a named design (for example the builder redesign)
 - If decided late: what has to change
 ```
 

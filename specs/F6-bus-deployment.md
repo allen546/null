@@ -25,6 +25,7 @@
   - (a) A third small VPS.
   - (b) A home machine. Cheaper, but home links are unreliable, which is why §3.8 keeps the bus core off them.
   - (c) Two VPSes only, accepting that losing one stops durable streams until it's back.
+- **Deferred (Allen, 2026-10-15):** not on the early path. The recommendation below stays as the default until this is taken up.
 - **Recommendation:** Defer. Run JetStream with one replica while the swarm is on a laptop and at most one VPS (operation logs are local SQLite first, so an outage delays shipping but loses nothing), then add (a), the smallest VPS available, when the swarm first runs across several always-on hosts.
 - **Why it needs Allen:** It's hosting cost against availability, on your hardware.
 - **Settled by:** Allen's call.

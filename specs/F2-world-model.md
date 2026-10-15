@@ -21,18 +21,9 @@
 
 ## Architecture decisions
 
-### ⚑ AD-F2.1 Shard belief by operation, or by fixed map tiles?
+### AD-F2.1 Shard belief by operation, or by fixed map tiles? (decided)
 
-- **Options:**
-  - (a) v0.7: each operation owns the shard for its region. Simple ownership, but knowledge is tied to the operation's life: when an operation is retired or its region redrawn, its terrain, chest and hazard knowledge has to move, and neighbouring operations share a boundary awkwardly.
-  - (b) Fixed tiles (for example 512 × 512 blocks per dimension) are the unit of storage. An operation is the current writer for the tiles it covers; tiles nobody covers are kept by a background store.
-  - (c) One global store per dimension with regional caches.
-- **Recommendation:** (b). It keeps v0.7's rule that nothing per-block reaches HQ, and knowledge outlives operations, so re-cutting operations by place (§3.3) never moves data.
-- **Linked question, settle together (spec audit #3):** where belief physically lives. Chunk contents can't cross from node to a separate operation-service process within the bus budget. Lean: run each operation's service inside the node process, with operations sized to fit one node, so belief sits next to the chunk data and only diffs and summaries leave the node. Fallback: belief in the node per tile, queried by a separate operation service.
-- **Why it needs Allen:** It changes an architecture decision (ARCHITECTURE §3.7, still sharded by operation in v0.8, with this decision recorded as open), trading simplicity now against data handling later.
-- **Settled by:** Allen's sign-off; no measurement needed.
-- **If decided late:** Changing the shard key after data exists means migrating every shard and event log.
-- **Both sides:** [DECISIONS.md](DECISIONS.md#ad-f21-shard-belief-by-operation-or-by-fixed-map-tiles).
+**Decided by Allen, 2026-10-15: fixed tiles (b).** Tiles (for example 512 × 512 blocks per dimension) are the unit of storage. An operation is the current writer for the tiles it covers, and a background store keeps tiles that no operation covers. The linked question is settled with it, as the lean said: each operation's service runs inside the node process, with operations sized to fit one node, so belief sits next to the chunk data and only diffs and summaries leave the node. No ⚑. The options were (a) one shard per operation (v0.7), (b) fixed tiles, and (c) one global store per dimension with regional caches. Both sides are kept in [DECISIONS.md](DECISIONS.md#ad-f21-shard-belief-by-operation-or-by-fixed-map-tiles).
 
 ### ⚑ AD-F2.2 Extend Azalea's world storage, or keep a separate belief store?
 
@@ -138,7 +129,7 @@ Layers per region: lava and fire, fall heights, water depth, light level (for mo
 
 ### 4.10 Shard storage, event log, coarse map
 
-- Each operation's shard: SQLite, local to the operation service, with an append-only event log shipped to a VPS (§9). Raw chunk data can't cross from node to a separate operation-service process within the bus budget, so where the shard physically sits is settled with AD-F2.1 (lean: the operation service runs inside the node process). Either way, only diffs and summaries leave the node (spec audit #3, 2026-10-13).
+- Each operation's shard: SQLite, local to the operation service, with an append-only event log shipped to a VPS (§9). Raw chunk data can't cross from node to a separate operation-service process within the bus budget, so the operation service runs inside the node process (AD-F2.1, decided 2026-10-15), and its shard holds the fixed tiles it currently writes. Either way, only diffs and summaries leave the node (spec audit #3, 2026-10-13).
 - A restarted operation rebuilds its shard from the log (§3.7).
 - HQ's coarse map: Postgres on a VPS, holding region summaries, owners, territory, threats, structures, annotations.
 - Cross-shard queries go through HQ's coarse map for summaries, or to the owning shard for detail.

@@ -3,7 +3,9 @@
 **Spec v1 · 2026-10-13.** Sources: ARCHITECTURE.md v0.7 §3.9, §3.12, §6, §8, §10; ONLINE_BUILDER.md v4.1; reference/builder-hard-cases.md. Conventions: `CONVENTIONS.md`.
 **Depends on:** B6 (placement, replay executor), B1 (replay mode), B7 (entity insertion), F3/F5 (simulator, data), C3 (items), K5 (claims, presence). **Used by:** K5 build operations, K7 (bills of materials for quotes).
 
-**Scope note.** Allen's separate builder agent owns the builder's placement and ordering internals: the simulator, trials, certification, ranking and repair search. This spec covers only the **interface** the rest of Null calls, the **survival seams** that interface must carry, and the **judgment zones** where the builder needs a person or an LLM. It deliberately says nothing about how plans are found.
+> **Redesign (Allen, 2026-10-14).** The builder is being redesigned as world transformation in [proposals/WORLD_TRANSFORMATION.md](proposals/WORLD_TRANSFORMATION.md). v4.1 is treated as a specialized attempt that won't generalize. This spec keeps its interface until that proposal is adopted, and AD-C1.1 and AD-C1.2 return to the main spec set.
+
+**Scope note.** The builder's placement and ordering internals (the simulator, trials, certification, ranking and repair search in v4.1) are being redesigned in the world-transformation proposal. This spec covers only the **interface** the rest of Null calls, the **survival seams** that interface must carry, and the **judgment zones** where the builder needs a person or an LLM. It deliberately says nothing about how plans are found.
 
 ## Judgment map
 
@@ -24,28 +26,13 @@
 
 ## Architecture decisions
 
-### ⚑ AD-C1.1 How does building with many bots keep the guarantee?
+### AD-C1.1 How does building with many bots keep the guarantee? (decided)
 
-- **Options:**
-  - (a) One certified bot per redstone region, and many bots on inert regions certified independently. Regions count as independent only when nothing in one can reach the other.
-  - (b) Certify the interleaving of several bots' packet streams. Exact, but certification gets much more expensive.
-  - (c) Single-bot certification only; parallelism comes from suppliers.
-- **Recommendation:** (a), with a separation rule from the hazard model (power, fluid, vibration and entity reach) deciding when regions are independent.
-- **Why it needs Allen:** It's the open question in ARCHITECTURE §3.9, it sits inside Allen's builder agent's design, and it sets how fast big builds go.
-- **Settled by:** Allen together with the builder agent.
-- **If decided late:** The plan contract already carries region and exclusivity, but the planner's internals don't change cheaply.
+**Decided by Allen, 2026-10-15: (a), in the world-transformation frame.** Regions separated by an inert boundary ([proposals/WORLD_TRANSFORMATION.md](proposals/WORLD_TRANSFORMATION.md) §6: no power, update, fluid, piston, vibration, entity or blast path across it) are built at the same time by different bots. Inside a printable region any number of bots may interleave, because every interleaving is another valid order (§5.1 there). An order-sensitive region has one bot at a time. No ⚑. The options were (a) one bot per redstone region with independent inert regions, (b) certify the interleaving of several bots, and (c) one bot only, with parallelism from suppliers.
 
-### ⚑ AD-C1.2 How do items reach a builder bot during a certified plan?
+### AD-C1.2 How do items reach a builder bot during a certified plan? (decided)
 
-- **Options:**
-  - (a) Items arrive only at step boundaries, handed over at the entry area by suppliers who never enter the margin. Restock walks are part of the builder's certified moves.
-  - (b) Suppliers deliver into the work envelope mid-build. Faster, but a supplier is a foreign entity the replay must pause for, and outside the certificate.
-  - (c) The builder carries everything for a module (36 slots plus shulkers), and modules are sized to fit.
-- **Recommendation:** (a) combined with (c): modules sized to fit an inventory, restocked at module boundaries at the entry area.
-- **Why it needs Allen:** It's the seam between Allen's builder agent's certified replay and Null's logistics, and both sides must agree before the survival builder exists.
-- **Settled by:** Allen together with the builder agent.
-- **If decided late:** The creative prototype hides this completely, so it's the likeliest surprise when switching to survival.
-
+**Decided by Allen, 2026-10-15: restock on need.** A builder bot restocks when its inventory can't cover its next steps, not at fixed module boundaries, and modules don't have to be sized to fit an inventory. A restock is a logistics request to C3 like any other. Where the handover happens (at the entry area, or inside the work envelope) follows the isolation shell in [proposals/WORLD_TRANSFORMATION.md](proposals/WORLD_TRANSFORMATION.md) §6, which is still proposed. No ⚑. The options were (a) items only at step boundaries, handed over at the entry area, (b) suppliers deliver into the work envelope mid-build, and (c) the builder carries everything for a module. The earlier recommendation was (a) with (c).
 
 ---
 
@@ -57,7 +44,7 @@ The builder is a capability service: schematic in, certified plan or stuck repor
 
 **Owns (this spec):** the request and plan contract; survival fields in the contract; multi-bot build modes as seen from outside; the execution protocol; the reports that need human or LLM input and the channels that input comes back through.
 
-**Owned by Allen's builder agent (not specified here):** the simulator and fake player, trials, the classification of changes, ranking, access witnesses, repair search, certification replays, the pre-pass compiler, arming-set computation.
+**Internal to the builder's design (not specified here; v4.1's list, under redesign):** the simulator and fake player, trials, the classification of changes, ranking, access witnesses, repair search, certification replays, the pre-pass compiler, arming-set computation.
 
 **Does not own:** materials (C3 stages them); site preparation (C2); deciding what to build (the commander); designing schematics (C11 §4.5).
 
@@ -185,7 +172,7 @@ Content packs may ship macros for their machines, for example a safe-insertion p
 > **Interface input (runtime decision).** Who: person (or a policy the commander set in advance).
 > Why: arming makes a machine live (installing payload or actuator entities, placing TNT, closing the final break in a circuit); whether and when to do that is a decision like attacking a player (ARCHITECTURE §3.12, §4.2).
 > Enters the system as: an `approve(arming, plan)` through K2, or a standing policy that pre-approves arming for named packs.
-> Null's side: the builder leaves the arming set and the descriptor's arming steps until last, behind a physical circuit break; the build operation passes its handover gate (K7) and then waits at `blocked(needs_approval: arming)`.
+> Null's side: the builder leaves the arming set and the descriptor's arming steps until last, behind a physical circuit break, and does them last in the order. *Changed by AD-K2.2 (Allen, 2026-10-15):* arming is a sequence of ordinary clicks, not a separate action, so it waits for no approval; the build operation passes its handover gate (K7) and arms.
 
 ### 4.12 Schematic intake (the builder never designs)
 
@@ -203,7 +190,7 @@ The builder takes schematics; it doesn't design them. Designing a machine, a doo
 
 ## 6. Scale and performance
 
-- Planning cost is the builder agent's concern; the interface allows planning to take wall-clock minutes to hours for big builds.
+- Planning cost is the builder design's concern; the interface allows planning to take wall-clock minutes to hours for big builds.
 - At build scale most bots are suppliers; a few builder squads place blocks (ARCHITECTURE §6). Logistics throughput, not placement speed, sets the build rate.
 
 ## 7. Version-sensitive parts
@@ -216,7 +203,7 @@ Certificates, macros, hazard labels and placement recipes are all per version.
 - Contract tests: a plan with per-step items and break times feeds K7's quote and C3's staging unchanged.
 - A schematic with one unreachable state produces a pre-build report before any live action.
 
-## 9. Open questions (for Allen's builder agent)
+## 9. Open questions (for the builder redesign)
 
 - Does the prototype follow `ONLINE_BUILDER.md` v4.1, or a different design? This spec only assumes the interface.
 - Can the simulator run with survival rules for the simulated bot (items, break time, drops) while the prototype is still creative?

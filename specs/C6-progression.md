@@ -56,7 +56,7 @@ Miners (efficiency, fortune or silk touch, unbreaking, mending), fighters (prote
 
 ### 4.4 Nether expedition
 
-Portal building, fortress location (C5), blaze farming from spawners or hunting, piglin bartering with gold for pearls, return routes. Bots wear gold where piglins matter. *Proposed (AD-K5.2): each of these is a plan over the generic verbs with capabilities derived from profiles, not a separate procedure; the "gold where piglins matter" rule becomes a counter rule (proposals/GENERALIZATION.md §4).*
+Portal building, fortress location (C5), blaze farming from spawners or hunting, piglin bartering with gold for pearls, return routes. Bots wear gold where piglins matter. *Decided (AD-K5.2, 2026-10-15): each of these is a stretch the LLM plans over the generic verbs, with capabilities derived from profiles, not a separate procedure; plans that work are saved as routines. The "gold where piglins matter" rule becomes a counter rule (proposals/GENERALIZATION.md §0, §4).*
 
 ### 4.5 Stronghold and End entry
 

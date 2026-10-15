@@ -25,6 +25,7 @@
   - (a) Silent: bots never chat; only an operator's own account speaks.
   - (b) A diplomacy officer drafts chat and a person approves each message.
   - (c) An officer chats on its own within a policy of approved message types.
+- **Deferred (Allen, 2026-10-15):** not on the early path. The recommendation below stays as the default until this is taken up.
 - **Recommendation:** (a) for v1, keeping the policy gate in C8 §4.7 so (b) and (c) can be added later.
 - **Why it needs Allen:** It's about how your faction presents itself to real people.
 - **Settled by:** Allen's call.

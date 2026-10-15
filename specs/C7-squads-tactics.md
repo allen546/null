@@ -25,6 +25,7 @@
   - (a) A battle group leader: several squads placed on one node with a leader running at squad speed, formed only for big engagements.
   - (b) Bigger squads in war (up to about 50).
   - (c) Accept the operation's 1–2 s for coordination between squads.
+- **Deferred (Allen, 2026-10-15):** not on the early path. The recommendation below stays as the default until this is taken up.
 - **Recommendation:** (b) first, with (c) for macro between squads. A node now holds hundreds of bots, so a squad of about 50 fits on one, and each extra level adds message types and failure modes. Add (a) only if measured fights lose to slow reaction between squads. (Changed 2026-10-13 after Allen's capacity numbers.) Density, not headcount, caps a war squad: bot-to-bot traffic grows with the square of how many bots are near each other (spec audit #2), so big squads fight spread out.
 - **Why it needs Allen:** It adds a level to the hierarchy for war only, and how big fights get depends on the servers and factions you'll face.
 - **Settled by:** Allen's call, once the scale of faction fights is clearer.

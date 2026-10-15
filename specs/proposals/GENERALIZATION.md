@@ -1,6 +1,55 @@
 # Generalization floor: no skill code per scenario
 
-> **Status (2026-10-14): proposal, not adopted. Revised after the paper test.** Written after Allen's constraint that we can't afford skill code for every possible scenario. ARCHITECTURE v0.8 is unchanged; sections that this would change carry a pointer here. The decision to adopt is AD-K5.2 ([DECISIONS.md](../DECISIONS.md#ad-k52-scenario-knowledge-as-data-or-as-method-code)). The paper test (§7) passed with costs it didn't count; its results and the revisions below are in [GENERALIZATION_PAPER_TEST.md](GENERALIZATION_PAPER_TEST.md). Nothing here is measured. Where a claim is a guess it says so.
+> **Status (2026-10-15): decided by Allen in the shape of §0 (AD-K5.2, [DECISIONS.md](../DECISIONS.md#ad-k52-scenario-knowledge-as-data-or-as-method-code)).** §1 to §8 are the proposal of 2026-10-14 as revised after the first paper test ([GENERALIZATION_PAPER_TEST.md](GENERALIZATION_PAPER_TEST.md)). They are kept as the detail behind §0. Where §0 and a later section disagree, §0 wins. Evidence: paper tests [1](GENERALIZATION_PAPER_TEST.md), [2](GENERALIZATION_PAPER_TEST_2.md) and [3](GENERALIZATION_PAPER_TEST_3.md). Nothing here is measured. Where a claim is a guess it says so.
+
+## 0. Decided shape (Allen, 2026-10-15)
+
+### 0.1 Why the 2026-10-14 rule was not enough
+
+- Minecraft is an open world. Nobody can list its scenarios in advance. So code per scenario does not scale, even when coding agents write the code. Handwritten data per mob or per structure does not scale either.
+- The K5 HTN planner needs a method for each high-level task. Low-level tasks can be listed. High-level tasks can't. §4's "operator data per goal kind" still lists goal kinds, so it breaks in the same way.
+- Search toward a goal state in an open world that keeps changing is not a fix. Ordering construction and redstone is already NP-hard. Paper test 3 found that the hard steps of a task mostly have no model to search: fights, mob behaviour, other players. Searchable steps were 54 of 74 by count, or 42 of 74 in the pessimistic recount. The existing components (K7, B1, C5, B4) already solved all of them.
+
+### 0.2 The shape
+
+1. **Facts are data, and nobody writes them per row.** Every profile field gets its values from at least one of three sources:
+   - the game jar: entity-type tags, damage-type tags, loot tables, recipes (F5 §4.2);
+   - observation: damage events (type and source), distance at hit, entity metadata;
+   - the LLM's prior: it is marked unconfirmed, it may only set how careful the bots are, and it never certifies a plan.
+
+   **Field admission rule:** a field whose values must be written by hand for each mob or place is code per scenario under another name, and is not allowed. This replaces §1's "fields per task falling" measure.
+2. **Skills are code only for the important parts.** The interrupt contract's cost-ranked batch review ([INTERRUPTS.md](../INTERRUPTS.md)) chooses them: a failure that is expensive and recurring gets a skill. The named boss exceptions (§5) stay. Everything else uses the generic default with a safe floor (§3.3), and the interrupt contract contains and prices its failures.
+3. **Goals are the language to state and check a task, not the input to a general planner.** A goal is an end condition, constraints (budgets, the protected set) and milestones. It is written in the closed state vocabulary of the version: block states, block-entity NBT, entities with their NBT, inventories, the ledger and the clock. There is no general goal-state planner.
+4. **The LLM is the main planner for the steps that have no model.** In v1 the commander does this alone (AD-K5.1, decided 2026-10-15). The LLM works in stretches:
+   1. It writes a stretch as goals and a plan over the closed verb set and the plan grammar (§3.1, §4). It names end states such as "diamond armour for 40 bots". It does not write item chains.
+   2. The validator checks the form, the protected conditions, the provocation check and the caps. K7 quotes the stretch. The LLM may revise the stretch after it sees the quote.
+   3. Null runs the stretch. The existing searches do the steps they can solve: K7's recipe graph, B1's pathfinding, C5's find, B4's mining. These searches are subroutines of the plan, not the driver.
+   4. The LLM wakes on K3 §4.2's triggers: a milestone, an escalation that passes the price gate, a heartbeat, a person. Problems below the price threshold are contained locally and never reach the LLM.
+
+   Several stretches run at the same time as separate operations. Example: squads mine diamonds while another squad scouts for a fortress.
+5. **The validator is a guard and a watchdog, not a proof.** In paper test 3, no validator could confirm any hard step before it ran. Milestones show progress or a stall. They don't show that a plan is good. Bad plans are acceptable because the quote, the caps and the interrupt contract limit what they cost.
+6. **Plans that work are saved as routines with parameters** (C11 §4.4). Methods become a cache, not a requirement. Nobody infers a method base from the saved plans.
+
+Example, "speedrun with the swarm": the commander writes stretch 1 as "diamond armour and tools for all bots, no deaths, 2 h", and K7 expands it into wood, stone, iron and diamonds. A scouting operation runs in parallel. At the milestone, the commander writes stretch 2: obsidian, portal, fortress, "16 blaze rods". The fortress fight uses the generic `engage`, with the blaze row filled from jar tags and from observation. The next speedrun starts from the saved routines. The commander steps in only where this world is different.
+
+### 0.3 What stays, and what changes, in §1 to §8
+
+- **Stays:** the closed verb set (§3.1), profile rows (§3.2, now under the field admission rule), the generic default (§3.3), the ratchet (§3.4), the closed plan grammar (§4), the named exceptions (§5).
+- **Changes:** §4 item 1 no longer adds operator data per goal kind. Deterministic expansion is only the existing searches. §4 item 2, LLM composition, becomes the main path for steps with no model, not a fallback. §7's pass criterion is superseded: the measure is now the field admission rule plus the measurements in §0.4.
+
+### 0.4 Before building, and the first measurement
+
+- Fill the F2 state gaps that paper tests 2 and 3 found: entity age, anger, villager profession and item-frame contents (F2 §4.5).
+- Write a closed list of predicate terms and a closed list of budget kinds (paper test 2 §5 items 2 and 5).
+- First measurement (F3, fixed seeds): give the LLM the goal "16 blaze rods". Count its milestones, the validator's rejections, the losses and the tokens. The quality of the LLM's plans for the hard steps is the main unknown in this shape.
+
+### 0.5 Still open
+
+- When the commander's load justifies officers (AD-K5.1 keeps them out of v1).
+- How the commander submits a plan: a new K2 command, or `errand` extended (§8).
+- How a new goal is matched to a saved routine, and whether that routine is still valid in a changed world.
+- Construction and redstone. Paper test 3 had no construction task. For order-sensitive builds, [WORLD_TRANSFORMATION.md](WORLD_TRANSFORMATION.md) §5 uses rules and refusal, not search.
+- Which entity attributes the server sends to clients (`[c]`: max health and speed are probably sent, attack damage probably not).
 
 ## 1. The rule
 

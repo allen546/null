@@ -88,7 +88,7 @@ Inventory slots (36 per bot, plus shulkers) and walking distance are the real co
 
 Bots are interchangeable bodies running the same **skill library**. A skill is deterministic code with a typed contract (§1.3). The universal builder is one capability among many; so is "beat the ender dragon", which is itself a composition of smaller skills. The commander and the orchestrator compose skills; they never write per-tick behaviour.
 
-*Proposed (not adopted): a new scenario may add data but not a verb or a method. Mob and structure knowledge become profile rows in F5, and per-scenario code shrinks to a closed verb set. See [GENERALIZATION.md](proposals/GENERALIZATION.md) and AD-K5.2.*
+*Decided (AD-K5.2, Allen, 2026-10-15): scenarios can't be listed, so skill code is written only for the important parts, chosen by the cost-ranked interrupt review. Mob and place knowledge are F5 rows whose values come from the game jar, from observation or from the LLM's prior, never written per row. Unknown cases use the generic default. See [GENERALIZATION.md](proposals/GENERALIZATION.md) §0.*
 
 ### 1.7 Failure is the normal case
 
@@ -213,7 +213,7 @@ A **goal** is what the commander asks for: `Obtain(item, n)`, `Build(schematic, 
 
 Both planners are ordinary deterministic code. The LLM sits above HQ (§4).
 
-*Proposed (not adopted, AD-K5.2):* operation "methods" stop being code per goal kind. They become operator data (verbs with preconditions, effects and cost) that K7 and K5 expand, and tasks outside the recipe graph are composed as typed plans of verbs by the commander or an officer, validated and quoted like any other. See [GENERALIZATION.md](proposals/GENERALIZATION.md).
+*Decided (AD-K5.2, Allen, 2026-10-15):* there are no operation "methods" per goal kind. Steps that an existing search solves (K7's recipe graph, B1, C5, B4) expand deterministically. The LLM commander (alone in v1, AD-K5.1) plans the steps that have no model, in stretches of goals and verb plans that are validated and quoted before they run. It wakes on K3 §4.2's triggers. Plans that work are saved as routines with parameters. Goals are the language to state and check a task. There is no general goal-state planner. See [GENERALIZATION.md](proposals/GENERALIZATION.md) §0.
 
 ### 3.7 State is sharded by region
 
@@ -227,7 +227,7 @@ There is no single central world model or claims table at 2,000 bots. Both are *
   - **moving claims**, for convoys and long travel. These are routine, not rare. The convoy owns its claim, which covers the whole train plus a margin and can span two dimensions while the train crosses a portal. It registers right of way with each shard it passes through, and it is renewed locally by the escort's squad leader, never through HQ. Routes used regularly through unowned space (most of the nether) belong to a standing **transit operation**.
 - Items are in **per-operation ledgers**. HQ sees only aggregates ("swarm has 41k cobblestone, 3k iron, 212 diamonds") and moves goods between operations as **transfer orders** carried out by carrier bots.
 - Every shard writes an append-only event log, so a restarted operation rebuilds its state from it.
-- **Belief is a separate store** on top of Azalea's shared chunk storage, which holds only blocks, biomes and heightmaps with no timestamps (lean of AD-F2.2, confirmed by the Azalea reality check). **Open (AD-F2.1):** whether belief is keyed by operation, as above, or by fixed map tiles that operations write while they hold the claims, and whether the operation service runs inside the swarm node so observations never cross the bus. The specs lean to fixed tiles inside the node; it needs Allen's sign-off before any code (`DECISIONS.md`).
+- **Belief is a separate store** on top of Azalea's shared chunk storage, which holds only blocks, biomes and heightmaps with no timestamps (lean of AD-F2.2, confirmed by the Azalea reality check). **Decided (AD-F2.1, Allen, 2026-10-15):** belief is keyed by fixed map tiles, not by operation as above. Operations write the tiles they cover while they hold the claims, and the operation service runs inside the swarm node, so observations never cross the bus (`DECISIONS.md`).
 
 ### 3.8 Distributed runtime
 
@@ -270,7 +270,7 @@ The builder is a **capability service** that operations call:
 
 At this scale a big build is one build operation plus several supply operations feeding it. Most bots are suppliers; a few builder squads place blocks.
 
-Open interface questions for the builder (owned by Allen's builder agent; C1 specifies the interface, and AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1 stay with the builder agent):
+Open interface questions for the builder (being redesigned as world transformation in `proposals/WORLD_TRANSFORMATION.md`; C1 specifies the interface, and AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1 were decided 2026-10-15 in that design's frame; see C1, B6 and F3):
 
 - **Multi-bot building.** Does the builder partition into regions that bots build in parallel, or is the guarantee per-bot, with only one bot in a redstone region at a time and others doing decorative shell or logistics? At hundreds of bots, the decorative shell needs a parallel mode.
 - **From prototype to survival.** `ONLINE_BUILDER.md` v4.1 builds in creative with `/forceload` because it is a prototype (see the top of this doc). The final builder has to take items from logistics, spend real time breaking temps, and handle the drops they leave. It also has to keep the site loaded by having a bot nearby instead of using `/forceload`. The builder interface should carry per-step item needs and break-time from the start, so the switch doesn't change the contract.
@@ -425,6 +425,8 @@ Standing orders say what each level may do without asking:
 - always allowed: eat, sleep, flee, defend self, recover own items;
 - allowed by policy: defend allies, retaliate, move bots within an operation, spend diamonds, enter the nether; hygiene rules (§3.14);
 - needs approval: attack a player, **arm a machine** (§3.12), break a **player-made** block outside a permit area, start a build over N blocks, spend scarce items, create an operation.
+
+*Changed by AD-K2.2 (Allen, 2026-10-15): approval classes are replaced by permission checks on low-level skills, set once by a person (K2 §4.4). Arming is not a separate action: it is a sequence of ordinary clicks (buttons, then a lever), so no check can guard it. It stays last in the build order.*
 
 **Breaking blocks** (spec audit #8; Allen, 2026-10-13). Natural blocks can be broken anywhere without a permit, so trees, mining and nether travel never wait on a ticket. Before every break outside a permit area, gathering applies the operator's ownership rules (B4 §4.8: crafted blocks, unnatural combinations, torches, signs, known bases), skips anything they mark as player-made, and reports it; breaking such a block needs approval. Permits are granted only by a person (`grant_permit`, or a map annotation); the LLM commander can request one, which arrives as an approval ticket (K2 §4.4).
 
@@ -646,7 +648,7 @@ Folded in from decisions Allen made and from proposals in the component specs, t
 - **One HQ per deployment, spanning servers**, with a `server` field in every location key (§2; AD-K1.1).
 - **Capacity**: about 1,000 bots per laptop as the target, CPU and bandwidth as limits, density as a scheduling constraint (§2, §3.8; F1 §4.1, §4.11; spec audit #2).
 - **Self-fencing** on partition, and cargo keepers held rather than re-placed (§3.8; F1 §4.2, §4.7; spec audit #5).
-- **Belief store** separate from Azalea's chunk storage; AD-F2.1 (shard key and where belief lives) recorded as open (§3.7).
+- **Belief store** separate from Azalea's chunk storage; AD-F2.1 (shard key and where belief lives) decided 2026-10-15: fixed tiles, operation service inside the node (§3.7).
 - **Reflexes and skills as decision code run by one host** in the game tick, replacing "skills and reflexes are Bevy plugins" (§5, §9; AD-F5.2, spike in `reference/SPIKE_F5_BOUNDARY.md`). The version boundary restated as decision crates versus named mechanism crates (§9.1).
 - **Null's Azalea fork** described (AD-F5.1), with Azalea's pathfinder and chunk storage reused (§9).
 - **Game data source** corrected: Azalea's generated data first, the vanilla data generator for the rest (§9.1).
@@ -658,7 +660,7 @@ Folded in from decisions Allen made and from proposals in the component specs, t
 ### Adopted after v0.8
 
 - **Interrupt contract** (AD-K5.3, Allen, 2026-10-14; proposed the same day as "the surprise contract"): detect, contain, price, then escalate or only record; fixes from a cost-ranked batch review with token budgets. Changes §1.3 and §1.7, CONVENTIONS §3.1 (the `interrupted` outcome), F2 §4.7, F3 §4.3, F4 §4.7–4.8, B1 §4.3, B6 §5, C8 §4.4, K1 §4.10, K3 §4.2 and §4.6, K5 §4.6–4.7 and K7 §4.2. See [INTERRUPTS.md](INTERRUPTS.md).
-
-### Proposed after v0.8 (not adopted)
-
-- **Generalization floor** (2026-10-14): scenario knowledge as data and a closed verb set, instead of code per scenario. Would touch §1.6, §3.6, K5 §4.1, B5 §4.2–4.3, F5 §4.3 and C6. See [GENERALIZATION.md](proposals/GENERALIZATION.md) and AD-K5.2.
+- **Generalization** (AD-K5.2, Allen, 2026-10-15; proposed 2026-10-14 as "the generalization floor"): facts as data from the jar, observation and the LLM prior; skill code only for cost-ranked important parts; goals to state and check tasks; the LLM as main planner for steps with no model, in validated and quoted stretches. Changes §1.6, §3.6, K5 §4.1, B5 §4.2–4.3, F5 §4.3 and C6. See [GENERALIZATION.md](proposals/GENERALIZATION.md) §0.
+- **Commander seat** (AD-K2.2, Allen, 2026-10-15): the LLM is in full control and the person holds the kill switch (halt and recall). No shared seat. Boundaries are permission checks on low-level skills, set once by the person or disabled; by default no attacking a player first and no breaking someone else's build (judged by comparing belief with the current world). Changes K2 §4.4 and §4.10, B4 §4.8, B5 §4.7 and INTERRUPTS §5.
+- **No officers in v1** (AD-K5.1, Allen, 2026-10-15): the commander is the only LLM (§4.3 allows officers later).
+- **Builder decisions** (Allen, 2026-10-15), in the world-transformation frame: a builder bot restocks on need (AD-C1.2); parallel work across inert boundaries and any interleaving in printable regions (AD-C1.1); a placement table plus probing (AD-B6.1); one server pool (AD-F3.1).

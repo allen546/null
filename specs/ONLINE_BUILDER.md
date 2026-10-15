@@ -1,5 +1,7 @@
 # Online builder: design v4.1
 
+> **Being replaced (Allen, 2026-10-14).** Allen treats v4.1 as a specialized attempt that won't generalize. Its role passes to [proposals/WORLD_TRANSFORMATION.md](proposals/WORLD_TRANSFORMATION.md) once that is adopted; this document stays as the record of what was learned.
+>
 > **Status (2026-10-14).** Design v4.1, owned by Allen's builder agent. The JavaScript prototype that implements it is archived, read-only, in `null-builder-archive-2026-10-14`. Its as-built notes are in [`reference/builder/`](reference/builder/) and its run log is [`logs/builder/online/PROGRESS.md`](logs/builder/online/PROGRESS.md).
 >
 > Several decisions and rule changes made while prototyping amend this design but are **not yet folded into the text below**:

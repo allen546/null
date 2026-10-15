@@ -90,6 +90,8 @@ A ticket follows K1 §4.10. It is merged across bots and operations, lists what 
 
 **Buying evidence** is one of the commander's options: a careful `observe` job at the quarantined place. It spends bot time instead of tokens, and a look on the spot often settles what a long read of logs can't.
 
+*Changed by AD-K2.2 (Allen, 2026-10-15):* the LLM commander is in full control and the person holds halt and recall. Approval classes are replaced by permission checks on low-level skills that a person sets once (K2 §4.4), so nothing below waits on a runtime approval. "Attacking needs a person" now reads: attacking a player first is blocked by the default check unless the person disabled it.
+
 **Hard routes** skip pricing:
 
 | evidence | goes to |
@@ -97,7 +99,7 @@ A ticket follows K1 §4.10. It is merged across bots and operations, lists what 
 | a message from server staff, a rules change | the operator (C8 §4.9), never the LLM alone |
 | a kick or a ban | the operator; F1 stops joining that server |
 | an anti-cheat setback or a server position correction | engineering (F4 §4.6): it is our bug |
-| any response that would attack a player, break player-made blocks or arm a machine | an approval ticket (K2 §4.7), never by default |
+| any response that would attack a player first or break someone else's build | blocked by the default permission checks (K2 §4.4, AD-K2.2) unless the person disabled them |
 
 **In the end:**
 - **Containment** needs nobody. It runs automatically.
@@ -204,6 +206,6 @@ Measure deaths beyond what reflexes absorb, commander wakes and tokens per run-h
 - How a quarantine interacts with other operations' claims and with a convoy's right of way.
 - When a trapped bot is worth the risk to the bots that would rescue it.
 
-## 11. Note for the builder agent
+## 11. Note for the builder
 
-The builder can't move its site, so its containment is skipping. A stuck step is set aside together with every step that depends on it, the rest of the build is finished, and the stuck clusters from the whole run are reviewed in one batch. One F7 run would then show every stuck class at once instead of one per run. Whether skipping is safe for redstone is the builder agent's call, because a skipped cell can change what later steps power. The builder decisions (AD-C1.1, AD-C1.2, AD-B6.1, AD-F3.1) stay with that agent.
+The builder can't move its site, so its containment is skipping. A stuck step is set aside together with every step that depends on it, the rest of the build is finished, and the stuck clusters from the whole run are reviewed in one batch. One F7 run would then show every stuck class at once instead of one per run. Whether skipping is safe for redstone is open in the builder redesign (`proposals/WORLD_TRANSFORMATION.md`), because a skipped cell can change what later steps power. The builder decisions (AD-C1.1, AD-C1.2, AD-B6.1, AD-F3.1) stay with that agent.

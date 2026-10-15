@@ -19,7 +19,7 @@
 
 ## Architecture decisions
 
-None of its own. Its presentation depends on AD-K2.1, and officers on AD-K5.1.
+None of its own. Its presentation depends on AD-K2.1, and officers are out of v1 (AD-K5.1, decided 2026-10-15).
 
 
 ---

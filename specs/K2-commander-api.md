@@ -31,18 +31,11 @@
 - **If decided late:** K1 (reconciling a manifest versus applying commands), K3 and K4 all change shape.
 - **Both sides:** [DECISIONS.md](DECISIONS.md#ad-k21-imperative-commands-or-a-desired-state-manifest).
 
-### ⚑ AD-K2.2 Should a person and the LLM share the commander seat, and on what terms?
+### AD-K2.2 Should a person and the LLM share the commander seat, and on what terms? (decided)
 
-- **Options:**
-  - (a) One holder at a time, switched explicitly.
-  - (b) Shared: each goal is owned by a person or the LLM, and the LLM can only propose changes to goals a person owns.
-  - (c) The LLM commands, and a person approves only approval-class actions.
-- **Recommendation:** (b), with (c)'s approval classes on top.
-- **Why it needs Allen:** It's a governance choice about how much the LLM may do without you.
-- **Settled by:** Allen's call.
-- **If decided late:** An ownership field and permissions are cheap to add early and awkward to retrofit into the audit history.
-- **Both sides:** [DECISIONS.md](DECISIONS.md#ad-k22-share-the-commander-seat-and-on-what-terms).
+**Decided by Allen, 2026-10-15: the LLM is in full control, and the person holds the kill switch.** There is no shared seat and no ownership per goal. The LLM commander issues every command. The person's control is `halt(scope)` and `recall(scope)` (§4.9), which are never gated and never budgeted. No ⚑. The options were (a) one holder at a time, (b) shared, with ownership per goal, and (c) the LLM commands and a person approves only approval-class actions. The earlier recommendation was (b) with (c)'s approval classes. Both sides are kept in [DECISIONS.md](DECISIONS.md#ad-k22-share-the-commander-seat-and-on-what-terms).
 
+**Follow-up decided by Allen, 2026-10-15: boundaries are permission checks on low-level skills.** A person sets them once and may disable any of them. The LLM can't change them, and nothing waits for a runtime approval. Two checks are on by default: (1) **no attacking a player first** (B5 §4.7: defending and retaliating stay as policy allows); (2) **no breaking someone else's build** (B4 §4.8). A block counts as someone else's when the current world differs from Null's belief in a way Null didn't cause: a block that appeared or changed and that no bot placed. Blocks that already existed when Null first saw the area have no earlier belief to compare with, so B4 §4.8's player-made signals still apply to them. Every other action that was in K2 §4.4's "needs approval" class (a big build, scarce items, a new operation) is the LLM's call. Arming a machine is not a separate action (it is a sequence of ordinary clicks), so it has no check.
 
 ---
 
@@ -86,6 +79,8 @@ Three classes (§4.2): always allowed (eat, sleep, flee, defend self, recover ow
 
 The break rule is narrowed from ARCHITECTURE v0.7 §4.2's "break blocks outside claimed territory": read literally, it needs a ticket for every tree felled and every block mined on a fresh server, which stalls the first milestone or floods the digest. Natural blocks can be broken anywhere; only blocks B4 §4.8's ownership rules mark as player-made need a permit area or approval. A permit is the operator's approval to modify blocks in an area, nothing more; it doesn't mean the server allocated the land (CONVENTIONS §3.3a). Permits are granted only by a person, through `grant_permit(area, scope)` or a map annotation; the LLM commander can request one, which arrives as an approval ticket. Adopted in ARCHITECTURE v0.8 §1.2 and §4.2 (spec audit #8; Allen, 2026-10-13).
 
+*Changed by AD-K2.2 (Allen, 2026-10-15):* the "needs approval" class is replaced by **permission checks on low-level skills**, which a person sets once and may disable. There are no runtime approval tickets. The defaults are no attacking a player first, and no breaking someone else's build (B4 §4.8). A permit becomes an area where a person has disabled the build check, set in advance. The other former approval actions are the LLM's call.
+
 ### 4.5 Reflex policy
 
 - `set_policy(scope, reflexes: {id | group | all: on | off, params?, for?})` at swarm and operation scope (CONVENTIONS §4.2).
@@ -119,6 +114,8 @@ Approval-class actions become tickets with options, consequences, a default from
 > Enters the system as: an ownership field per goal (`person` or `llm`) and a permission table per principal, set by the person.
 > Null's side: enforces it; the proposed default is that the LLM may only propose changes to goals a person owns, and a person can take over any goal at any time.
 
+*Changed by AD-K2.2 (Allen, 2026-10-15): there is no shared seat. The LLM holds every goal, and the person's control is halt and recall (§4.9). Ownership per goal is not built.*
+
 ## 5. Failure handling
 
 | failure | response |
@@ -143,4 +140,4 @@ None.
 
 ## 9. Open questions
 
-None beyond AD-K2.1 and AD-K2.2. K2's validation, audit, policy and errand mechanisms carry over whichever way AD-K2.1 goes.
+None beyond AD-K2.1. K2's validation, audit, policy and errand mechanisms carry over whichever way AD-K2.1 goes.

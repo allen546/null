@@ -25,6 +25,7 @@
   - (a) v0.7: each operation keeps its own stock, and HQ moves goods with transfer orders.
   - (b) Standing depot operations (one per base or hub) hold most stock; operations keep only working stock.
   - (c) (a) for small swarms, switching to (b) once several operations share a base.
+- **Deferred (Allen, 2026-10-15):** not on the early path. The recommendation below stays as the default until this is taken up.
 - **Recommendation:** (c).
 - **Why it needs Allen:** It trades walking distance against fragmentation and decides where carriers spend their time, which is most of the swarm's effort at build scale.
 - **Settled by:** Allen's call; a harness comparison of bot-hours per delivered stack can inform it.

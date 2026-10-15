@@ -452,7 +452,7 @@ a:focus-visible, .well:focus-visible, .table-well:focus-visible { outline: 2px s
   <h2 id="llm">Where an LLM is allowed</h2>
   <ul class="plain">
     <li><strong>The commander</strong>: goals, policies, quote approvals and escalations, through the same API a person uses. <span class="cite">K3 §4.7</span></li>
-    <li><strong>Operation officers</strong>, optional, for fuzzy work such as diplomacy or a raid, each seeing only its own squads. Still open; the lean is not in v1. <span class="cite">K5 §4.10 · AD-K5.1</span></li>
+    <li><strong>Operation officers</strong>, optional, for fuzzy work such as diplomacy or a raid, each seeing only its own squads. Not in v1 (AD-K5.1, decided 2026-10-15); the interface stays ready. <span class="cite">K5 §4.10 · AD-K5.1</span></li>
     <li><strong>Reading people</strong>: threat assessment, and a diplomacy officer whose messages pass a person's gate. <span class="cite">C8 §4.3, §4.7</span></li>
     <li><strong>The batch review of interrupts</strong>: offline, on a token budget; it proposes fixes and a person approves them. <span class="cite">F4 §4.8</span></li>
   </ul>
@@ -461,7 +461,7 @@ a:focus-visible, .well:focus-visible, .table-well:focus-visible { outline: 2px s
 
 <footer>
   <p>Drawn from <a href="ARCHITECTURE.md">ARCHITECTURE.md</a> v0.8 (§1.4, §2–§5, §9), <a href="INTERRUPTS.md">INTERRUPTS.md</a>, CONVENTIONS §4 and the K, F and B specs, 2026-10-14. Where this page and those documents disagree, the documents win.</p>
-  <p>Not shown as adopted: AD-K5.2 (<a href="proposals/GENERALIZATION.md">proposals/GENERALIZATION.md</a>) would replace K5's per-goal-kind HTN methods with operator data, and would let the commander or an officer compose plans for tasks that data doesn't cover.</p>
+  <p>Not yet drawn: AD-K5.2 (decided 2026-10-15, <a href="proposals/GENERALIZATION.md">proposals/GENERALIZATION.md</a> §0) removes K5's per-goal-kind HTN methods. The commander (alone in v1, AD-K5.1) plans the steps that have no model, in validated and quoted stretches, and the existing searches run as subroutines.</p>
 </footer>
 
 </main>
