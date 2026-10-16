@@ -1,6 +1,6 @@
 # Open for Allen: start here next thread
 
-> State at commit `91fee52` on `main`, 2026-10-15 evening, plus AD-B5.1 (2026-10-16, uncommitted). This file is not committed. Read it, then `specs/INDEX.md` if more context is needed. Don't load `specs/logs/` (about 600k tokens of old builder logs).
+> State on `main`, 2026-10-17. Everything is committed and pushed (`allen546/null`). Read this, then `specs/INDEX.md` if more context is needed. Don't load `specs/logs/` (about 600k tokens of old builder logs).
 
 ## 1. Nothing blocks building
 
@@ -33,10 +33,10 @@ None of these blocks current work. Each has a default.
   - S4: `mc-adapter`, `null-node`, `null-skills-demo` and `~/Desktop/null-spikes/skeleton-server` (port 25567). Live, 20 bots logged in and patrolled out and back twice, with no kicks or movement warnings.
 - **Swarm duel test (Allen watching, 2026-10-16):**
   - Two 8-bot nodes fight last team standing, with telemetry and analysis: `skeleton-server/scripts/duel_match.py`.
-  - The test found 3 Azalea fork bugs, now patched (`specs/reference/AZALEA_PATCHES.md`; to go upstream as PRs when Null is finished) and several combat bugs.
+  - The tests found 4 Azalea bugs, now patched in our own public fork `allen546/azalea` (`null-main`; one commit per patch; `specs/reference/AZALEA_PATCHES.md`). No upstream PRs: Azalea's contributing guide asks for no AI-written code (Allen, 2026-10-16).
   - Match 2 stalled in 3 ways. **All three are fixed (evening debug session)**: the fight applier now resends its inputs every tick, recovery has a time limit, and seek re-plans when a path never comes. Four matches since ran to a winner. See "Debug session 2" in `specs/plans/COMBAT_SCAFFOLD.md` for details and open leads. **Then (night): `DuelLoop` was replaced by the per-tick `Engage` skill and the `combat.flee_low_hp` reflex (nothing latches); see "Debug session 3".**
-  - Everything is stopped. Nothing is committed, here or in the fork.
-- **Next build steps:** S2 (message types and bus) or S5 (fell and belief). Gaps to fix are listed in BUILD_PLAN's S4 status, mainly `recent_attackers`, which is always empty, before combat M3.
+  - 20 v 20 runs to a winner; retreat behaviour is rough and left for later (Allen, 2026-10-17). Committed and pushed.
+- **Next build step (Allen, 2026-10-17): SA, the ability check** (`specs/plans/ABILITY_CHECK.md`): slots, breaking, pickup, placing, eating, shield, attack, attackers, inventory, chests, crafting and respawn, each proven by server readback, with fork patches where Azalea falls short. Then S2 and S5 (S5 needs S4 and SA, not S2).
 
 ## 3a. Decided 2026-10-15, in one line each
 
@@ -48,6 +48,7 @@ None of these blocks current work. Each has a default.
 
 ## 4. Next actions (not decisions)
 
+0. **SA, the ability check** (above). It comes before the items below.
 1. **Bench, remote server.** Borrow the M5 MacBook Airs (family OK pending; backup: hourly VPSes). Add `host=` to `azbench` and a remote mode to `run_one.py`. Ladder 100–500 bots with 3 and 5 threads. Watch the Airs for throttling.
 2. **Shared section cache** in the Azalea fork (99% of section building was repeated), then the same ladder again.
 3. **Bench gaps:** lock-wait and per-thread timing (why the ECS tick waits), the level-off at 22–28 searches per second, re-run 5 threads at 50 bots (suspect value), why 3% of repeated chunks have different bytes.
@@ -69,8 +70,7 @@ None of these blocks current work. Each has a default.
 | build plans and milestone status | `specs/plans/BUILD_PLAN.md`, `specs/plans/COMBAT_SCAFFOLD.md` |
 | swarm code | `crates/` (Cargo workspace at repo root); release build `cargo build --release -p null-node` |
 | skeleton test server | `~/Desktop/null-spikes/skeleton-server` (README has seed, spawn and oak positions) |
-| Azalea fork | `~/Desktop/null-spikes/azalea` (1.21.11 branch plus 38 cherry-picks, nightly-2026-10-12) |
-| untracked leftover | `mc_server4/` (Paper runtime index files only; delete or ignore) |
+| Azalea fork | public `allen546/azalea`, branch `null-main` (1.21.11 + 38 cherry-picks + bench timers + our patches, nightly-2026-10-12); local clone `~/Desktop/null-spikes/azalea`; Null pins a commit in `Cargo.toml` |
 
 ## 6. Size of the spec base (estimate: characters ÷ 3.3 to ÷ 4)
 

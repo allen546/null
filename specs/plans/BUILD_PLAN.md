@@ -17,13 +17,14 @@ The goal: all four levels (HQ, one operation, one squad, two bots) run in one pr
 | id | milestone | crates | depends on | status |
 |---|---|---|---|---|
 | S1 | Workspace and decision API | `null-bot-api`, `null-mechanics`, `scripts/check_boundary.sh` | | done 2026-10-16 (combat M1) |
-| S2 | Message types and transport | `null-proto`, `null-bus` | S1 | |
-| S3 | Control spine on simulated bots | `null-hq`, `null-op`, `null-squad`, `null-cli`, `null-simbot` | S2 | |
+| S2 | Message types and transport | `null-proto`, `null-bus` | S1 | not started |
+| S3 | Control spine on simulated bots | `null-hq`, `null-op`, `null-squad`, `null-cli`, `null-simbot` | S2 | not started |
 | S4 | Adapter, host and login | `mc-adapter`, `null-node`, `skeleton-server/` | S1 | done 2026-10-16, verified live |
-| S5 | Skills and belief for the goal | `null-skills`, `null-belief` | S4 | |
-| S6 | Skeleton live | wiring only | S3, S5 | |
+| SA | Ability check: basic abilities proven live, fixed in the fork where needed ([ABILITY_CHECK.md](ABILITY_CHECK.md)) | `null-abilitycheck`, `mc-adapter`, fork | S4 | not started |
+| S5 | Skills and belief for the goal | `null-skills`, `null-belief` | S4, SA | not started |
+| S6 | Skeleton live | wiring only | S3, S5 | not started |
 
-S3 and S4 can run in parallel. **First target (Allen, 2026-10-16): S4, a swarm that logs in and moves around.** It is done. The other milestones are spread over later sessions; S2 and S5 can start next, in either order.
+S3 and S4 can run in parallel. **First target (Allen, 2026-10-16): S4, a swarm that logs in and moves around.** It is done, and so is the combat track's M2 with the swarm duel test. **Next (Allen, 2026-10-17): SA, the ability check, before S5 and S2.** S5 needs S4 and SA, not S2: its claims can be held locally until S3's squad hands them out in S6. S2 and S3 feed S6 only.
 
 ### S2: message types and transport
 

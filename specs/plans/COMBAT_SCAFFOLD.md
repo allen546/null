@@ -26,6 +26,8 @@ Only `mc-adapter`, `mc-nav`, `mc-act` and binaries that link them may depend on 
 
 ## M1: workspace and the decision API slice
 
+**Status: done 2026-10-16** (the build plan's S1).
+
 Build: the workspace, `null-bot-api`, `null-mechanics`, `scripts/check_boundary.sh`.
 
 - `BotView` covers what combat needs plus F5 §3's basic reads: tick, own position, velocity, look, on-ground, in-water, health, food, attack cooldown progress (0–1), hotbar and selected slot, offhand, using-item state, entities in view as `EntitySnapshot` (id, kind, is-player, position, velocity, look, on-ground, health if known, held item, blocking with shield), recent attackers, solid block at a position.
@@ -36,6 +38,8 @@ Build: the workspace, `null-bot-api`, `null-mechanics`, `scripts/check_boundary.
 Done when: `cargo test` passes; `cargo +stable build -p null-bot-api -p null-mechanics` passes; `check_boundary.sh` passes, and fails when a decision crate is given an `azalea` dependency.
 
 ## M2: combat decision crate
+
+**Status: done 2026-10-16.** `null-combat` with `melee_basic`, then the per-tick `Engage` skill and `combat.flee_low_hp` reflex; proven in the swarm duel (below), 20 v 20 runs to a winner. Retreat behaviour is rough and left for later (Allen, 2026-10-17).
 
 Build: `null-combat`.
 
@@ -180,6 +184,8 @@ All three causes of the match 2 stall are fixed. Four matches since then all ran
 - `recent_attackers` is still empty.
 
 ## M3: adapter and a live duel
+
+**Status: not started.** Waits for the spine (S6); its adapter gaps (attackers, item use) are covered first by the ability check ([ABILITY_CHECK.md](ABILITY_CHECK.md) A5–A8).
 
 Build: `mc-adapter`, `null-harness` (two adversaries), `null-duel`, and the combat server.
 

@@ -18,6 +18,16 @@ All four patches were found in the 2026-10-16 swarm duels (`null-node` processes
 | 3 | `azalea-client/src/plugins/movement.rs`, `lib.rs` | Using an item was a TODO (`using_item = false`). A bot holding up a shield walked and sprinted at full speed, which anticheats flag at once. | A public `ItemInUse` marker, set by whoever sends the use packet. While it is set, input is scaled by 0.2 (vanilla `modifyInput`), sprinting can't start, and an active sprint stops. `mc-adapter` sets it on `UseItem` and clears it on release, offhand swap, slot change and death. |
 | 4 | `azalea/src/pathfinder/mod.rs` (`handle_stop_pathfinding_event`) | A stop for a bot with no `ExecutingPath` (its search still running) dropped the search but returned before clearing `goal`, and `is_calculating` stays set until a path arrives. So the bot read "calculating" with nothing running until its next goto. Found 2026-10-16 in the 20 v 20 swarm duel: up to 217 such stops in one match, 5.5 s freezes. | With no `ExecutingPath`, clear `goal`, `opts` and `is_calculating` too. After the fix, three matches had no wait of 2 s or more (before: 7, 0 and 2). |
 
+**How Null builds against the fork (2026-10-17):** `Cargo.toml` pins `azalea` and `azalea-client` to a commit of `allen546/azalea`, so the repo builds on any machine; `.cargo/config.toml` makes the fetch shallow. While editing the fork on this Mac, add to `~/.cargo/config.toml`:
+
+```toml
+[patch."https://github.com/allen546/azalea"]
+azalea = { path = "/Users/allen/Desktop/null-spikes/azalea/azalea" }
+azalea-client = { path = "/Users/allen/Desktop/null-spikes/azalea/azalea-client" }
+```
+
+Before committing Null code that needs a new fork patch, push `null-main` and move the pinned `rev` to it.
+
 **Upstream AI policy (read 2026-10-16, `CONTRIBUTING.md`):** "Please avoid using generative AI to make contributions to Azalea. We do not enjoy working with code that wasn't written by people." Hence the fork.
 
 **Packages:** one diff per fix in [azalea-patches/](azalea-patches/), and one branch per fix on the fork, `null/<name>`, each based on the 1.21.11 head and compiling alone. Patches 1–4 are bug fixes; 3 also adds a public marker. Upstream `main` still had bug 4 on 2026-10-16.

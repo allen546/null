@@ -1,0 +1,6 @@
+# The fork carries Azalea's full history; a shallow fetch takes seconds instead of many minutes.
+[net]
+git-fetch-with-cli = true
+
+[unstable]
+git = { shallow_deps = true }
