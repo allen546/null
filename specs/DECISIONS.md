@@ -1,6 +1,6 @@
 # Open architecture decisions: both sides
 
-Spec set v1.2, 2026-10-14. Allen asked for both sides of every open architecture decision except the builder ones (AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1). Those were with Allen's builder agent; since 2026-10-14 they are still open, to be answered in the world-transformation design ([proposals/WORLD_TRANSFORMATION.md](proposals/WORLD_TRANSFORMATION.md) §7 item 5). That leaves 16: the original 12, plus AD-F5.2 and AD-K1.1, added from the spec audit, and AD-K5.2 and AD-K5.3, proposed 2026-10-14. AD-K1.1, AD-F5.2, AD-K5.3, AD-K5.2, AD-F2.1, AD-K2.2 and AD-K5.1 are now decided, so 9 were open; AD-F2.2 and AD-B1.1 were then decided from the Azalea benchmark, so 7 are open. Of those, AD-B5.1, AD-C3.1, AD-C7.1, AD-C8.1, AD-C9.1 and AD-F6.1 are deferred (Allen, 2026-10-15), and AD-K2.1 is deferred until its bake-off (Allen, 2026-10-15). Each entry gives the strongest case for each option, what evidence would tip it, and where the specs lean now. The lean is a default, not a verdict.
+Spec set v1.2, 2026-10-14. Allen asked for both sides of every open architecture decision except the builder ones (AD-C1.1, AD-C1.2, AD-B6.1 and AD-F3.1). Those were with Allen's builder agent; since 2026-10-14 they are still open, to be answered in the world-transformation design ([proposals/WORLD_TRANSFORMATION.md](proposals/WORLD_TRANSFORMATION.md) §7 item 5). That leaves 16: the original 12, plus AD-F5.2 and AD-K1.1, added from the spec audit, and AD-K5.2 and AD-K5.3, proposed 2026-10-14. AD-K1.1, AD-F5.2, AD-K5.3, AD-K5.2, AD-F2.1, AD-K2.2 and AD-K5.1 are now decided, so 9 were open; AD-F2.2 and AD-B1.1 were then decided from the Azalea benchmark, so 7 are open. Of those, AD-C3.1, AD-C7.1, AD-C8.1, AD-C9.1 and AD-F6.1 are deferred (Allen, 2026-10-15), AD-K2.1 was deferred until its bake-off (Allen, 2026-10-15), which ran 2026-10-14 without separating the options, and AD-B5.1 was decided 2026-10-16, so 6 are open. Each entry gives the strongest case for each option, what evidence would tip it, and where the specs lean now. The lean is a default, not a verdict.
 
 Context used throughout (Allen, 2026-10-13): local testing is per component, not a full 2,000-bot run. Allen estimates one laptop can carry about 1,000 bots at roughly 1 MB of extra memory each, so the limits are CPU and above all bandwidth, not memory. The server is not an architecture question, and Null runs on a specialized Azalea build that speaks 1.21.11 natively.
 
@@ -12,12 +12,12 @@ Context used throughout (Allen, 2026-10-13): local testing is per component, not
 | [AD-F2.2](#ad-f22-extend-azaleas-world-storage-or-keep-a-separate-store) world storage | **decided:** separate store fed by a `chan` packet observer, plus a chunk-storage plug-in | (Allen, 2026-10-15; Azalea benchmark) |
 | [AD-F6.1](#ad-f61-where-does-the-buss-third-quorum-member-live) third quorum member | **deferred** (Allen, 2026-10-15); lean: defer until several VPSes | an early need for multi-host durability |
 | [AD-B1.1](#ad-b11-reuse-azaleas-pathfinder-or-write-our-own) pathfinder | **decided:** reuse Azalea's; default pool; shared section cache first | (Allen, 2026-10-15; Azalea benchmark) |
-| [AD-B5.1](#ad-b51-hand-written-combat-doctrine-or-learned-policies) combat | **deferred** (Allen, 2026-10-15); lean: doctrine plus a learned-micro seam | doctrine losing to strong players |
+| [AD-B5.1](#ad-b51-hand-written-combat-doctrine-or-learned-policies) combat | **decided:** written doctrine first; then tune its parameters; train from scratch only as a last resort | (Allen, 2026-10-16) |
 | [AD-C3.1](#ad-c31-central-depots-or-storage-per-operation) storage | **deferred** (Allen, 2026-10-15); lean: hybrid | carrier bot-hours measured in the harness |
 | [AD-C7.1](#ad-c71-what-coordinates-fights-bigger-than-one-squad) big fights | **deferred** (Allen, 2026-10-15); lean: bigger squads first, spread out (updated) | measured losses from slow cross-squad reaction |
 | [AD-C8.1](#ad-c81-should-bots-talk-to-people-in-v1) bot chat | **deferred** (Allen, 2026-10-15); lean: silent in v1 | a target server where silence causes trouble |
 | [AD-C9.1](#ad-c91-can-one-convoys-escort-span-two-nodes) convoy escort | **deferred** (Allen, 2026-10-15); lean: one node only | node failures common enough to lose convoys |
-| [AD-K2.1](#ad-k21-imperative-commands-or-a-desired-state-manifest) commander API | **deferred until the bake-off** (Allen, 2026-10-15); lean: manifest hybrid | the bake-off |
+| [AD-K2.1](#ad-k21-imperative-commands-or-a-desired-state-manifest) commander API | **open; bake-off run 2026-10-14, no decisive difference**; lean: manifest hybrid | a longer test at spec scale with a concurrent person, or Allen's call |
 | [AD-K2.2](#ad-k22-share-the-commander-seat-and-on-what-terms) commander seat | **decided:** the LLM in full control; the person holds halt and recall; boundaries are permission checks set once (no attacking a player first, no breaking others' builds) | (Allen, 2026-10-15) |
 | [AD-K5.1](#ad-k51-llm-officers-at-the-operation-level-in-v1) LLM officers | **decided:** none in v1; the commander alone | (Allen, 2026-10-15) |
 | [AD-K5.2](#ad-k52-scenario-knowledge-as-data-or-as-method-code) scenario knowledge | **decided:** facts as data from the jar, observation and the LLM prior; code only for cost-ranked important skills; goals to state and check tasks; the LLM plans in stretches behind a validator and quotes ([GENERALIZATION.md](proposals/GENERALIZATION.md) §0) | (Allen, 2026-10-15) |
@@ -126,7 +126,11 @@ Spec: [B1](B1-movement.md).
 
 **Updated lean (before the decision).** Reuse, now with evidence, matching your preference for Azalea's built-ins. First fork changes: the compute-pool size, then a shared section cache once CPU is measured. Writing our own is only back on the table if the benchmark shows pathing dominating the tick even with those.
 
+**Raised and deferred by Allen, 2026-10-16: replace Azalea's stateful client glue with our own.** The swarm duel found its stall bugs in Azalea's state handling, not in A* (every search under 4 ms): the shared entity tracker (patches 1, 1b, 2), item use (patch 3) and the stop handler that left a bot "calculating" with nothing running (patch 4, [reference/AZALEA_PATCHES.md](reference/AZALEA_PATCHES.md)). Options: (a) a whole client of our own; (b) keep Azalea's protocol, chunks, physics and A*, and own the entity tracker, the nav executor and item use. Lean: (b), when the patch count or a bug that can't be patched makes the case.
+
 ## AD-B5.1 Hand-written combat doctrine, or learned policies?
+
+**Decided by Allen, 2026-10-16: written doctrine first; then tune each technique's named parameters by black-box search against the harness adversaries; train a policy from scratch only if tuned doctrine still loses consistently to strong players.** Every technique sits behind the duel-controller interface from day one, so the last step needs no rewrite (B5, AD-B5.1). The analysis below is kept for the record.
 
 Spec: [B5](B5-combat.md).
 
@@ -222,7 +226,7 @@ Spec: [C9](C9-entity-logistics.md).
 
 ## AD-K2.1 Imperative commands, or a desired-state manifest?
 
-**Deferred by Allen, 2026-10-15, until the bake-off**, which runs before the LLM commander is built.
+**Deferred by Allen, 2026-10-15, until the bake-off**, which runs before the LLM commander is built. **The bake-off ran on 2026-10-14 and did not separate the options** ([reference/BAKEOFF_K21_2026-10-14.md](reference/BAKEOFF_K21_2026-10-14.md)): no injection followed, no rejected writes and almost no thrash on either interface; the hybrid's input cost per wake was 20% lower on haiku, about equal on sonnet and 33% higher on opus. Standing orders and damping in both digests did most of what the manifest was meant to do. Its claimed strengths (memory over long runs, safe concurrent edits, caching) were not tested.
 
 Spec: [K2](K2-commander-api.md). The full comparison is in COMMANDER_INTERFACE.md.
 
@@ -237,9 +241,9 @@ Spec: [K2](K2-commander-api.md). The full comparison is in COMMANDER_INTERFACE.m
 - Conditional patches make the shared seat safe: a change applies only if the state is still what the writer saw.
 - A stable manifest caches well in the LLM's prompt.
 
-**What would tip it.** The bake-off against a fake HQ, already planned: the same scenarios through both interfaces, scored on errors and thrash.
+**What would tip it.** The first bake-off didn't. A longer one could: spec scale (about 30 operations, a 6k-token digest), many wakes with context cuts, a concurrent person editing the same goals, harder scenarios, and Allen's rubric (F3 §4.7).
 
-**Lean.** The manifest hybrid, pending the bake-off.
+**Lean.** The manifest hybrid, weakly: the bake-off found no cost to it on haiku or sonnet and no benefit at this scale.
 
 ## AD-K2.2 Share the commander seat, and on what terms?
 

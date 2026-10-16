@@ -1,0 +1,12 @@
+technique = melee_basic
+version = 1
+[params]
+spacing = 2.6
+strafe_period = 12
+strafe_jitter = 0.25
+attack_at_cooldown = 0.95
+crit = 1
+wtap_ticks = 2
+shield_react = 1
+retreat_hp = 6
+crit_wait_ticks = 6

@@ -26,9 +26,10 @@
   - (a) v0.7's imperative tools (set_goal, allocate, approve and so on).
   - (b) COMMANDER_INTERFACE's hybrid: a manifest the commander patches, a ticket inbox, and a read-only tree to browse.
 - **Deferred (Allen, 2026-10-15):** until the bake-off, which runs before the LLM commander is built. Not on the early path; the recommendation stays as the default.
+- **Bake-off run (2026-10-14; checked 2026-10-16):** no decisive difference. Neither interface followed the injected sign, made a rejected write, or thrashed; the hybrid used fewer input tokens on haiku, about the same on sonnet and more on opus. The scenarios were too short and easy, and both digests carried standing orders and damping, so the hybrid's claimed strengths went untested ([reference/BAKEOFF_K21_2026-10-14.md](reference/BAKEOFF_K21_2026-10-14.md)).
 - **Recommendation:** (b), which COMMANDER_INTERFACE argues fixes the commander's amnesia and thrashing, but run the bake-off (F3 §4.7) first, since it's cheap against a fake HQ.
 - **Why it needs Allen:** It decides how both you and the LLM command the swarm, and v0.7 hasn't adopted it.
-- **Settled by:** The bake-off, then Allen's call.
+- **Settled by:** Allen's call. The bake-off didn't settle it; a longer test at spec scale with a concurrent person could (bake-off report §2).
 - **If decided late:** K1 (reconciling a manifest versus applying commands), K3 and K4 all change shape.
 - **Both sides:** [DECISIONS.md](DECISIONS.md#ad-k21-imperative-commands-or-a-desired-state-manifest).
 

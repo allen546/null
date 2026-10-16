@@ -19,19 +19,9 @@
 
 ## Architecture decisions
 
-### ⚑ AD-B5.1 Hand-written combat doctrine, or learned policies?
+### AD-B5.1 Hand-written combat doctrine, or learned policies? (decided)
 
-- **Options:**
-  - (a) Hand-written doctrine files run deterministically (B5 §4.8, C7 §4.5).
-  - (b) Trained policies (reinforcement or imitation learning on recorded fights) for PvP.
-  - (c) Hand-written doctrine, with a seam where a learned policy can replace one technique later.
-- **Deferred (Allen, 2026-10-15):** not on the early path. The recommendation below stays as the default until this is taken up.
-- **Recommendation:** (c). Doctrine is auditable and testable against the harness's adversaries. Learned policies need a training pipeline, many fights and their own evaluation, which is a project of its own.
-- **Why it needs Allen:** It decides whether the project builds a machine-learning pipeline: a big investment and a different kind of work.
-- **Settled by:** Allen's call.
-- **If decided late:** The seam in (c) keeps the option open.
-- **Both sides:** [DECISIONS.md](DECISIONS.md#ad-b51-hand-written-combat-doctrine-or-learned-policies).
-
+**Decided by Allen, 2026-10-16: a three-step ladder, each step taken only if the one before it fails.** (1) **Written doctrine first:** hand-written techniques run deterministically (§4.8). (2) **Then trainable parameters:** every technique exposes a named, bounded parameter vector (spacing, timing, jitter, technique choice, thresholds), tuned by black-box search (for example CMA-ES) against the F3 §4.4 adversaries and recorded human play; the result is a new version of the doctrine file, so it stays readable and commandable. (3) **Last resort, training from scratch:** a learned policy replaces one technique, and only if tuned doctrine still loses consistently to strong players in harness matches. To keep (3) possible without a rewrite, every technique is a duel controller behind one observation→action interface from day one, and engagements are recorded as observation–action traces. Why: much of 1.21 melee is exact timing that code solves exactly; doctrine takes commands and reflex switches, absorbs mechanic changes with a patch, and fixes failures one rule at a time; parameter tuning costs tens of server-hours where a learned policy costs hundreds to thousands. No ⚑. The options were (a) doctrine, (b) trained policies, (c) doctrine with a seam for a learned technique. Both sides are kept in [DECISIONS.md](DECISIONS.md#ad-b51-hand-written-combat-doctrine-or-learned-policies).
 
 ---
 
@@ -80,6 +70,8 @@ Ballistic aim with gravity and drag from game data, leading moving targets, cros
 - Shield up against incoming melee and projectiles when the reflex is on.
 - Totem in the offhand when health drops below a threshold (or always, per role).
 - Retreat when health or gear falls below policy thresholds, to a rally point (an annotation or the squad's), not just away.
+- **Dropping onto an enemy (Allen, 2026-10-16):** a fighter may walk off an edge onto a target below only if it survives the fall and lands with more health than the target has. Otherwise the drop guard holds. No MLG bucket for these drops: placing and picking up the water costs the time for the enemy to land one or two hits. A bot trapped below (a pit) is solved when the pathfinder may break and place blocks (B1), not by combat code.
+- **Healing is not in the combat scaffold (Allen, 2026-10-16):** eating, and using items in general, will be a separate skill. Shield use moves into that skill too. Until it exists, a hurt bot that can't heal eventually fights on (the `combat.flee_low_hp` hopeless rule).
 
 ### 4.6 Target selection and cargo exclusion
 
@@ -99,7 +91,7 @@ Ballistic aim with gravity and drag from game data, leading moving targets, cros
 
 > **Interface input (authored).** Who: person (an LLM can analyse replays and suggest changes).
 > Why: human opponents adapt, combine techniques, and change between fights; a fixed algorithm can be beaten once learned, and there's no optimal policy to derive. Good PvP has to be written as doctrine and revised from real fights.
-> Enters the system as: a versioned doctrine file per technique (spacing, crit timing patterns, shield and axe use, pearl escapes, crystal and anchor use where the server allows it), selected by the squad's plays (C7), each tested against the harness's adversary models (F3 §4.4).
+> Enters the system as: a versioned doctrine file per technique (spacing, crit timing patterns, shield and axe use, pearl escapes, crystal and anchor use where the server allows it), selected by the squad's plays (C7), each tested against the harness's adversary models (F3 §4.4). Each technique's parameters are named and bounded so that black-box search can tune them and write a new file version (AD-B5.1, Allen, 2026-10-16).
 > Null's side: executes doctrine deterministically within vanilla limits (reach, click rate, rotation), records every engagement for review, and falls back to retreat when doctrine has no answer.
 
 ### 4.9 Combat reflexes

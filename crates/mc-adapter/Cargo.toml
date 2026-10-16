@@ -1,0 +1,13 @@
+[package]
+name = "mc-adapter"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+null-bot-api = { path = "../null-bot-api" }
+azalea = { path = "../../../null-spikes/azalea/azalea" }
+azalea-client = { path = "../../../null-spikes/azalea/azalea-client" }
+bevy_ecs = { version = "0.18.1", default-features = false }
+parking_lot = "0.12.5"
+tracing = "0.1"

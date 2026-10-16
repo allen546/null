@@ -87,7 +87,7 @@ A token budget for reads and a cap on tool calls per wake, enforced by the gatew
 
 ### 4.9 Evaluation
 
-Before committing to a presentation, run the bake-off (COMMANDER_INTERFACE §9): the same scripted scenarios against Option A and the hybrid on two or three models. Mechanical scores (tokens per wake, round trips, duplicate or contradictory commands, flip-flops per hour, injection leading to a tool call) come from F3 §4.6; decision quality uses the rubric in F3 §4.7.
+Before committing to a presentation, run the bake-off (COMMANDER_INTERFACE §9): the same scripted scenarios against Option A and the hybrid on two or three models. Mechanical scores (tokens per wake, round trips, duplicate or contradictory commands, flip-flops per hour, injection leading to a tool call) come from F3 §4.6; decision quality uses the rubric in F3 §4.7. The first bake-off ran 2026-10-14 with a draft rubric and did not separate the options ([reference/BAKEOFF_K21_2026-10-14.md](reference/BAKEOFF_K21_2026-10-14.md)).
 
 ## 5. Failure handling
 
