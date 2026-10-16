@@ -14,6 +14,10 @@ All three swarm patches were found in the 2026-10-16 swarm duel: two `null-node`
 | 3 | `azalea-client/src/plugins/movement.rs`, `lib.rs` | Using an item was a TODO (`using_item = false`). A bot holding up a shield walked and sprinted at full speed, which anticheats flag at once. | A public `ItemInUse` marker, set by whoever sends the use packet. While it is set, input is scaled by 0.2 (vanilla `modifyInput`), sprinting can't start, and an active sprint stops. `mc-adapter` sets it on `UseItem` and clears it on release, offhand swap, slot change and death. |
 | 4 | `azalea/src/pathfinder/mod.rs` (`handle_stop_pathfinding_event`) | A stop for a bot with no `ExecutingPath` (its search still running) dropped the search but returned before clearing `goal`, and `is_calculating` stays set until a path arrives. So the bot read "calculating" with nothing running until its next goto. Found 2026-10-16 in the 20 v 20 swarm duel: up to 217 such stops in one match, 5.5 s freezes. | With no `ExecutingPath`, clear `goal`, `opts` and `is_calculating` too. After the fix, three matches had no wait of 2 s or more (before: 7, 0 and 2). |
 
+**Upstream AI policy (read 2026-10-16, `CONTRIBUTING.md`):** "Please avoid using generative AI to make contributions to Azalea. We do not enjoy working with code that wasn't written by people." These patches were written with Claude, so they are not sent as PRs. Allen writes each fix by hand (or files an issue with the bug report), using the packages below only as a description of the bug and one known fix.
+
+**Packages:** one diff per fix in [azalea-patches/](azalea-patches/) (1 and 1b together, since 1b uses 1's `UpdatedBy`), and one local branch per fix in the fork, `null/<file name without .patch>`, each based on the fork's 1.21.11 head and each compiling alone. Upstream `main` still had bug 4 on 2026-10-16.
+
 Before upstreaming:
 - Check whether upstream has fixed any of these since.
 - Add tests in Azalea's style for 1 and 2 (two simulated clients sharing an entity, the updater leaves; a player dies and respawns).
