@@ -69,7 +69,7 @@ None of these blocks current work. Each has a default.
 | bench code and raw data | `~/Desktop/null-spikes/azalea-bench` (`data/`, `scripts/queue.py`) |
 | build plans and milestone status | `specs/plans/BUILD_PLAN.md`, `specs/plans/COMBAT_SCAFFOLD.md` |
 | swarm code | `crates/` (Cargo workspace at repo root); release build `cargo build --release -p null-node` |
-| skeleton test server | `~/Desktop/null-spikes/skeleton-server` (README has seed, spawn and oak positions) |
+| skeleton test server | `harness/skeleton-server` in this repo (scripts and README; the server world and match runs stay local and untracked); `~/Desktop/null-spikes/skeleton-server` links to it |
 | Azalea fork | public `allen546/azalea`, branch `null-main` (1.21.11 + 38 cherry-picks + bench timers + our patches, nightly-2026-10-12); local clone `~/Desktop/null-spikes/azalea`; Null pins a commit in `Cargo.toml` |
 
 ## 6. Size of the spec base (estimate: characters ÷ 3.3 to ÷ 4)

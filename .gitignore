@@ -5,3 +5,5 @@ __pycache__/
 node_modules/
 target/
 mc_server4/
+harness/skeleton-server/server/
+harness/skeleton-server/runs/
