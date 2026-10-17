@@ -20,7 +20,7 @@ The goal: all four levels (HQ, one operation, one squad, two bots) run in one pr
 | S2 | Message types and transport | `null-proto`, `null-bus` | S1 | not started |
 | S3 | Control spine on simulated bots | `null-hq`, `null-op`, `null-squad`, `null-cli`, `null-simbot` | S2 | not started |
 | S4 | Adapter, host and login | `mc-adapter`, `null-node`, `skeleton-server/` | S1 | done 2026-10-16, verified live |
-| SA | Ability check: basic abilities proven live, fixed in the fork where needed ([ABILITY_CHECK.md](ABILITY_CHECK.md)) | `null-abilitycheck`, `mc-adapter`, fork | S4 | not started |
+| SA | Ability check: basic abilities proven live, fixed in the fork where needed ([ABILITY_CHECK.md](ABILITY_CHECK.md)) | `null-abilitycheck`, `mc-adapter`, fork | S4 | in progress: A1–A8 and the block shape families pass on Paper + Grim (2026-10-17); A9–A12 open ([HANDOFF.md](../../HANDOFF.md)) |
 | S5 | Skills and belief for the goal | `null-skills`, `null-belief` | S4, SA | not started |
 | S6 | Skeleton live | wiring only | S3, S5 | not started |
 
@@ -108,7 +108,7 @@ Server: seed 3, world spawn set to 416,70,352, about 38 oaks within 40 blocks, l
 - `goto` starts one tick late, because Azalea's pathfinder only takes `Update` messages. Every other command applies in the same tick, and the view reports `Calculating` meanwhile.
 - `recent_attackers` is always empty, because Azalea doesn't track attackers. It must be filled before combat M3, because the no-attacking-a-player-first rule (AD-K2.2) depends on it.
 - `using_item` always reports the main hand and 0 ticks.
-- The `mc-act` split (use on crosshair, use on a face) is not built.
+- Use on crosshair (`UseItem` with a block in view) is not built; it goes in the fork's item-use API (F5 §4.1). Use on a face comes with SA task 1.
 - A patrol point that lands on a tree top or a blocked spot is shifted along the ring, so shifted points may sit near another bot's point.
 - S4 ran as one subagent task for 67 minutes. 22 of those went to a seed search for S5's trees. In S5, place test trees with RCON `/place feature` if the natural ones get in the way.
 

@@ -158,7 +158,7 @@ a:focus-visible, .well:focus-visible, .table-well:focus-visible { outline: 2px s
 
       <rect class="box" x="200" y="716" width="600" height="60" rx="6"/>
       <text class="t-title" x="216" y="740">Mechanism crates</text>
-      <text class="t-sub" x="216" y="760">mc-adapter · mc-nav · mc-act</text>
+      <text class="t-sub" x="216" y="760">mc-adapter · Azalea fork</text>
       <text class="t-tag" x="784" y="740" text-anchor="end">AD-F5.2 boundary</text>
       <text class="t-sub" x="784" y="760" text-anchor="end">only these import Azalea</text>
 
@@ -422,7 +422,7 @@ a:focus-visible, .well:focus-visible, .table-well:focus-visible { outline: 2px s
       <tr><td>Operation</td><td>One goal in one area: HTN planner, scheduler, presence, ledger and world shard, claims, recovery rules, gates. Prices interrupts against its quotas.</td><td>host with most of its bots; inside the node (AD-F2.1, decided)</td><td>~1–2 s</td><td class="num">10–30</td></tr>
       <tr><td>Squad leader</td><td>Assigns jobs to 5–20 bots, retries locally first, runs the tactics loop and plays, sets reflexes at squad scope, merges observations, registers quarantines.</td><td>inside the swarm node; never spans nodes</td><td>0.1–1 s (4–10 Hz in a fight)</td><td class="num">100–200</td></tr>
       <tr><td>Bot agent</td><td>Reflexes (switchable), one job at a time as a skill, local perception, link-loss fallback. Plain Rust against <code>BotView</code> and <code>BotCommands</code>.</td><td>swarm node; one host system runs every bot in the game tick (F1 §4.5)</td><td>every tick (50 ms)</td><td class="num">2,000</td></tr>
-      <tr><td>Mechanism crates</td><td><code>mc-adapter</code> builds the view and applies commands; <code>mc-nav</code> holds pathfinder move families; <code>mc-act</code> sends raw packets and menus and holds the replay switch.</td><td>same process</td><td>every tick</td><td class="num">—</td></tr>
+      <tr><td>Mechanism crates</td><td><code>mc-adapter</code> builds the view and applies commands, translating only; raw capabilities (face placement, item use, menus, pathfinder moves, the replay switch) are patches in the Azalea fork.</td><td>same process</td><td>every tick</td><td class="num">—</td></tr>
       <tr><td>Azalea fork</td><td>Protocol client, physics, inventory, pathfinder, chunk storage shared within one swarm process.</td><td>one swarm process per server and version</td><td>every tick</td><td class="num">a few to ~40 nodes</td></tr>
     </tbody>
   </table>

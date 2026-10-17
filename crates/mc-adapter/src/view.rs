@@ -7,11 +7,12 @@ use azalea::{
     core::entity_id::MinecraftEntityId,
     entity::{
         Dead, EntityKindComponent, LookDirection, Physics, Position, inventory::Inventory,
-        metadata::{AbstractLivingUsingItem, Health},
+        metadata::Health,
     },
     local_player::{Hunger, WorldHolder},
     pathfinder::{ExecutingPath, Pathfinder},
     player::GameProfileComponent,
+    protocol::packets::game::s_interact::InteractionHand,
     world::WorldName,
 };
 use azalea::ecs::prelude::*;
@@ -27,7 +28,7 @@ pub struct ViewParts<'a> {
     pub look: &'a LookDirection,
     pub health: Option<&'a Health>,
     pub hunger: Option<&'a Hunger>,
-    pub using_item: Option<&'a AbstractLivingUsingItem>,
+    pub using_item: Option<&'a azalea::ItemInUse>,
     pub attack_scale: f32,
     pub inventory: &'a Inventory,
     pub world: &'a WorldHolder,
@@ -36,6 +37,9 @@ pub struct ViewParts<'a> {
     pub executing: Option<&'a ExecutingPath>,
     /// A goto was issued in the last tick or two and Azalea has not picked it up yet.
     pub nav_pending: bool,
+    pub blocks: Option<&'a crate::blocks::BlockActions>,
+    pub results: Option<&'a azalea::block_actions::BlockActionResults>,
+    pub attackers: Option<&'a azalea::attackers::RecentAttackers>,
 }
 
 /// Other entities, for `BotView::entities`.
@@ -60,8 +64,10 @@ pub struct AzaleaView<'a, 'w, 's> {
     p: ViewParts<'a>,
     others: &'a OthersQuery<'w, 's>,
     hotbar: OnceCell<[Option<api::ItemStack>; 9]>,
+    inventory: OnceCell<[Option<api::ItemStack>; 36]>,
     offhand: OnceCell<Option<api::ItemStack>>,
     entities: OnceCell<Vec<api::EntitySnapshot>>,
+    attackers: OnceCell<Vec<api::Attacker>>,
 }
 
 fn v3(v: azalea::Vec3) -> api::Vec3 {
@@ -77,6 +83,9 @@ fn stack(s: &azalea::inventory::ItemStack) -> Option<api::ItemStack> {
     }
 }
 
+/// How long a hit stays in `recent_attackers()`: 10 s.
+const RECENT_ATTACKER_TICKS: u64 = 200;
+
 /// How far around the bot `entities()` looks. The node's bots share one world, so this includes
 /// what teammates see; it is the team's shared picture of the area.
 const ENTITY_RADIUS: f64 = 256.0;
@@ -87,8 +96,10 @@ impl<'a, 'w, 's> AzaleaView<'a, 'w, 's> {
             p,
             others,
             hotbar: OnceCell::new(),
+            inventory: OnceCell::new(),
             offhand: OnceCell::new(),
             entities: OnceCell::new(),
+            attackers: OnceCell::new(),
         }
     }
 }
@@ -134,6 +145,17 @@ impl BotView for AzaleaView<'_, '_, '_> {
             std::array::from_fn(|i| menu.slot(start + i).and_then(stack))
         })
     }
+    // Spec: specs/B3-inventory-crafting.md §4.1 (slot management: read all 36 slots)
+    fn inventory(&self) -> &[Option<api::ItemStack>; 36] {
+        // Player menu: slots 9-35 main, 36-44 hotbar; the server's numbering puts the hotbar first.
+        self.inventory.get_or_init(|| {
+            let menu = &self.p.inventory.inventory_menu;
+            std::array::from_fn(|i| {
+                let slot = if i < 9 { 36 + i } else { i };
+                menu.slot(slot).and_then(stack)
+            })
+        })
+    }
     fn selected_slot(&self) -> u8 {
         self.p.inventory.selected_hotbar_slot
     }
@@ -143,9 +165,13 @@ impl BotView for AzaleaView<'_, '_, '_> {
             .get_or_init(|| self.p.inventory.inventory_menu.slot(45).and_then(stack))
             .as_ref()
     }
+    // Spec: specs/B2-survival-upkeep.md §4.1 (the fork's ItemInUse: hand and ticks)
     fn using_item(&self) -> Option<api::UsingItem> {
-        // Azalea tracks only the flag, not the hand or the tick count.
-        self.p.using_item.filter(|u| u.0).map(|_| api::UsingItem { hand: api::Hand::Main, ticks: 0 })
+        let hand = match self.p.using_item?.hand {
+            InteractionHand::MainHand => api::Hand::Main,
+            InteractionHand::OffHand => api::Hand::Off,
+        };
+        Some(api::UsingItem { hand, ticks: self.p.using_item?.ticks })
     }
     fn entities(&self) -> &[api::EntitySnapshot] {
         self.entities.get_or_init(|| {
@@ -173,15 +199,37 @@ impl BotView for AzaleaView<'_, '_, '_> {
             out
         })
     }
+    // Spec: specs/B5-combat.md §4.7 (who hit us; the fork's RecentAttackers, ticks on the host clock)
     fn recent_attackers(&self) -> &[api::Attacker] {
-        // Azalea does not track who hit us; the damage-source observer comes with F2.
-        &[]
+        self.attackers.get_or_init(|| {
+            let Some(r) = self.p.attackers else { return Vec::new() };
+            r.within(RECENT_ATTACKER_TICKS)
+                .filter_map(|h| {
+                    Some(api::Attacker {
+                        entity: api::EntityId(h.attacker()?.0 as u32),
+                        tick: self.p.tick.saturating_sub(r.now.saturating_sub(h.tick)),
+                    })
+                })
+                .collect()
+        })
     }
     fn is_solid(&self, pos: api::BlockPos) -> bool {
         let w = self.p.world.shared.read();
         w.chunks
             .get_block_state(azalea::BlockPos::new(pos.x, pos.y, pos.z))
             .is_some_and(azalea::pathfinder::world::is_block_state_solid)
+    }
+    // Spec: specs/B6-placement-breaking.md §4.6 (read back the block the server left)
+    fn block_at(&self, pos: api::BlockPos) -> Option<String> {
+        crate::blocks::block_name(&self.p.world.shared.read(), pos)
+    }
+    // Spec: specs/B6-placement-breaking.md §4.4 (break timing and result)
+    fn last_break(&self) -> Option<api::BlockAction> {
+        crate::blocks::translate(api::BlockActionKind::Break, self.p.blocks?.last_break, self.p.results)
+    }
+    // Spec: specs/B6-placement-breaking.md §4.6 (acknowledgement and readback)
+    fn last_place(&self) -> Option<api::BlockAction> {
+        crate::blocks::translate(api::BlockActionKind::Place, self.p.blocks?.last_place, self.p.results)
     }
     fn nav_status(&self) -> api::NavStatus {
         if self.p.pathfinder.is_calculating || self.p.nav_pending {

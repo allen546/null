@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal RCON client (stdlib only). usage: rcon.py 'cmd' ['cmd2' ...]"""
+"""Minimal RCON client (stdlib only). usage: rcon.py [--port N] 'cmd' ['cmd2' ...]"""
 import socket, struct, sys
 def pkt(i, t, body): 
     b = struct.pack('<ii', i, t) + body.encode() + b'\0\0'
@@ -18,4 +18,7 @@ def run(cmds, port=25577, pw='skeleton'):
         s.sendall(pkt(2, 2, c)); out.append(rd(s)[2])
     s.close(); return out
 if __name__ == '__main__':
-    for o in run(sys.argv[1:]): print(o)
+    a = sys.argv[1:]
+    port = 25577
+    if a[:1] == ['--port']: port = int(a[1]); a = a[2:]
+    for o in run(a, port=port): print(o)

@@ -112,7 +112,7 @@ Every value read from the world model carries who observed it and when. Anything
 
 ### 3.5 Version boundary (ARCHITECTURE §9.1)
 
-Decision crates (skills, reflexes, arbitration, the cargo filter, squad tactics, and everything above the node) never depend on `bevy*` or `azalea*`; they see the game only through Null's `BotView` and `BotCommands`. Only named mechanism crates (`mc-adapter`, `mc-nav`, `mc-act`) import Azalea and Bevy (F5 §4.1, AD-F5.2). Block, item and entity facts come from per-version generated data. Mechanics that differ by version come from the mechanics table, queried by feature, never by version number.
+Decision crates (skills, reflexes, arbitration, the cargo filter, squad tactics, and everything above the node) never depend on `bevy*` or `azalea*`; they see the game only through Null's `BotView` and `BotCommands`. Only named mechanism crates (`mc-adapter` and the binaries that link it) import Azalea and Bevy (F5 §4.1, AD-F5.2). Raw game capabilities go in the Azalea fork; `mc-adapter` only translates. Block, item and entity facts come from per-version generated data. Mechanics that differ by version come from the mechanics table, queried by feature, never by version number.
 
 ### 3.6 Vanilla survival only
 

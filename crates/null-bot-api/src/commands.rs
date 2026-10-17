@@ -14,6 +14,22 @@ pub trait BotCommands {
     fn release_use(&mut self);
     fn swap_offhand(&mut self);
     fn stop(&mut self);
+    // Spec: specs/B6-placement-breaking.md §4.4 (break timing)
+    /// Hold the break on the block at `pos` until it breaks (B6 §4.4). Look at the block first and
+    /// leave a tick for the look to land; read progress from `BotView::last_break`.
+    fn break_block(&mut self, pos: BlockPos);
+    // Spec: specs/B6-placement-breaking.md §4.4 (abort a break)
+    /// Abort the break in progress.
+    fn cancel_break(&mut self);
+    // Spec: specs/B6-placement-breaking.md §4.2 (place on a chosen face)
+    /// Right-click the `face` of the block at `pos` with the held item (B6 §4.2). The new block
+    /// would be `pos.offset(face)`; read the outcome from `BotView::last_place`.
+    fn place_block(&mut self, pos: BlockPos, face: Face);
+    // Spec: specs/B6-placement-breaking.md §4.2 (click choice: aim at a visible point)
+    /// Turn to a visible point of the block's real shape on `face` (any face when `None`), so the
+    /// crosshair is on it (B6 §4.2). Leave two ticks before the click; if no such point is visible
+    /// the look does not change and the click is refused.
+    fn look_at_block(&mut self, pos: BlockPos, face: Option<Face>);
     /// Path to within `tolerance` blocks of `target` (0 = stand on that block). Asynchronous:
     /// read progress from `BotView::nav_status`. A new goto replaces the current one.
     fn goto(&mut self, target: BlockPos, tolerance: f32);
@@ -35,6 +51,10 @@ pub enum Command {
     ReleaseUse,
     SwapOffhand,
     Stop,
+    BreakBlock(BlockPos),
+    CancelBreak,
+    PlaceBlock { pos: BlockPos, face: Face },
+    LookAtBlock { pos: BlockPos, face: Option<Face> },
     Goto { target: BlockPos, tolerance: f32 },
     StopNav,
 }

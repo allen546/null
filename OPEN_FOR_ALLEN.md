@@ -1,6 +1,6 @@
 # Open for Allen: start here next thread
 
-> State on `main`, 2026-10-17. Everything is committed and pushed (`allen546/null`). Read this, then `specs/INDEX.md` if more context is needed. Don't load `specs/logs/` (about 600k tokens of old builder logs).
+> State on `main`, 2026-10-17 (evening). The Azalea fork's patches 5–10 are pushed (`allen546/azalea`, `null-main`); this repo's SA work is committed and pushed, but not yet checked by an independent verifier after patches 6–10 (HANDOFF.md, to do 1). For SA, start at [HANDOFF.md](HANDOFF.md). Read this, then `specs/INDEX.md` if more context is needed. Don't load `specs/logs/` (about 600k tokens of old builder logs).
 
 ## 1. Nothing blocks building
 
@@ -21,6 +21,8 @@ None of these blocks current work. Each has a default.
 | World transformation §7 items 1–4: which jobs merge into one service; the isolation shell as the basis of the guarantee; trust pack claims or check once per version; refuse unorderable packs or allow some search | builder build-out | proposals as written | proposals/WORLD_TRANSFORMATION.md §7 |
 | World transformation §7 item 6: access planning (placement options, strict layers, scaffolding temps) for large technical builds | after test T-ACC | adopt; devise something else if unsafe | same, §5.3, §8 |
 | Builder execution model: packet replay, skills or a hybrid | builder build-out | deferred | same, §7 |
+| F5 §4.6 server targets: it says "pure vanilla only, Paper out of scope", but Paper + Grim is now the reference server and Paper settings matter (shield delay) | before skills depend on server behaviour | targets are vanilla and Paper/Spigot, maybe with an anticheat; server-configurable mechanics are per-server beliefs (prior from the item or mechanics table, refined by observation); zero Grim alerts is the bar | F5 §4.6, HANDOFF.md |
+| Grim test server difficulty: peaceful hides A5's food rise and its regeneration blurs A5/A6 | before the A5 food-rise test | normal (mob spawning already off) | `harness/grim-server`, HANDOFF.md |
 | A rule for conditional mob states (wither, shulker) | when a third case appears | none | GENERALIZATION §0.5 |
 | When the commander's load justifies LLM officers | when the commander's context or wake budget overflows | no officers (AD-K5.1) | K5, GENERALIZATION §0.6 |
 
@@ -38,6 +40,14 @@ None of these blocks current work. Each has a default.
   - 20 v 20 runs to a winner; retreat behaviour is rough and left for later (Allen, 2026-10-17). Committed and pushed.
 - **Next build step (Allen, 2026-10-17): SA, the ability check** (`specs/plans/ABILITY_CHECK.md`): slots, breaking, pickup, placing, eating, shield, attack, attackers, inventory, chests, crafting and respawn, each proven by server readback, with fork patches where Azalea falls short. Then S2 and S5 (S5 needs S4 and SA, not S2).
 
+## 3b. Decided 2026-10-17
+
+- **Fork vs adapter (Allen):** raw game capability (placing with results, item use, attackers, menus, pathfinder moves, the replay switch) goes in the Azalea fork as normal Azalea APIs; `mc-adapter` only translates to `BotView`/`BotCommands`. AD-F5.2 is unchanged (the boundary stands); the planned `mc-act` and `mc-nav` crates are dropped. F5 §4.1, ARCHITECTURE §9.1, CONVENTIONS updated.
+- **Paper + GrimAC is the reference test server, timing included, because it is stricter** (`harness/grim-server`, port 25568; your jars from `~/Documents/antigravity/focused-bardeen`). A bot never sends a click a vanilla client couldn't make. Vanilla `skeleton-server` is secondary.
+- **Server-configurable timings are beliefs, not facts** (example: the shield's raise-to-block delay).
+- **SA progress:** A1–A8 and every non-cube block shape family pass on Paper + Grim with zero alerts (about 200 rows), fork patches 5–10 (`specs/reference/AZALEA_PATCHES.md`). A9–A12 and the open items are in [HANDOFF.md](HANDOFF.md).
+- **Reference sources to set up later:** vanilla 1.21.11 client and server decompiled with Yarn mappings, Paper source, Meteor Client and Baritone (more useful than mineflayer); fork patches then cite the vanilla method they reproduce.
+
 ## 3a. Decided 2026-10-15, in one line each
 
 - AD-K5.2: facts as data from the game jar, observation and the LLM's prior; skill code only for cost-ranked important parts; goals to state and check tasks; the LLM plans steps with no model, in validated and quoted stretches (`submit_plan`). GENERALIZATION §0.
@@ -48,7 +58,7 @@ None of these blocks current work. Each has a default.
 
 ## 4. Next actions (not decisions)
 
-0. **SA, the ability check** (above). It comes before the items below.
+0. **SA, the ability check**: A1–A8 and the shape families done; next a verifier run over the whole suite, the reference sources, the shield-delay belief, A5's food rise, then A9–A12. Full list in [HANDOFF.md](HANDOFF.md). It comes before the items below.
 1. **Bench, remote server.** Borrow the M5 MacBook Airs (family OK pending; backup: hourly VPSes). Add `host=` to `azbench` and a remote mode to `run_one.py`. Ladder 100–500 bots with 3 and 5 threads. Watch the Airs for throttling.
 2. **Shared section cache** in the Azalea fork (99% of section building was repeated), then the same ladder again.
 3. **Bench gaps:** lock-wait and per-thread timing (why the ECS tick waits), the level-off at 22–28 searches per second, re-run 5 threads at 50 bots (suspect value), why 3% of repeated chunks have different bytes.
@@ -70,6 +80,9 @@ None of these blocks current work. Each has a default.
 | build plans and milestone status | `specs/plans/BUILD_PLAN.md`, `specs/plans/COMBAT_SCAFFOLD.md` |
 | swarm code | `crates/` (Cargo workspace at repo root); release build `cargo build --release -p null-node` |
 | skeleton test server | `harness/skeleton-server` in this repo (scripts and README; the server world and match runs stay local and untracked); `~/Desktop/null-spikes/skeleton-server` links to it |
+| SA hand-off and open items | `HANDOFF.md` |
+| ability check (runner and scenarios) | `crates/null-abilitycheck`; plan `specs/plans/ABILITY_CHECK.md` |
+| Paper + Grim test server (reference) | `harness/grim-server` (README; world untracked) |
 | Azalea fork | public `allen546/azalea`, branch `null-main` (1.21.11 + 38 cherry-picks + bench timers + our patches, nightly-2026-10-12); local clone `~/Desktop/null-spikes/azalea`; Null pins a commit in `Cargo.toml` |
 
 ## 6. Size of the spec base (estimate: characters ÷ 3.3 to ÷ 4)

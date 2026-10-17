@@ -9,9 +9,10 @@ The starting picture is the Azalea reality check ([reference/AZALEA_REALITY_CHEC
 An ability passes only when the **server** confirms it, not the bot's own view:
 - read back through RCON (`data get entity`, `data get block`, `execute if block`, `clear <bot> <item> 0` to count items);
 - no anticheat or movement warnings in the server log ("moved too quickly", "moved wrongly", kicks);
-- vanilla timing: eating takes 32 ticks, a break takes the vanilla time for the tool, a shield blocks only after its 5-tick raise.
+- **zero GrimAC alerts.** The reference server, timing included, is Paper + Grim (`harness/grim-server`), because it is stricter (Allen, 2026-10-17); vanilla `skeleton-server` is a secondary check. A bot never sends a click a vanilla client could not make: it refuses on the client, with a reason, and sends nothing;
+- vanilla timing: eating takes 32 ticks, a break takes the vanilla time for the tool. Timings a server can change are beliefs, not facts (Allen, 2026-10-17): the shield's raise-to-block delay is the held item's `blocks_attacks.block_delay_seconds` (0.25 s = 5 ticks by default), and plugins or older Paper settings can change it, so A6 measures the server's delay and checks the bot's belief against it.
 
-Each ability is a scripted scenario: RCON sets the scene (give items, place blocks, set food), one bot does the thing, RCON checks the result. The runner prints one pass or fail line per scenario with the evidence, so a verifier can rerun it. A failure becomes a fix in the fork or the adapter, then a rerun.
+Each ability is a scripted scenario: RCON sets the scene (give items, place blocks, set food), one bot does the thing, RCON checks the result. The runner prints one pass or fail line per scenario with the evidence, so a verifier can rerun it. A failure becomes a fix in the fork (raw capability) or the adapter (translation only, F5 §4.1), then a rerun.
 
 ## Abilities
 
@@ -29,6 +30,7 @@ Each ability is a scripted scenario: RCON sets the scene (give items, place bloc
 | A10 | Open a chest; put and take; read its exact contents | logistics | B3 §4.7, §4.8 | the chest's `Items` match; the bot's reading matches the chest |
 | A11 | Craft by clicks: planks and sticks in the 2x2 grid, a pickaxe at a crafting table | S5 onward | B3 §4.2 | the result is in the inventory and the inputs are gone |
 | A12 | Die and respawn; know it happened | everything | B2 §4.7 | the bot is alive at spawn after `/kill`, and its view says it died |
+| A2S, A4S | Break and place with every non-cube shape family (Allen, 2026-10-17): wire, carpet, rails, plates, snow layers; fences, walls, panes, bars, chains, rods; slabs, stairs, path, chests; torches, lanterns, buttons, ladders, trapdoors, doors, beds, signs; cauldron, hopper, composter, scaffolding, anvil, bell; grass and flowers | builder, S5 | B6 §4.1, §4.2, §4.4 | clicks aim at the real outline shape and are accepted wherever vanilla accepts them (e.g. a block on top of redstone wire); the placed state matches vanilla for the look and hit point (stairs facing and half, slab merge, door halves); breaks take vanilla time, instant breaks included; zero Grim alerts |
 
 Later, not in this milestone: bows and crossbows, smelting, sleeping, boats and minecarts, elytra, enchanting, brewing, trading. Each gets a row here when its skill comes up.
 
@@ -45,4 +47,8 @@ Every new function carries its `// Spec:` link. Every fork change is one commit 
 
 | id | status |
 |---|---|
-| A1–A12 | not started |
+| A1–A4 | done 2026-10-17: `null-abilitycheck` passes on Paper + Grim with zero alerts (fork patches 5, 10; A2 adds `chain_of_30_breaks`) |
+| A2S, A4S | done 2026-10-17: breaking, clicking on and placing blocks of every non-cube shape family (`scenarios_shapes.rs`, 166 rows) pass on Paper + Grim with zero alerts; the `FastBreak` cap seen during the work was a bot bug (one tick early, no destroy delay), fixed by fork patch 10 |
+| A5–A8 | done 2026-10-17 on Paper + Grim, zero alerts (fork patches 7, 8, 9). Open: food rise (the server is peaceful), shield delay as a belief |
+| A9–A12 | not started |
+| whole suite | verifier run after patches 6–10 not done yet; open items in [HANDOFF.md](../../HANDOFF.md) |

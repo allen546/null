@@ -15,6 +15,8 @@ pub struct FakeView {
     pub food: u32,
     pub attack_cooldown: f32,
     pub hotbar: [Option<ItemStack>; 9],
+    /// Main slots 9-35; slots 0-8 of `BotView::inventory` are read from `hotbar`.
+    pub main_inventory: [Option<ItemStack>; 27],
     pub selected_slot: u8,
     pub offhand: Option<ItemStack>,
     pub using_item: Option<UsingItem>,
@@ -23,7 +25,12 @@ pub struct FakeView {
     /// Solid blocks. Everything with y < `floor_y` is solid too (flat world).
     pub solid: Vec<BlockPos>,
     pub floor_y: i32,
+    /// Block names by position; anything else reads as air above the floor and stone below.
+    pub blocks: Vec<(BlockPos, String)>,
+    pub last_break: Option<BlockAction>,
+    pub last_place: Option<BlockAction>,
     pub nav_status: NavStatus,
+    inventory_cache: std::cell::OnceCell<[Option<ItemStack>; 36]>,
 }
 
 impl Default for FakeView {
@@ -41,6 +48,7 @@ impl Default for FakeView {
             food: 20,
             attack_cooldown: 1.0,
             hotbar: Default::default(),
+            main_inventory: Default::default(),
             selected_slot: 0,
             offhand: None,
             using_item: None,
@@ -48,8 +56,24 @@ impl Default for FakeView {
             attackers: Vec::new(),
             solid: Vec::new(),
             floor_y: 64,
+            blocks: Vec::new(),
+            last_break: None,
+            last_place: None,
             nav_status: NavStatus::Idle,
+            inventory_cache: Default::default(),
         }
+    }
+}
+
+impl FakeView {
+    /// An item in use in `hand` for `ticks` ticks, as the adapter's view reports it.
+    pub fn start_using(&mut self, hand: Hand, ticks: u32) {
+        self.using_item = Some(UsingItem { hand, ticks });
+    }
+
+    /// A hit by `entity` that the bot learned of at the current tick, newest last.
+    pub fn hit_by(&mut self, entity: u32) {
+        self.attackers.push(Attacker { entity: EntityId(entity), tick: self.tick });
     }
 }
 
@@ -90,6 +114,12 @@ impl BotView for FakeView {
     fn hotbar(&self) -> &[Option<ItemStack>; 9] {
         &self.hotbar
     }
+    fn inventory(&self) -> &[Option<ItemStack>; 36] {
+        // Built once; tests set the fields before the first read.
+        self.inventory_cache.get_or_init(|| {
+            std::array::from_fn(|i| if i < 9 { self.hotbar[i].clone() } else { self.main_inventory[i - 9].clone() })
+        })
+    }
     fn selected_slot(&self) -> u8 {
         self.selected_slot
     }
@@ -110,6 +140,18 @@ impl BotView for FakeView {
     }
     fn nav_status(&self) -> NavStatus {
         self.nav_status
+    }
+    fn block_at(&self, pos: BlockPos) -> Option<String> {
+        if let Some((_, name)) = self.blocks.iter().rev().find(|(p, _)| *p == pos) {
+            return Some(name.clone());
+        }
+        Some(if pos.y < self.floor_y { "minecraft:stone" } else { "minecraft:air" }.to_string())
+    }
+    fn last_break(&self) -> Option<BlockAction> {
+        self.last_break
+    }
+    fn last_place(&self) -> Option<BlockAction> {
+        self.last_place
     }
 }
 
@@ -169,6 +211,18 @@ impl BotCommands for FakeCommands {
     fn stop(&mut self) {
         self.push(Command::Stop);
     }
+    fn break_block(&mut self, pos: BlockPos) {
+        self.push(Command::BreakBlock(pos));
+    }
+    fn cancel_break(&mut self) {
+        self.push(Command::CancelBreak);
+    }
+    fn place_block(&mut self, pos: BlockPos, face: Face) {
+        self.push(Command::PlaceBlock { pos, face });
+    }
+    fn look_at_block(&mut self, pos: BlockPos, face: Option<Face>) {
+        self.push(Command::LookAtBlock { pos, face });
+    }
     fn goto(&mut self, target: BlockPos, tolerance: f32) {
         self.push(Command::Goto { target, tolerance });
     }
@@ -197,6 +251,25 @@ mod tests {
     }
 
     #[test]
+    fn using_item_and_attackers_are_readable() {
+        let mut v = FakeView::default();
+        assert!(v.using_item().is_none() && v.recent_attackers().is_empty());
+        v.start_using(Hand::Off, 7);
+        assert_eq!(v.using_item(), Some(UsingItem { hand: Hand::Off, ticks: 7 }));
+        v.tick = 40;
+        v.hit_by(9);
+        v.tick = 43;
+        v.hit_by(12);
+        let a = v.recent_attackers();
+        assert_eq!(a.len(), 2);
+        assert_eq!((a[1].entity, a[1].tick), (EntityId(12), 43));
+        // A skill's "recent" window is its own business: here, the last 5 ticks.
+        let now = v.tick();
+        assert_eq!(a.iter().filter(|x| now - x.tick <= 5).count(), 2);
+        assert_eq!(a.iter().filter(|x| now - x.tick <= 2).count(), 1);
+    }
+
+    #[test]
     fn view_defaults_and_helpers() {
         let mut v = FakeView::default();
         v.hotbar[2] = Some(ItemStack::new("minecraft:iron_sword", 1));
@@ -211,5 +284,49 @@ mod tests {
         v.solid.push(BlockPos::new(0, 64, 0));
         assert!(v.is_solid(BlockPos::new(0, 64, 0)));
         assert!((Vec3::new(3.0, 0.0, 4.0).length() - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn block_commands_and_reads() {
+        let mut c = FakeCommands::default();
+        c.break_block(BlockPos::new(1, 64, 2));
+        c.place_block(BlockPos::new(1, 63, 2), Face::Up);
+        c.cancel_break();
+        assert_eq!(
+            c.all(),
+            vec![
+                Command::BreakBlock(BlockPos::new(1, 64, 2)),
+                Command::PlaceBlock { pos: BlockPos::new(1, 63, 2), face: Face::Up },
+                Command::CancelBreak
+            ]
+        );
+        let mut v = FakeView::default();
+        v.blocks.push((BlockPos::new(0, 64, 0), "minecraft:oak_log".into()));
+        assert_eq!(v.block_at(BlockPos::new(0, 64, 0)).as_deref(), Some("minecraft:oak_log"));
+        assert_eq!(v.block_at(BlockPos::new(0, 65, 0)).as_deref(), Some("minecraft:air"));
+        assert_eq!(v.block_at(BlockPos::new(0, 10, 0)).as_deref(), Some("minecraft:stone"));
+    }
+
+    #[test]
+    fn inventory_covers_hotbar_main_and_offhand() {
+        let mut v = FakeView::default();
+        v.hotbar[0] = Some(ItemStack::new("minecraft:stone", 10));
+        v.main_inventory[0] = Some(ItemStack::new("minecraft:stone", 5)); // slot 9
+        v.offhand = Some(ItemStack::new("minecraft:stone", 1));
+        assert_eq!(v.inventory()[9].as_ref().unwrap().count, 5);
+        assert_eq!(v.count_item("minecraft:stone"), 16);
+        assert_eq!(v.count_item("minecraft:dirt"), 0);
+    }
+
+    #[test]
+    fn faces_offset_blocks_and_looks_aim() {
+        assert_eq!(BlockPos::new(0, 64, 0).offset(Face::North), BlockPos::new(0, 64, -1));
+        assert_eq!(BlockPos::new(0, 64, 0).offset(Face::Up), BlockPos::new(0, 65, 0));
+        let eye = Vec3::new(0.0, 0.0, 0.0);
+        let south = Look::towards(eye, Vec3::new(0.0, 0.0, 5.0));
+        assert!(south.yaw.abs() < 1e-4 && south.pitch.abs() < 1e-4);
+        let east = Look::towards(eye, Vec3::new(5.0, 0.0, 0.0));
+        assert!((east.yaw + 90.0).abs() < 1e-4);
+        assert!((Look::towards(eye, Vec3::new(0.0, -3.0, 0.0)).pitch - 90.0).abs() < 1e-4);
     }
 }

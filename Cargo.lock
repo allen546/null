@@ -2064,6 +2064,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "null-abilitycheck"
+version = "0.1.0"
+dependencies = [
+ "azalea",
+ "mc-adapter",
+ "null-bot-api",
+ "tokio",
+]
+
+[[package]]
 name = "null-bot-api"
 version = "0.1.0"
 

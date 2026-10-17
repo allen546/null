@@ -1,0 +1,11 @@
+[package]
+name = "null-abilitycheck"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+mc-adapter = { path = "../mc-adapter" }
+null-bot-api = { path = "../null-bot-api" }
+azalea = { workspace = true }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "time"] }

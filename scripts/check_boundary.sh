@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ALLOW="mc-adapter mc-nav mc-act null-duel null-node"
+ALLOW="mc-adapter null-abilitycheck null-duel null-node"
 
 meta=$(cargo metadata --format-version 1 --locked 2>/dev/null || cargo metadata --format-version 1)
 

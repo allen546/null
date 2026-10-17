@@ -5,27 +5,29 @@
 
 use azalea::{
     BlockPos as ABlockPos, ItemInUse, Vec3 as AVec3,
+    attackers::{RecentAttackers, age_recent_attackers},
     attack::{AttackQueued, AttackStrengthScale},
     core::{entity_id::MinecraftEntityId, tick::GameTick},
     entity::{
         Dead, HasClientLoaded, Jumping, LocalEntity, LookDirection, Physics, Position,
         inventory::Inventory,
-        metadata::{AbstractLivingUsingItem, Health},
+        metadata::Health,
     },
     interact::{BlockStatePredictionHandler, handle_start_use_item_queued},
     inventory::ensure_has_sent_carried_item,
+    item_use::{ReleaseUseItemQueued, SwapOffhandQueued, UseItemQueued, handle_use_item_queued},
+    block_actions::{
+        BlockActionResults, BreakBlockQueued, LookAtBlockQueued, PlaceBlockQueued, StopMiningQueued,
+        handle_break_block_queued, handle_look_at_block_queued,
+    },
     mining::MiningSystems,
     local_player::{Hunger, WorldHolder},
-    packet::game::SendGamePacketEvent,
     pathfinder::{
         ExecutingPath, GotoEvent, Pathfinder, PathfinderOpts, StopPathfindingEvent,
         goals::{BlockPosGoal, RadiusGoal},
     },
     physics::{PhysicsSystems, client_movement::{ClientMovementState, WalkDirection}},
-    protocol::packets::game::{
-        ServerboundPlayerAction, ServerboundUseItem, s_interact::InteractionHand,
-        s_player_action::Action,
-    },
+    protocol::packets::game::s_interact::InteractionHand,
     world::WorldName,
 };
 use azalea::app::{App, Plugin};
@@ -33,6 +35,7 @@ use azalea::ecs::prelude::*;
 use azalea::entity::indexing::EntityIdIndex;
 use null_bot_api::{Brain, Command, Hand, Skill, SkillStatus};
 
+use crate::blocks::{self, BlockActions, Issued};
 use crate::view::{AzaleaView, OthersQuery, ViewParts};
 
 /// A bot's decision state: reflexes, the active skill and the commands it just issued.
@@ -57,6 +60,8 @@ pub struct HostFlags {
     jump_pulse: bool,
     /// Host tick of the last goto, until Azalea's pathfinder has picked it up.
     nav_requested: Option<u64>,
+    /// Our latest break and place commands (B6 §4.6).
+    pub(crate) blocks: BlockActions,
 }
 
 /// The host clock; `TicksConnected` is missing in some setups and resets on reconnect.
@@ -90,8 +95,12 @@ impl Plugin for HostPlugin {
                 .chain()
                 .before(PhysicsSystems)
                 .before(MiningSystems)
+                .before(handle_break_block_queued)
+                .before(handle_look_at_block_queued)
                 .before(ensure_has_sent_carried_item)
-                .before(handle_start_use_item_queued),
+                .before(handle_start_use_item_queued)
+                .before(handle_use_item_queued)
+                .before(age_recent_attackers),
         );
     }
 }
@@ -139,6 +148,22 @@ impl null_bot_api::BotCommands for CommandBuffer {
     fn stop_nav(&mut self) {
         self.0.push(Command::StopNav);
     }
+    // Spec: specs/B6-placement-breaking.md §4.4 (break timing)
+    fn break_block(&mut self, pos: null_bot_api::BlockPos) {
+        self.0.push(Command::BreakBlock(pos));
+    }
+    // Spec: specs/B6-placement-breaking.md §4.4 (abort a break)
+    fn cancel_break(&mut self) {
+        self.0.push(Command::CancelBreak);
+    }
+    // Spec: specs/B6-placement-breaking.md §4.2 (place on a chosen face)
+    fn place_block(&mut self, pos: null_bot_api::BlockPos, face: null_bot_api::Face) {
+        self.0.push(Command::PlaceBlock { pos, face });
+    }
+    // Spec: specs/B6-placement-breaking.md §4.2 (click choice: aim at a visible point)
+    fn look_at_block(&mut self, pos: null_bot_api::BlockPos, face: Option<null_bot_api::Face>) {
+        self.0.push(Command::LookAtBlock { pos, face });
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -153,14 +178,14 @@ fn decide(
             &LookDirection,
             Option<&Health>,
             Option<&Hunger>,
-            Option<&AbstractLivingUsingItem>,
+            Option<&ItemInUse>,
             Option<&AttackStrengthScale>,
             &Inventory,
             &WorldHolder,
             &WorldName,
             &Pathfinder,
             Option<&ExecutingPath>,
-            Option<&HostFlags>,
+            (Option<&HostFlags>, Option<&BlockActionResults>, Option<&RecentAttackers>),
         ),
         (With<LocalEntity>, With<HasClientLoaded>, Without<Dead>),
     >,
@@ -169,7 +194,7 @@ fn decide(
 ) {
     tick.0 += 1;
     let now = tick.0;
-    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, flags) in
+    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, results, attackers)) in
         &mut bots
     {
         let nav_pending = flags.and_then(|f| f.nav_requested).is_some_and(|t| now - t <= 2);
@@ -190,6 +215,9 @@ fn decide(
                 pathfinder: pf,
                 executing: exec,
                 nav_pending,
+                blocks: flags.map(|f| &f.blocks),
+                results,
+                attackers,
             },
             &others,
         );
@@ -246,11 +274,13 @@ fn apply(
         &mut Inventory,
         &mut BlockStatePredictionHandler,
         &EntityIdIndex,
+        &BlockActionResults,
     )>,
     mut goto: MessageWriter<GotoEvent>,
     mut stop_nav: MessageWriter<StopPathfindingEvent>,
 ) {
-    for (entity, mut bb, mut flags, mut mv, mut look, mut jumping, mut inv, mut pred, ids) in &mut bots {
+    for (entity, mut bb, mut flags, mut mv, mut look, mut jumping, mut inv, _pred, ids, results) in &mut bots
+    {
         if flags.jump_pulse {
             **jumping = false;
             flags.jump_pulse = false;
@@ -266,39 +296,23 @@ fn apply(
                 Command::Sneak(on) => mv.trying_to_crouch = on,
                 Command::Look { yaw, pitch } => look.update(LookDirection::new(yaw, pitch)),
                 Command::SelectSlot(s) => {
-                    let s = s.min(8);
-                    // A slot change ends any use, as in vanilla.
-                    if inv.selected_hotbar_slot != s {
-                        commands.entity(entity).remove::<ItemInUse>();
-                    }
-                    inv.selected_hotbar_slot = s;
+                    // The fork ends any item use on a slot change, as vanilla does.
+                    inv.selected_hotbar_slot = s.min(8);
                 }
                 Command::Attack(id) => {
                     if let Some(target) = ids.get_by_minecraft_entity(MinecraftEntityId(id.0 as i32)) {
                         commands.entity(entity).insert(AttackQueued { target });
                     }
                 }
+                // Spec: specs/B2-survival-upkeep.md §4.1 (use, release and offhand swap are fork components)
                 Command::UseItem(h) => {
-                    // Raw UseItem so it works with a block under the crosshair (spike §6.3).
-                    commands.trigger(SendGamePacketEvent::new(
-                        entity,
-                        ServerboundUseItem {
-                            hand: hand(h),
-                            seq: pred.start_predicting(),
-                            x_rot: look.x_rot(),
-                            y_rot: look.y_rot(),
-                        },
-                    ));
-                    // Slows our own physics to vanilla's using-item speed.
-                    commands.entity(entity).insert(ItemInUse);
+                    commands.entity(entity).insert(UseItemQueued { hand: hand(h) });
                 }
                 Command::ReleaseUse => {
-                    release(&mut commands, entity, Action::ReleaseUseItem);
-                    commands.entity(entity).remove::<ItemInUse>();
+                    commands.entity(entity).insert(ReleaseUseItemQueued);
                 }
                 Command::SwapOffhand => {
-                    release(&mut commands, entity, Action::SwapItemWithOffhand);
-                    commands.entity(entity).remove::<ItemInUse>();
+                    commands.entity(entity).insert(SwapOffhandQueued);
                 }
                 Command::Stop => {
                     mv.move_direction = WalkDirection::None;
@@ -306,6 +320,33 @@ fn apply(
                     mv.trying_to_crouch = false;
                     stop_nav.write(StopPathfindingEvent { entity, force: true });
                     flags.nav_requested = None;
+                }
+                // Spec: specs/B6-placement-breaking.md §4.4 (break; command lands in this GameTick, F5 §4.1)
+                Command::BreakBlock(pos) => {
+                    commands.entity(entity).insert(BreakBlockQueued { position: blocks::block_pos(pos) });
+                    // The fork keeps one result while the same block is still being broken.
+                    if !blocks::same_break_pending(flags.blocks.last_break, pos, results.last_break.as_ref()) {
+                        flags.blocks.last_break = Some(Issued::new(tick.0, pos, results.last_break.as_ref()));
+                    }
+                }
+                // Spec: specs/B6-placement-breaking.md §4.2 (aim at a visible point of the shape)
+                Command::LookAtBlock { pos, face } => {
+                    commands.entity(entity).insert(LookAtBlockQueued {
+                        position: blocks::block_pos(pos),
+                        direction: face.map(blocks::face_to_dir),
+                    });
+                }
+                Command::CancelBreak => {
+                    commands.entity(entity).insert(StopMiningQueued);
+                }
+                // Spec: specs/B6-placement-breaking.md §4.2, §4.6 (place on a chosen face)
+                Command::PlaceBlock { pos, face } => {
+                    commands.entity(entity).insert(PlaceBlockQueued {
+                        position: blocks::block_pos(pos),
+                        direction: blocks::face_to_dir(face),
+                    });
+                    flags.blocks.last_place =
+                        Some(Issued::new(tick.0, pos.offset(face), results.last_place.as_ref()));
                 }
                 Command::Goto { target, tolerance } => {
                     // Mining and placing stay off: B1's allow_mining is a job decision, not a default.
@@ -329,14 +370,3 @@ fn apply(
     }
 }
 
-fn release(commands: &mut Commands, entity: Entity, action: Action) {
-    commands.trigger(SendGamePacketEvent::new(
-        entity,
-        ServerboundPlayerAction {
-            action,
-            pos: ABlockPos::new(0, 0, 0),
-            direction: azalea::core::direction::Direction::Down,
-            seq: 0,
-        },
-    ));
-}

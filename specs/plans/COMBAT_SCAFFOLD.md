@@ -22,7 +22,7 @@ Combat is step 8 of the build order (ARCHITECTURE §7). This scaffold starts ear
 | `mc-adapter` | mechanism | Azalea fork, Bevy, `null-bot-api` | `BotView` and `BotCommands` over Azalea, the per-tick host system |
 | `null-duel` | mechanism (binary) | `mc-adapter`, `null-combat`, `null-harness` | runs duels on the combat server, resets arenas by RCON, writes results and traces |
 
-Only `mc-adapter`, `mc-nav`, `mc-act` and binaries that link them may depend on `bevy*` or `azalea*` (F5 §4.1). `cargo-deny` is not installed, so `check_boundary.sh` checks this with `cargo metadata` until it is.
+Only `mc-adapter` and binaries that link it may depend on `bevy*` or `azalea*` (F5 §4.1). `cargo-deny` is not installed, so `check_boundary.sh` checks this with `cargo metadata` until it is.
 
 ## M1: workspace and the decision API slice
 
@@ -131,6 +131,8 @@ All three causes of the match 2 stall are fixed. Four matches since then all ran
 - The 200-tick recovery limit is untuned.
 
 ### Hand-off for the next debug session (2026-10-16, end of day)
+
+**Superseded:** debug sessions 2 and 3 (above) fixed the match 2 stall. The other leads below stay open.
 
 **Where things stand:**
 - Stopped and clean: no server, node or script processes. Nothing is committed, in this repo or in the Azalea fork. The fork's changes are listed in `reference/AZALEA_PATCHES.md`.

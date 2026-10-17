@@ -1,0 +1,100 @@
+diff --git a/azalea-client/src/plugins/block_actions.rs b/azalea-client/src/plugins/block_actions.rs
+index d4c6e14..8f47d19 100644
+--- a/azalea-client/src/plugins/block_actions.rs
++++ b/azalea-client/src/plugins/block_actions.rs
+@@ -47,7 +47,10 @@ use crate::{
+     },
+     inventory::ensure_has_sent_carried_item,
+     local_player::{LocalGameMode, WorldHolder},
+-    mining::{BlockBreakSent, MineProgress, Mining, MiningQueued, MiningSystems},
++    mining::{
++        BlockBreakSent, MineDelay, MineProgress, Mining, MiningQueued, MiningSystems,
++        SkipStartTickProgress,
++    },
+     packet::game::SendGamePacketEvent,
+ };
+ 
+@@ -180,9 +183,19 @@ pub struct BreakBlockQueued {
+ /// that block (as `handle_start_mining_block_event` does); [`begin_break_result`] then checks it.
+ pub fn handle_break_block_queued(
+     mut commands: Commands,
+-    query: Query<(Entity, &BreakBlockQueued, &HitResultComponent)>,
++    query: Query<(Entity, &BreakBlockQueued, &HitResultComponent, &MineDelay, Option<&Mining>)>,
+ ) {
+-    for (entity, queued, hit_result) in &query {
++    for (entity, queued, hit_result, delay, mining) in &query {
++        // Already breaking it: a repeated command must not restart it (nor skip another tick).
++        if mining.is_some_and(|m| m.pos == queued.position) {
++            commands.entity(entity).remove::<BreakBlockQueued>();
++            continue;
++        }
++        // Vanilla's held-button mining waits out `destroyDelay` (5 ticks) after a finished break,
++        // so the next start comes 6 ticks (300 ms) later; Grim's FastBreak expects that gap.
++        if **delay > 0 {
++            continue;
++        }
+         let direction = hit_result
+             .as_block_hit_result_if_not_miss()
+             .filter(|h| h.block_pos == queued.position)
+@@ -190,7 +203,11 @@ pub fn handle_break_block_queued(
+         commands
+             .entity(entity)
+             .remove::<BreakBlockQueued>()
+-            .insert((MiningQueued { position: queued.position, direction, force: true }, CheckBreakClick));
++            .insert((
++                MiningQueued { position: queued.position, direction, force: true },
++                CheckBreakClick,
++                SkipStartTickProgress,
++            ));
+     }
+ }
+ 
+diff --git a/azalea-client/src/plugins/mining.rs b/azalea-client/src/plugins/mining.rs
+index a08c8cd..4c56106 100644
+--- a/azalea-client/src/plugins/mining.rs
++++ b/azalea-client/src/plugins/mining.rs
+@@ -350,6 +350,7 @@ pub fn handle_mining_queued(
+                 ) >= 1.
+             {
+                 // block was broken instantly (instamined)
++                commands.entity(entity).remove::<SkipStartTickProgress>();
+                 commands.trigger(FinishMiningBlockEvent {
+                     entity,
+                     position: mining_queued.position,
+@@ -586,6 +587,12 @@ pub fn handle_stop_mining_block_event(
+     }
+ }
+ 
++/// Null fork: no progress in the tick mining starts, as in vanilla's held-button mining, where the
++/// start comes from `continueDestroyBlock` and adds nothing that tick. Without it a break is one
++/// tick shorter than Grim's FastBreak predicts.
++#[derive(Component, Debug)]
++pub struct SkipStartTickProgress;
++
+ pub fn decrement_mine_delay(mut query: Query<&mut MineDelay>) {
+     for mut mine_delay in &mut query {
+         if **mine_delay > 0 {
+@@ -611,7 +618,7 @@ pub fn continue_mining_block(
+         &mut MineDelay,
+         &mut MineProgress,
+         &mut MineTicks,
+-        &mut BlockStatePredictionHandler,
++        (&mut BlockStatePredictionHandler, Has<SkipStartTickProgress>),
+     )>,
+     mut commands: Commands,
+     mut mine_block_progress_events: MessageWriter<MineBlockProgressEvent>,
+@@ -632,9 +639,13 @@ pub fn continue_mining_block(
+         mut mine_delay,
+         mut mine_progress,
+         mut mine_ticks,
+-        mut prediction_handler,
++        (mut prediction_handler, skip_start_tick),
+     ) in query.iter_mut()
+     {
++        if skip_start_tick {
++            commands.entity(entity).remove::<SkipStartTickProgress>();
++            continue;
++        }
+         if game_mode.current == GameMode::Creative {
+             // TODO: worldborder check
+             **mine_delay = 5;

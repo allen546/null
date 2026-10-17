@@ -1,6 +1,7 @@
 //! Mechanism crate: the only place (with null-node) that imports Azalea and Bevy (F5 §4.1).
 //! Implements `BotView` over Azalea components and applies `BotCommands` as component writes.
 
+pub mod blocks;
 pub mod host;
 pub mod lifecycle;
 pub mod view;

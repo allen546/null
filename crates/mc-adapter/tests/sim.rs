@@ -16,7 +16,9 @@ use azalea::{
         packets::{
             ConnectionProtocol,
             game::{
-                ClientboundBlockUpdate, ClientboundPlayerPosition, ClientboundSetChunkCacheCenter,
+                ClientboundBlockUpdate, ClientboundContainerSetSlot, ClientboundDamageEvent,
+                ClientboundPlayerPosition, ClientboundSetChunkCacheCenter, ClientboundSetHealth,
+                c_damage_event::OptionalEntityId,
                 ServerboundGamePacket, s_interact::ActionType, s_player_action::Action,
             },
         },
@@ -43,6 +45,8 @@ struct Seen {
     entity_ids: Vec<u32>,
     solid_below: bool,
     solid_at_feet: bool,
+    using: Option<null_bot_api::UsingItem>,
+    attackers: Vec<null_bot_api::Attacker>,
 }
 
 /// Replays queued commands and records what the view showed that tick.
@@ -69,6 +73,8 @@ impl Skill for Replay {
             let p = v.position().block_pos();
             s.solid_below = v.is_solid(null_bot_api::BlockPos::new(p.x, p.y - 1, p.z));
             s.solid_at_feet = v.is_solid(p);
+            s.using = v.using_item();
+            s.attackers = v.recent_attackers().to_vec();
         }
         for cmd in std::mem::take(&mut *self.queue.lock().unwrap()) {
             match cmd {
@@ -85,6 +91,10 @@ impl Skill for Replay {
                 Command::Stop => c.stop(),
                 Command::Goto { target, tolerance } => c.goto(target, tolerance),
                 Command::StopNav => c.stop_nav(),
+                Command::BreakBlock(p) => c.break_block(p),
+                Command::CancelBreak => c.cancel_break(),
+                Command::PlaceBlock { pos, face } => c.place_block(pos, face),
+                Command::LookAtBlock { pos, face } => c.look_at_block(pos, face),
             }
         }
         SkillStatus::Running
@@ -295,18 +305,59 @@ fn attack_queues_an_interact_packet() {
     );
 }
 
+/// Bread in hotbar slot 0 and a hungry player, so a use starts.
+fn give_bread(rig: &mut Rig, food: u32) {
+    rig.sim.receive_packet(ClientboundContainerSetSlot {
+        container_id: 0,
+        state_id: 1,
+        slot: *azalea::inventory::Player::HOTBAR_SLOTS.start() as u16,
+        item_stack: azalea::inventory::ItemStack::from(azalea::registry::builtin::ItemKind::Bread),
+    });
+    rig.sim.receive_packet(ClientboundSetHealth { health: 20., food, saturation: 0. });
+    rig.sim.tick();
+}
+
 #[test]
-fn use_item_sends_a_raw_use_item_packet() {
+fn use_item_sends_use_item_and_the_view_reports_hand_and_ticks() {
     let _lock = init();
     let mut rig = Rig::new();
+    give_bread(&mut rig, 10);
     let sent = rig.run(Command::UseItem(Hand::Main));
     assert!(sent.iter().any(|p| matches!(p, ServerboundGamePacket::UseItem(_))), "{sent:?}");
+    let u = rig.seen.lock().unwrap().using.expect("view reports the use");
+    assert_eq!(u.hand, Hand::Main);
+    assert!(u.ticks >= 1, "{u:?}");
+    // A slot change ends it.
+    rig.run(Command::SelectSlot(1));
+    rig.sim.tick();
+    assert_eq!(rig.seen.lock().unwrap().using, None);
+}
+
+#[test]
+fn damage_event_fills_recent_attackers_on_the_host_clock() {
+    let _lock = init();
+    let mut rig = Rig::new();
+    let me = rig.sim.minecraft_entity_id();
+    rig.sim.receive_packet(ClientboundDamageEvent {
+        entity_id: me,
+        source_type_id: 1,
+        source_cause_id: OptionalEntityId(Some(42)),
+        source_direct_id: OptionalEntityId(Some(42)),
+        source_position: None,
+    });
+    rig.sim.tick();
+    let seen = rig.seen.lock().unwrap().clone();
+    let a = seen.attackers.first().expect("attacker listed");
+    assert_eq!(a.entity, EntityId(42));
+    assert_eq!(Some(&a.tick), seen.ticks.last(), "stamped with the tick the bot first saw it");
 }
 
 #[test]
 fn release_use_and_swap_offhand_send_player_actions() {
     let _lock = init();
     let mut rig = Rig::new();
+    give_bread(&mut rig, 10);
+    rig.run(Command::UseItem(Hand::Main));
     let sent = rig.run(Command::ReleaseUse);
     assert!(sent.iter().any(|p| matches!(p, ServerboundGamePacket::PlayerAction(a) if a.action == Action::ReleaseUseItem)), "{sent:?}");
     let sent = rig.run(Command::SwapOffhand);

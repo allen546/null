@@ -65,11 +65,12 @@ The target is Java 1.21.11, and the code must port to other versions without a r
 ### 4.1 Decision and mechanism crates
 
 - **Decision crates** (skills, reflex triggers and actions, F1 §4.5 arbitration and switch resolution, the cargo filter, squad tactics, everything above the node) depend on no `bevy*` or `azalea*` crate and build on stable Rust. They read through `BotView` and act through `BotCommands` (§3).
-- **Mechanism crates** are named on an allowlist and import Azalea and Bevy directly: `mc-adapter` (the host, view construction, command application), `mc-nav` (pathfinder move families), `mc-act` (raw packet sequences, menus, the replay patch). A `cargo-deny` allowlist fails any other crate that depends on `bevy*` or `azalea*`.
+- **Mechanism crates** are named on an allowlist and import Azalea and Bevy directly: `mc-adapter` (the host, view construction, command application) and the binaries that link it. A `cargo-deny` allowlist fails any other crate that depends on `bevy*` or `azalea*`.
+- **Raw capabilities live in the fork; `mc-adapter` only translates** (Allen, 2026-10-17). A game ability that Azalea lacks or gets wrong (placing on a face with client-side prediction and the server's result, holding and releasing an item, attacker tracking, menu and crafting helpers, new pathfinder moves, the replay switch) is a fork patch written as a normal Azalea client API. `mc-adapter` maps those Azalea components, whose shape may change between versions, onto Null's version-stable `BotView` and `BotCommands`, with no game logic of its own. The earlier plan for separate `mc-nav` (move families) and `mc-act` (raw packets, menus, replay) crates is dropped: their work goes into the fork. Capability patches go in new modules where possible and touch few existing lines, so a version rebase stays cheap ([reference/AZALEA_PATCHES.md](reference/AZALEA_PATCHES.md)).
 - Each mechanism crate has a generated list of the Azalea types it uses; every fork bump starts with an upgrade-impact diff of those lists.
 - Commands are applied as direct component writes or queued components, never as Azalea `Update`-schedule messages, which reach the server a tick late (spike §3.2).
 - This is AD-F5.2, decided by Allen (2026-10-14); the simulator spike and the live server join check both passed.
-- `UseItem` and `UseOnCrosshair` are separate commands. With a block under the crosshair, Azalea sends only `ServerboundUseItemOn`, never `ServerboundUseItem`, so a bucket, ender pearl or food used while looking at a block does nothing unless `mc-act` sends `UseItem` itself, with a prediction sequence number (spike §6.3, live run 2026-10-14). Worth an upstream issue.
+- `UseItem` and `UseOnCrosshair` are separate commands. With a block under the crosshair, Azalea sends only `ServerboundUseItemOn`, never `ServerboundUseItem`, so a bucket, ender pearl or food used while looking at a block does nothing unless the fork's item-use API sends `UseItem` itself, with a prediction sequence number (spike §6.3, live run 2026-10-14). Worth an upstream issue.
 - One binary per version: two Azalea versions can't share a process (§9.1). The commander API, job and event types are identical across versions.
 
 ### 4.2 Generated game data
@@ -96,6 +97,8 @@ Skills ask `has_feature("crafter")`, `has_feature("copper_bulb")`, `has_feature(
 ### 4.6 Server settings
 
 Null targets pure vanilla servers only (project memory; Allen, 2026-10-13: which server doesn't matter, adapting is easy). Profiles cover vanilla server settings that change mechanics: gamerules, view and simulation distance, spawn limits, difficulty. Other server software (Paper's duper-breaking defaults, Folia's regionised ticking) is out of scope; if one is ever targeted, its differences become mechanics overrides keyed by server software, measured in the harness (spec audit #13, 2026-10-13).
+
+**Open (2026-10-17, Allen's call):** this conflicts with Paper + GrimAC being the reference test server (`harness/grim-server`) and with Paper and plugin settings that change mechanics (the shield's raise-to-block delay). Proposed: targets are vanilla and Paper/Spigot servers, possibly with an anticheat; every server-configurable mechanic is a per-server belief, with a prior from the item's components or the mechanics table, refined by what the bot observes; zero Grim alerts is the bar. See HANDOFF.md.
 
 ### 4.7 Porting procedure
 
@@ -138,4 +141,4 @@ All of it, by definition.
 
 ## 9. Open questions
 
-AD-F5.2 is decided (Allen, 2026-10-14) and its live server join check passed. Implementation choices left inside it: whether `mc-nav` names Azalea through an alias module, and whether K6 squad tactics are decision code over a `SquadView`.
+AD-F5.2 is decided (Allen, 2026-10-14) and its live server join check passed. Implementation choices left inside it: whether K6 squad tactics are decision code over a `SquadView`.
