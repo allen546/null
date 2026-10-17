@@ -2070,6 +2070,8 @@ dependencies = [
  "azalea",
  "mc-adapter",
  "null-bot-api",
+ "null-combat",
+ "null-mechanics",
  "tokio",
 ]
 

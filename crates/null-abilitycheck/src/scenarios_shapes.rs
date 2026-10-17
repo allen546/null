@@ -191,6 +191,8 @@ const CLICKS: &[Row] = rows![
     Row { name: "click_cauldron_top", setup: &[(0, 0, 0, "cauldron")], ..R },
     Row { name: "click_water_cauldron_top", setup: &[(0, 0, 0, "water_cauldron[level=3]")], ..R },
     Row { name: "click_hopper_top", setup: &[(0, 0, 0, "hopper[facing=down]")], sneak: true, ..R },
+    Row { name: "click_hopper_sideways_top", setup: &[(0, 0, 0, "hopper[facing=east]")], sneak: true, ..R },
+    Row { name: "click_hopper_spout_side", setup: &[(0, 0, 0, "hopper[facing=north]")], face: Face::North, sneak: true, blocks: SIDE, ..R },
     Row { name: "click_composter_top", setup: &[(0, 0, 0, "composter[level=0]")], sneak: true, ..R },
     Row { name: "click_scaffolding_top", setup: &[(0, 0, 0, "scaffolding[bottom=false]")], ..R },
     Row { name: "click_anvil_top", setup: &[(0, 0, 0, "anvil[facing=north]")], sneak: true, ..R },

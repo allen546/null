@@ -22,6 +22,7 @@ pub struct FakeView {
     pub using_item: Option<UsingItem>,
     pub entities: Vec<EntitySnapshot>,
     pub attackers: Vec<Attacker>,
+    pub shield_hits: Vec<ShieldHit>,
     /// Solid blocks. Everything with y < `floor_y` is solid too (flat world).
     pub solid: Vec<BlockPos>,
     pub floor_y: i32,
@@ -54,6 +55,7 @@ impl Default for FakeView {
             using_item: None,
             entities: Vec::new(),
             attackers: Vec::new(),
+            shield_hits: Vec::new(),
             solid: Vec::new(),
             floor_y: 64,
             blocks: Vec::new(),
@@ -68,7 +70,7 @@ impl Default for FakeView {
 impl FakeView {
     /// An item in use in `hand` for `ticks` ticks, as the adapter's view reports it.
     pub fn start_using(&mut self, hand: Hand, ticks: u32) {
-        self.using_item = Some(UsingItem { hand, ticks });
+        self.using_item = Some(UsingItem { hand, ticks, server_ticks: None });
     }
 
     /// A hit by `entity` that the bot learned of at the current tick, newest last.
@@ -134,6 +136,9 @@ impl BotView for FakeView {
     }
     fn recent_attackers(&self) -> &[Attacker] {
         &self.attackers
+    }
+    fn shield_hits(&self) -> &[ShieldHit] {
+        &self.shield_hits
     }
     fn is_solid(&self, pos: BlockPos) -> bool {
         pos.y < self.floor_y || self.solid.contains(&pos)
@@ -255,7 +260,7 @@ mod tests {
         let mut v = FakeView::default();
         assert!(v.using_item().is_none() && v.recent_attackers().is_empty());
         v.start_using(Hand::Off, 7);
-        assert_eq!(v.using_item(), Some(UsingItem { hand: Hand::Off, ticks: 7 }));
+        assert_eq!(v.using_item(), Some(UsingItem { hand: Hand::Off, ticks: 7, server_ticks: None }));
         v.tick = 40;
         v.hit_by(9);
         v.tick = 43;

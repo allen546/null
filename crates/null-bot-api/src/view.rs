@@ -24,6 +24,11 @@ pub trait BotView {
     fn using_item(&self) -> Option<UsingItem>;
     fn entities(&self) -> &[EntitySnapshot];
     fn recent_attackers(&self) -> &[Attacker];
+    // Spec: specs/F5-version-layer.md §4.6 (observations for the shield-delay belief)
+    /// Hits taken in the last 10 s while a blocking item was in use, oldest first.
+    fn shield_hits(&self) -> &[ShieldHit] {
+        &[]
+    }
     fn is_solid(&self, pos: BlockPos) -> bool;
     fn nav_status(&self) -> NavStatus;
     // Spec: specs/B6-placement-breaking.md §4.6 (read back the block the server left)

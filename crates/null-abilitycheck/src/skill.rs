@@ -153,6 +153,7 @@ impl Skill for RemoteSkill {
                 TICK_FAST.fetch_add(1, Ordering::Relaxed);
             }
         }
+        self.items.shield.update(v);
         let now = v.tick();
         if self.cur.is_none()
             && let Ok(op) = self.ops.lock().unwrap().try_recv()

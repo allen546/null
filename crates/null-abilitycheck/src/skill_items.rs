@@ -1,7 +1,8 @@
 //! Bot-side ops for A5-A8 (item use, attack, attackers). `RemoteSkill::step` calls `step` for
 //! `Op::Items`; everything goes through `BotView` / `BotCommands` only.
 
-use null_bot_api::{Attacker, BotCommands, BotView, Hand, UsingItem, Vec3};
+use null_bot_api::{Attacker, BotCommands, BotView, Hand, ShieldHit, UsingItem, Vec3};
+use null_mechanics::BlockDelayBelief;
 
 use crate::skill::{Info, look_at};
 
@@ -43,11 +44,18 @@ pub struct ItemsInfo {
     pub waited: u64,
     /// Attack facts at the tick the command was issued.
     pub note: String,
+    /// The held item's `blocks_attacks` delay in ticks, as the bot reads it.
+    pub held_delay: Option<u32>,
+    /// The bot's shield-delay belief and the hits it learned from.
+    pub shield: Option<BlockDelayBelief>,
+    pub shield_hits: Vec<ShieldHit>,
 }
 
-/// Per-op scratch, reset when an op starts.
+/// Per-op scratch, reset when an op starts (except `shield`, which lives across ops).
 #[derive(Default)]
 pub struct ItemState {
+    /// Updated every tick by `RemoteSkill::step`.
+    pub shield: null_combat::ShieldDelay,
     attack_tick: Option<u64>,
     note: String,
     n0: usize,
@@ -65,6 +73,9 @@ fn info(v: &dyn BotView, st: &ItemState, waited: u64) -> Info {
         attackers,
         waited,
         note: st.note.clone(),
+        held_delay: v.held_item().and_then(|s| s.block_delay_ticks),
+        shield: st.shield.belief().copied(),
+        shield_hits: v.shield_hits().to_vec(),
     })
 }
 
@@ -78,7 +89,8 @@ pub fn step(
     say: &dyn Fn(Info),
 ) -> Option<Info> {
     if age == 0 {
-        *st = ItemState { n0: v.recent_attackers().len(), ..Default::default() };
+        let shield = std::mem::take(&mut st.shield);
+        *st = ItemState { n0: v.recent_attackers().len(), shield, ..Default::default() };
     }
     match op {
         ItemOp::Use(hand) => {

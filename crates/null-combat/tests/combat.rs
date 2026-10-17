@@ -447,7 +447,7 @@ fn kind_selector_still_protects_unattacking_players() {
 #[test]
 fn engage_skips_dead_enemy_and_goes_to_next() {
     let mut v = FakeView::default();
-    v.hotbar[0] = Some(null_bot_api::ItemStack { item: "minecraft:iron_sword".into(), count: 1 });
+    v.hotbar[0] = Some(null_bot_api::ItemStack::new("minecraft:iron_sword", 1));
     let mut dead = named(1, "null_b1", 3.0);
     dead.health = Some(0.0);
     v.entities = vec![dead, named(2, "null_b2", 12.0)];
@@ -499,7 +499,7 @@ fn engage_waits_for_a_weapon() {
     v.tick = 20;
     d.step(&v, &mut c);
     assert!(c.all().is_empty(), "no kit yet, so no movement");
-    v.hotbar[0] = Some(null_bot_api::ItemStack { item: "minecraft:iron_sword".into(), count: 1 });
+    v.hotbar[0] = Some(null_bot_api::ItemStack::new("minecraft:iron_sword", 1));
     v.tick = 21;
     d.step(&v, &mut c);
     assert!(c.all().iter().any(|x| matches!(x, Command::Goto { .. })));

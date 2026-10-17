@@ -68,6 +68,7 @@ pub struct AzaleaView<'a, 'w, 's> {
     offhand: OnceCell<Option<api::ItemStack>>,
     entities: OnceCell<Vec<api::EntitySnapshot>>,
     attackers: OnceCell<Vec<api::Attacker>>,
+    shield_hits: OnceCell<Vec<api::ShieldHit>>,
 }
 
 fn v3(v: azalea::Vec3) -> api::Vec3 {
@@ -77,9 +78,14 @@ fn v3(v: azalea::Vec3) -> api::Vec3 {
 fn stack(s: &azalea::inventory::ItemStack) -> Option<api::ItemStack> {
     match s {
         azalea::inventory::ItemStack::Empty => None,
-        azalea::inventory::ItemStack::Present(d) => {
-            Some(api::ItemStack { item: d.kind.to_str().to_string(), count: d.count.clamp(0, 255) as u8 })
-        }
+        azalea::inventory::ItemStack::Present(d) => Some(api::ItemStack {
+            item: d.kind.to_str().to_string(),
+            count: d.count.clamp(0, 255) as u8,
+            // Vanilla `BlocksAttacks#blockDelayTicks`: seconds * 20, rounded.
+            block_delay_ticks: d
+                .get_component::<azalea::inventory::components::BlocksAttacks>()
+                .map(|b| (b.block_delay_seconds * 20.0).round().max(0.0) as u32),
+        }),
     }
 }
 
@@ -100,6 +106,7 @@ impl<'a, 'w, 's> AzaleaView<'a, 'w, 's> {
             offhand: OnceCell::new(),
             entities: OnceCell::new(),
             attackers: OnceCell::new(),
+            shield_hits: OnceCell::new(),
         }
     }
 }
@@ -171,7 +178,8 @@ impl BotView for AzaleaView<'_, '_, '_> {
             InteractionHand::MainHand => api::Hand::Main,
             InteractionHand::OffHand => api::Hand::Off,
         };
-        Some(api::UsingItem { hand, ticks: self.p.using_item?.ticks })
+        let u = self.p.using_item?;
+        Some(api::UsingItem { hand, ticks: u.ticks, server_ticks: u.server_ticks() })
     }
     fn entities(&self) -> &[api::EntitySnapshot] {
         self.entities.get_or_init(|| {
@@ -200,6 +208,40 @@ impl BotView for AzaleaView<'_, '_, '_> {
         })
     }
     // Spec: specs/B5-combat.md §4.7 (who hit us; the fork's RecentAttackers, ticks on the host clock)
+    // Spec: specs/F5-version-layer.md §4.6 (observations for the shield-delay belief)
+    fn shield_hits(&self) -> &[api::ShieldHit] {
+        self.shield_hits.get_or_init(|| {
+            let Some(r) = self.p.attackers else { return Vec::new() };
+            let host_tick = |t: u64| self.p.tick.saturating_sub(r.now.saturating_sub(t));
+            let cutoff = r.now.saturating_sub(RECENT_ATTACKER_TICKS);
+            let w = self.p.world.shared.read();
+            let types = w.registries.extra.get(&azalea::Identifier::new("minecraft:damage_type"));
+            let mut out: Vec<api::ShieldHit> = Vec::new();
+            for h in r.hits.iter().filter(|h| h.tick >= cutoff) {
+                let Some(use_ticks) = h.use_ticks else { continue };
+                // Vanilla `DamageSource#getSourcePosition`: the given position, else the direct entity's.
+                let from = h.position.map(v3).or_else(|| {
+                    let id = h.direct?;
+                    self.others.iter().find(|o| *o.1 == id).map(|o| v3(**o.3))
+                });
+                out.push(api::ShieldHit {
+                    tick: host_tick(h.tick),
+                    use_ticks,
+                    blocked: false,
+                    from,
+                    damage_type: types
+                        .and_then(|t| t.map.get_index(h.source_type as usize))
+                        .map(|(id, _)| id.to_string()),
+                });
+            }
+            for b in r.blocked.iter().filter(|b| b.tick >= cutoff) {
+                let Some(use_ticks) = b.use_ticks else { continue };
+                out.push(api::ShieldHit { tick: host_tick(b.tick), use_ticks, blocked: true, from: None, damage_type: None });
+            }
+            out.sort_by_key(|h| h.tick);
+            out
+        })
+    }
     fn recent_attackers(&self) -> &[api::Attacker] {
         self.attackers.get_or_init(|| {
             let Some(r) = self.p.attackers else { return Vec::new() };

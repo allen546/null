@@ -296,6 +296,15 @@ pub fn a6(cx: &mut Ctx) -> Vec<Outcome> {
             )
         }));
     }
+    // (row, item, delay in ticks the item says, waits after the server confirms the raise in ms)
+    let sweeps: [(&str, &str, u32, &[u64]); 2] = [
+        ("delay_belief_default_shield", "shield", 5, &[0, 0, 50, 100, 200, 400]),
+        ("delay_belief_shield_with_1s_delay", SLOW_SHIELD, 20, &[600, 850, 950, 1050, 1150, 1400]),
+    ];
+    for (name, item, want, waits) in sweeps {
+        scene(cx, &[(0, item, 1)]);
+        out.push(cx.run("A6", name, |cx| shield_sweep(cx, want, waits)));
+    }
     cx.r(&format!("gamerule natural_health_regeneration {regen_was}"));
 
     scene(cx, &[(0, "shield", 1)]);
@@ -329,6 +338,95 @@ pub fn a6(cx: &mut Ctx) -> Vec<Outcome> {
 
     cx.clean_in(AREA);
     out
+}
+
+/// A shield whose `blocks_attacks` says 1.0 s (20 ticks); the rest as vanilla's shield.
+const SLOW_SHIELD: &str = "shield[minecraft:blocks_attacks={block_delay_seconds:1.0f,\
+block_sound:\"minecraft:item.shield.block\",disabled_sound:\"minecraft:item.shield.break\",\
+bypassed_by:\"#minecraft:bypasses_shield\",item_damage:{threshold:3.0f,base:1.0f,factor:1.0f}}]";
+
+// Spec: specs/F5-version-layer.md §4.6 (the shield delay is a belief: prior from the item, refined by hits)
+/// Raise, wait `waits[i]` ms after the server confirms, hit from the front, lower. The server's
+/// reply says whether each hit was blocked; the bot's own reading must agree. The server's delay
+/// is then bracketed by the use ticks of its unblocked and blocked hits, and must hold the item's
+/// value `want`; the bot's belief must start from `want` and end on it.
+fn shield_sweep(cx: &mut Ctx, want: u32, waits: &[u64]) -> (bool, String) {
+    let n = cx.name.clone();
+    let mut ok = true;
+    let mut lines = Vec::new();
+    let (mut lo, mut hi) = (0u32, u32::MAX);
+    let mut hurt = 0;
+    let mut prior_seen = None;
+    // The belief lives across rows: count this sweep's observations only.
+    let observed0 = items(cx, ItemOp::Status).shield.map_or(0, |b| b.observed());
+    for &wait in waits {
+        // Each hit that gets through knocks the bot back; start every hit from the spawn point.
+        cx.r(&format!("tp {n} {} {} {} 0 0", SPAWN.0, SPAWN.1, SPAWN.2));
+        sleep(Duration::from_millis(400));
+        if let Err(e) = start(cx, ItemOp::Use(Hand::Main)) {
+            return (false, e);
+        }
+        let mut st = finish(cx);
+        for _ in 0..20 {
+            if st.using.is_some_and(|u| u.server_ticks.is_some()) {
+                break;
+            }
+            st = items(cx, ItemOp::Status);
+        }
+        prior_seen = prior_seen.or(st.shield.map(|b| b.prior()));
+        let t0 = st.tick;
+        sleep(Duration::from_millis(wait));
+        let reply = cx.r(&format!("damage {n} 6 minecraft:player_attack at {} {} {}", SPAWN.0, SPAWN.1, SPAWN.2 + 4.0));
+        let server_blocked = !reply.contains("Applied");
+        sleep(Duration::from_millis(200));
+        let after = items(cx, ItemOp::Status);
+        items(cx, ItemOp::Release);
+        let seen: Vec<_> = after.shield_hits.iter().filter(|h| h.tick > t0).collect();
+        match seen.as_slice() {
+            [h] => {
+                if h.blocked != server_blocked {
+                    ok = false;
+                }
+                if server_blocked {
+                    hi = hi.min(h.use_ticks + 1);
+                } else {
+                    lo = lo.max(h.use_ticks);
+                    hurt += 1;
+                }
+                lines.push(format!(
+                    "wait {wait} ms: server {}, bot {} at use tick {}",
+                    if server_blocked { "blocked" } else { "hurt" },
+                    if h.blocked { "blocked" } else { "hurt" },
+                    h.use_ticks
+                ));
+            }
+            other => {
+                ok = false;
+                lines.push(format!("wait {wait} ms: server reply {reply:?}; bot saw {} hits: {other:?}", other.len()));
+            }
+        }
+        // 20 ticks of hurt immunity follow any hit, blocked or not; then full health again.
+        sleep(Duration::from_millis(1100));
+        heal(cx);
+    }
+    let end = items(cx, ItemOp::Status);
+    let b = end.shield;
+    let belief_ok = b.is_some_and(|b| {
+        b.prior() == want && b.ticks() == want && b.observed().saturating_sub(observed0) == waits.len() as u32
+    });
+    // Both sides of the delay seen, or the bracket proves little.
+    let both = hurt > 0 && hi != u32::MAX;
+    let bracket_ok = lo <= want && want <= hi && lo <= hi;
+    (
+        ok && both && bracket_ok && belief_ok && prior_seen == Some(want) && end.held_delay == Some(want),
+        format!(
+            "item says {want} ticks (bot reads {:?}); server delay from its replies in {lo}..={} (must hold {want}); bot belief {:?} (prior at the first raise {prior_seen:?}); {}",
+            end.held_delay,
+            if hi == u32::MAX { "?".into() } else { hi.to_string() },
+            b.map(|b| (b.ticks(), b.bounds(), b.observed() - observed0, b.ignored())),
+            lines.join("; ")
+        ),
+    )
 }
 
 // ---- A7 attack ------------------------------------------------------------------------------

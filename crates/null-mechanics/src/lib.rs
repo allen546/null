@@ -1,6 +1,9 @@
 //! Mechanics table stub (F5 §3, §4.3). Each value says where it came from and how sure we are.
 //! Claimed means "believed, not checked"; M2 clamps carry the confidence along.
 
+pub mod belief;
+pub use belief::BlockDelayBelief;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Confidence {
     /// Read from a primary source (game data, decompiled code, official docs).

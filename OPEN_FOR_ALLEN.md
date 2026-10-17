@@ -58,7 +58,7 @@ None of these blocks current work. Each has a default.
 
 ## 4. Next actions (not decisions)
 
-0. **SA, the ability check**: A1–A8 and the shape families done and verified on both servers; next the reference sources, the shield-delay belief (A6), then A9–A12. Full list in [HANDOFF.md](HANDOFF.md). It comes before the items below.
+0. **SA, the ability check**: A1–A8, the shape families, the reference sources (`~/Desktop/null-reference/`) and the shield-delay belief (A6, fork patches 11–12) done and verified on both servers (199/199 each, 2026-10-18); next A9–A12. Full list in [HANDOFF.md](HANDOFF.md). It comes before the items below.
 1. **Bench, remote server.** Borrow the M5 MacBook Airs (family OK pending; backup: hourly VPSes). Add `host=` to `azbench` and a remote mode to `run_one.py`. Ladder 100–500 bots with 3 and 5 threads. Watch the Airs for throttling.
 2. **Shared section cache** in the Azalea fork (99% of section building was repeated), then the same ladder again.
 3. **Bench gaps:** lock-wait and per-thread timing (why the ECS tick waits), the level-off at 22–28 searches per second, re-run 5 threads at 50 bots (suspect value), why 3% of repeated chunks have different bytes.

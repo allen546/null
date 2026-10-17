@@ -6,7 +6,7 @@ The next session starts here for SA. The plan and per-ability bar are in [specs/
 
 - **Done and passing on Paper + Grim, zero Grim alerts:** A1–A8 (slots, breaking, pickup, placing, eating, shield, attack, attackers), A2S/A4S (every non-cube shape family: click on it, place it, break it), and a chain of 30 back-to-back breaks. About 200 scenario rows.
 - **Verified 2026-10-17 evening, both servers on normal:** 195/195 on Paper + Grim and 195/195 on vanilla, run alone and run in parallel (first vanilla runs of A2S/A4S/A5–A8). An independent Sonnet verifier reran both, spot-checked the evidence against vanilla formulas, checked every `// Spec:` link, and ran the patch-10 control: with patch 10 reverted, `chain_of_30_breaks` on Grim draws 203 `FastBreak` alerts and the bot is kicked. Since then the runner prints that as a FAIL row instead of a panic. `chain_of_30_breaks` passed 5 more runs on vanilla and 14 on Grim.
-- **Fork:** patches 5–10 on `null-main` of `allen546/azalea` (block actions with results, shape-aware clicks, attack cooldown fix, item use, attackers, held-button break timing). Null's `Cargo.toml` pins the head.
+- **Fork:** patches 5–12 on `null-main` of `allen546/azalea` (block actions with results, shape-aware clicks, attack cooldown fix, item use, attackers, held-button break timing, interaction shapes from source, shield block observations). Null's `Cargo.toml` pins the head.
 - **Rules settled today (Allen):**
   - Raw game capability goes in the fork, as normal Azalea APIs; `mc-adapter` only translates to `BotView`/`BotCommands` (F5 §4.1). Not a change to AD-F5.2: the boundary stands; only the planned `mc-act` and `mc-nav` crates were dropped.
   - Null targets vanilla servers only; the fork and adapter must also run cleanly on Paper + Grim (`harness/grim-server`), timing included, zero alerts (F5 §4.6, settled 2026-10-17 evening). A scenario passes only on both servers.
@@ -38,12 +38,12 @@ A scenario passes only when it passes on both servers (F5 §4.6). The two runs c
 - Reference sources: the plan is in [specs/plans/REFERENCE_SOURCES.md](specs/plans/REFERENCE_SOURCES.md) (Mojang names first, Paper source, mineflayer, Meteor Client, Baritone, GrimAC).
 
 **To do, in order:**
-1. **Reference sources**: [specs/plans/REFERENCE_SOURCES.md](specs/plans/REFERENCE_SOURCES.md); then each fork patch cites the vanilla method it reproduces.
-2. **Shield delay as a belief (A6):** prior from the held shield's `blocks_attacks.block_delay_seconds`; update from hits taken with the shield up; A6 measures the server's delay and checks the bot's belief, plus a shield given a non-default delay by RCON.
+1. ~~Reference sources~~ done 2026-10-18: `~/Desktop/null-reference/` (R1–R6 and R1d, Mojang-named client and server in `vanilla-1.21.11-src/`; `MANIFEST.md`). Fork patches now cite the vanilla method (AZALEA_PATCHES.md rules).
+2. ~~Shield delay as a belief (A6)~~ done 2026-10-18. Fork patch 12 gives server use ticks and blocked hits. The bot API adds `ItemStack.block_delay_ticks`, `UsingItem.server_ticks` and `BotView::shield_hits`. The belief is `null_mechanics::BlockDelayBelief` (a prior, narrowed by hits, ±1 tick slack; on a conflict a blocked hit wins). `null_combat::ShieldDelay` feeds it each tick. A6 passes 6/6 on both servers. Open: combat's shield reflex doesn't read the belief yet (B5 §4.5 moves shield use into the item-use skill); items with no `block_sound` give no blocked-hit evidence; arrows and snowballs are never evidence (a piercing arrow can't be told apart; a 0-damage hit is never blocked). A rarer 0-damage melee or mob-projectile hit from the front would still count as "not up yet" (verifier, 2026-10-18).
 3. **A9–A12:** inventory clicks, chests, crafting by clicks, respawn (tasks 3 and 4 in ABILITY_CHECK.md).
 
 **Known gaps and doubts:**
-- Interaction-shape boxes for hopper, composter and scaffolding (patch 6) were written from memory; only the cauldron is confirmed by a test. Check against the vanilla source.
+- Interaction shapes (patch 6) checked against vanilla 1.21.11 on 2026-10-18: composter and sideways hopper fixed as patch 11 (commit `ca064a7`); cauldron and scaffolding were right.
 - `click_replaces` doesn't cover stacking blocks (candles, sea pickles, turtle eggs).
 - Not tested: the "no ack" timeout path, off-hand use, bows and tridents, lily pad and sign placement, break rows for a door's upper half, a bed's head and a double slab, creative mode.
 - **For S5 skills:** the adapter keeps one record per action kind (`last_break`, `last_place`), and a break is `Done` only when the server's ack is read. A new break command replaces the record, so a skill that starts the next break before the last ack loses that result. This caused the one hang the verifier saw in `chain_of_30_breaks` on vanilla; the test now waits for the ack. A skill must do the same, or the adapter must keep a short history: decide when S5's `fell` is built.

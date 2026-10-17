@@ -135,11 +135,14 @@ pub struct EntityId(pub u32);
 pub struct ItemStack {
     pub item: String,
     pub count: u8,
+    /// For an item that blocks attacks (a shield): its raise-to-block delay in server ticks, from
+    /// the `blocks_attacks` component the server sent. A prior; see `null_mechanics::belief`.
+    pub block_delay_ticks: Option<u32>,
 }
 
 impl ItemStack {
     pub fn new(item: &str, count: u8) -> Self {
-        Self { item: item.to_string(), count }
+        Self { item: item.to_string(), count, block_delay_ticks: None }
     }
 }
 
@@ -154,6 +157,24 @@ pub struct UsingItem {
     pub hand: Hand,
     /// Ticks the item has been in use.
     pub ticks: u32,
+    /// Server ticks of the use, counted from the server's confirmation (to about a tick); None
+    /// until the server confirms it.
+    pub server_ticks: Option<u32>,
+}
+
+/// A hit taken while an item that blocks attacks (`blocks_attacks`) was in use, blocked or not.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShieldHit {
+    /// Host tick the bot learned of it.
+    pub tick: u64,
+    /// `UsingItem::server_ticks` when the hit came.
+    pub use_ticks: u32,
+    pub blocked: bool,
+    /// Where the hit came from (the attacker, or the damage's position), if known. None for
+    /// blocked hits: the block sound carries no source.
+    pub from: Option<Vec3>,
+    /// Damage type ("minecraft:player_attack"), if known. None for blocked hits.
+    pub damage_type: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
