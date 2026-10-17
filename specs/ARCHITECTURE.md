@@ -104,7 +104,7 @@ On an SMP, other players read chat, watch for bots, raid bases and steal. This a
 - **operational security:** no coordinates in public chat, no obvious bot behaviour near others, swarm communication only on the out-of-band bus;
 - **territory:** what the faction holds and must defend; patrols, alarms, retreat points.
 
-Also a practical risk: many SMP servers forbid bots, and even pure vanilla kicks a player whose movement is physically slightly wrong. Anti-cheat plugins (Grim, Vulcan) are other server software and out of scope unless a target server needs them (F5 §4.6). Which servers the swarm plays on, and whether it is allowed there, is a decision for the operator, not the software.
+Also a practical risk: many SMP servers forbid bots, and even pure vanilla kicks a player whose movement is physically slightly wrong. Anti-cheat plugins (Grim, Vulcan) are other server software and not a target, but the mechanism code (the Azalea fork and `mc-adapter`) must run cleanly on Paper + GrimAC: vanilla packets only, zero alerts (F5 §4.6, Allen, 2026-10-17). Which servers the swarm plays on, and whether it is allowed there, is a decision for the operator, not the software.
 
 ---
 

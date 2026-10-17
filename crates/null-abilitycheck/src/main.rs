@@ -144,15 +144,35 @@ fn main() {
         ("A7", scenarios_items::a7),
         ("A8", scenarios_items::a8),
     ];
+    let mut aborted = false;
     for (id, f) in all.into_iter().chain(shapes).chain(items) {
-        if wants(id) {
-            for o in f(&mut cx) {
+        if !wants(id) {
+            continue;
+        }
+        // A panic (the bot stopped answering) becomes a failed row; the run then stops, since the
+        // bot's state is unknown. Rows already printed stay printed.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut cx))) {
+            Ok(rows) => {
+                for o in rows {
+                    if !o.shown {
+                        println!("{}", scenarios::report_line(&o));
+                    }
+                    results.push(o);
+                }
+            }
+            Err(e) => {
+                let why = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
+                let o = scenarios::Outcome { id: "RUN", name: format!("{id}_aborted"), pass: false, evidence: format!("{id} panicked: {why}; run stopped"), shown: false };
                 println!("{}", scenarios::report_line(&o));
                 results.push(o);
+                aborted = true;
+                break;
             }
         }
     }
-    cx.clean();
+    if !aborted {
+        cx.clean();
+    }
     let failed = results.iter().filter(|o| !o.pass).count();
     println!("{} scenario(s), {} passed, {failed} failed", results.len(), results.len() - failed);
     // The bot thread never ends; leaving closes its socket.

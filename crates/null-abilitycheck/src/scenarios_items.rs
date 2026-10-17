@@ -57,15 +57,18 @@ fn flat(a: [f64; 3], b: [f64; 3]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
-/// The server is Peaceful, where the food level never drops and saturation creeps up about 1 per
-/// 1.2 s, so the eating evidence is a jump in saturation. The hunger effect burns it to 0 quickly.
-fn drain_saturation(cx: &mut Ctx) -> f64 {
+/// Hunger 255 burns saturation to 0, then food; stop at 12 or less, so an apple's +4 shows. Needs
+/// a non-Peaceful server (Peaceful never lowers food).
+fn lower_food(cx: &mut Ctx) {
     let n = cx.name.clone();
     cx.r(&format!("effect give {n} minecraft:hunger 30 255 true"));
-    cx.poll(8.0, |cx| saturation(cx) < 0.05);
+    cx.poll(15.0, |cx| food(cx) <= 12);
     cx.r(&format!("effect clear {n} minecraft:hunger"));
     sleep(Duration::from_millis(500));
-    saturation(cx)
+}
+
+fn difficulty(cx: &mut Ctx) -> String {
+    cx.r("difficulty")
 }
 
 fn heal(cx: &mut Ctx) {
@@ -109,8 +112,11 @@ fn items(cx: &mut Ctx, op: ItemOp) -> ItemsInfo {
 
 fn scene(cx: &mut Ctx, hotbar: &[(u8, &str, u8)]) {
     cx.scene_in(AREA, hotbar, SPAWN);
-    // A golden apple leaves absorption hearts that would soak up the damage tests.
+    // Full food (Saturation 255 for one tick), then no effects: a golden apple leaves absorption
+    // hearts that would soak up the damage tests.
     let n = cx.name.clone();
+    cx.r(&format!("effect give {n} minecraft:saturation 1 255 true"));
+    sleep(Duration::from_millis(200));
     cx.r(&format!("effect clear {n}"));
     heal(cx);
     items(cx, ItemOp::Face { yaw: 0.0, pitch: 0.0 });
@@ -125,23 +131,25 @@ fn using(i: &ItemsInfo) -> String {
 /// Golden apple: nutrition 4, saturation 9.6, can always be eaten; 32 ticks. Walking 20 ticks from
 /// rest covers about 4.3 blocks; slowed to 20% about 0.9.
 const APPLE_SATURATION: f64 = 9.6;
+const APPLE_FOOD: i64 = 4;
 
 // Spec: specs/B2-survival-upkeep.md §4.1 (eating takes 32 ticks, release cancels, movement slowed)
 pub fn a5(cx: &mut Ctx) -> Vec<Outcome> {
     let mut out = Vec::new();
 
     scene(cx, &[(0, "golden_apple", 3)]);
-    drain_saturation(cx);
+    lower_food(cx);
     out.push(cx.run("A5", "eat_takes_32_ticks", |cx| {
         let apples0 = cx.count("golden_apple");
         let (f0, s0) = (food(cx), saturation(cx));
+        let diff = difficulty(cx);
         if let Err(e) = start(cx, ItemOp::Use(Hand::Main)) {
             return (false, e);
         }
         let g0 = game_time(cx);
         let mut g1 = None;
         cx.poll(4.0, |cx| {
-            let rose = saturation(cx) > s0 + 5.0;
+            let rose = food(cx) > f0;
             if rose {
                 g1 = Some(game_time(cx));
             }
@@ -154,15 +162,19 @@ pub fn a5(cx: &mut Ctx) -> Vec<Outcome> {
         let after = items(cx, ItemOp::Status);
         let apples1 = cx.count("golden_apple");
         let gap = g1.map(|g| g - g0);
-        let want = (f1 as f64).min(s0 + APPLE_SATURATION);
+        // FoodData.eat: food = min(food + nutrition, 20), saturation = min(saturation + value, food).
+        let want_f = (f0 + APPLE_FOOD).min(20);
+        let want_s = (want_f as f64).min(s0 + APPLE_SATURATION);
         (
-            (s1 - want > -0.3 && s1 - want < 3.0)
+            f0 <= 12
+                && f1 == want_f
+                && (s1 - want_s).abs() < 0.05
                 && apples1 + 1 == apples0
                 && gap.is_some_and(|g| (30..=35).contains(&g))
                 && during.using.is_some_and(|u| u.hand == Hand::Main)
                 && after.using.is_none(),
             format!(
-                "golden apple (nutrition 4, saturation 9.6): server saturation {s0} -> {s1} (want {want} plus up to 3 of Peaceful creep), food {f0} -> {f1} (capped: the server is Peaceful, so food cannot be lowered to show a rise), apples {apples0} -> {apples1}; saturation rose {gap:?} server ticks after the use started (vanilla 32, window 30-35: two RCON clock reads); bot view 2 ticks in: {}, after: {}",
+                "{diff}; golden apple (nutrition 4, saturation 9.6): server food {f0} -> {f1} (want {want_f}; food lowered to 12 or less first), saturation {s0} -> {s1} (want {want_s}), apples {apples0} -> {apples1}; food rose {gap:?} server ticks after the use started (vanilla 32, window 30-35: two RCON clock reads); bot view 2 ticks in: {}, after: {}",
                 using(&during),
                 using(&after)
             ),
@@ -170,10 +182,10 @@ pub fn a5(cx: &mut Ctx) -> Vec<Outcome> {
     }));
 
     scene(cx, &[(0, "golden_apple", 3)]);
-    drain_saturation(cx);
+    lower_food(cx);
     out.push(cx.run("A5", "release_early_eats_nothing", |cx| {
         let apples0 = cx.count("golden_apple");
-        let s0 = saturation(cx);
+        let (f0, s0) = (food(cx), saturation(cx));
         if let Err(e) = start(cx, ItemOp::Use(Hand::Main)) {
             return (false, e);
         }
@@ -181,13 +193,13 @@ pub fn a5(cx: &mut Ctx) -> Vec<Outcome> {
         sleep(Duration::from_millis(400));
         let released = items(cx, ItemOp::Release);
         sleep(Duration::from_millis(2000));
-        let s1 = saturation(cx);
+        let (f1, s1) = (food(cx), saturation(cx));
         let apples1 = cx.count("golden_apple");
         let view = items(cx, ItemOp::Status);
         (
-            s1 - s0 < 6.0 && apples1 == apples0 && released.using.is_none() && view.using.is_none(),
+            f0 < 20 && f1 == f0 && (s1 - s0).abs() < 0.01 && apples1 == apples0 && released.using.is_none() && view.using.is_none(),
             format!(
-                "released about 8 ticks into the 32: server saturation {s0} -> {s1} (want a rise of under 6: only the Peaceful creep, an apple would add 9.6), apples {apples0} -> {apples1} (want unchanged); bot view after release: {}, 2 s later: {}",
+                "released about 8 ticks into the 32: server food {f0} -> {f1}, saturation {s0} -> {s1} (want both unchanged; an apple would add 4 and 9.6), apples {apples0} -> {apples1} (want unchanged); bot view after release: {}, 2 s later: {}",
                 using(&released),
                 using(&view)
             ),
@@ -230,16 +242,16 @@ pub fn a5(cx: &mut Ctx) -> Vec<Outcome> {
     scene(cx, &[(0, "bread", 3)]);
     out.push(cx.run("A5", "full_food_bread_is_refused", |cx| {
         let bread0 = cx.count("bread");
-        let s0 = saturation(cx);
+        let (f0, s0) = (food(cx), saturation(cx));
         if let Err(e) = start(cx, ItemOp::Use(Hand::Main)) {
             return (false, e);
         }
         let started = finish(cx);
         sleep(Duration::from_millis(2000));
-        let (bread1, s1) = (cx.count("bread"), saturation(cx));
+        let (bread1, f1, s1) = (cx.count("bread"), food(cx), saturation(cx));
         (
-            bread1 == bread0 && s1 - s0 < 6.0 && started.using.is_none(),
-            format!("food 20, bread: bread {bread0} -> {bread1}, saturation {s0} -> {s1} (want bread unchanged and saturation up by under 6: Peaceful creep only); bot view 2 ticks in: {} (want none: not slowed)", using(&started)),
+            f0 == 20 && bread1 == bread0 && f1 == 20 && (s1 - s0).abs() < 0.01 && started.using.is_none(),
+            format!("bread at full food: food {f0} -> {f1} (want 20 -> 20), bread {bread0} -> {bread1}, saturation {s0} -> {s1} (want both unchanged); bot view 2 ticks in: {} (want none: not slowed)", using(&started)),
         )
     }));
 
@@ -259,6 +271,10 @@ pub fn a6(cx: &mut Ctx) -> Vec<Outcome> {
         ("hurts_from_behind", 700, -4.0, 6.0, "raised for 14 ticks, hit from behind"),
         ("raise_delay_lets_a_hit_through", 0, 4.0, 6.0, "hit from the front in the 5-tick raise delay (RCON a few ms after the use packet, so inside it)"),
     ];
+    // Natural regeneration off for the damage rows (restored below), so the health drop is exact.
+    let regen = cx.r("gamerule natural_health_regeneration");
+    let regen_was = if regen.contains("false") { "false" } else { "true" };
+    cx.r("gamerule natural_health_regeneration false");
     for (name, wait, dz, want_dmg, why) in cases {
         scene(cx, &[(0, "shield", 1)]);
         out.push(cx.run("A6", name, |cx| {
@@ -269,18 +285,18 @@ pub fn a6(cx: &mut Ctx) -> Vec<Outcome> {
             }
             sleep(Duration::from_millis(wait));
             let reply = cx.r(&format!("damage {n} 6 minecraft:player_attack at {} {} {}", SPAWN.0, SPAWN.1, SPAWN.2 + dz));
-            // Read at once: Peaceful heals 1 a second, which would blur the figure.
             let h1 = health_of(cx, &n);
             let raised = finish(cx);
             items(cx, ItemOp::Release);
             let dmg = h0 - h1;
             let applied = reply.contains("Applied");
             (
-                if want_dmg == 0.0 { !applied && dmg <= 0.01 } else { applied && dmg > want_dmg - 1.01 && dmg <= want_dmg + 0.01 },
-                format!("{why}: server health {h0} (absorption {absorb:?}) -> {h1}, damage {dmg} (want {want_dmg}, or 1 less if a Peaceful heal landed in between); the server's reply to the damage command: {reply:?} (\"Applied\" = hurt, \"invulnerable\" = fully blocked); bot view: {}", using(&raised)),
+                if want_dmg == 0.0 { !applied && dmg <= 0.01 } else { applied && (dmg - want_dmg).abs() < 0.01 },
+                format!("{why}: server health {h0} (absorption {absorb:?}) -> {h1}, damage {dmg} (want {want_dmg}; natural regeneration off); the server's reply to the damage command: {reply:?} (\"Applied\" = hurt, \"invulnerable\" = fully blocked); bot view: {}", using(&raised)),
             )
         }));
     }
+    cx.r(&format!("gamerule natural_health_regeneration {regen_was}"));
 
     scene(cx, &[(0, "shield", 1)]);
     out.push(cx.run("A6", "movement_slowed_while_raised", |cx| {
@@ -405,7 +421,7 @@ pub fn a8(cx: &mut Ctx) -> Vec<Outcome> {
     scene(cx, &[(0, "iron_sword", 1)]);
     let online = cx.poll(20.0, |cx| cx.r(&format!("execute if entity {other}")).contains("passed"));
     if online.is_none() {
-        out.push(Outcome { id: "A8", name: "setup".into(), pass: false, evidence: format!("{other} never came online") });
+        out.push(Outcome { id: "A8", name: "setup".into(), pass: false, evidence: format!("{other} never came online"), shown: false });
         return out;
     }
     for c in [

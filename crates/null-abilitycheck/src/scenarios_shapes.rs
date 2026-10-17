@@ -345,11 +345,9 @@ const B: Brk = Brk { name: "", setup: &[], tool: None, hardness: 0.0, speed: 1.0
 const PICK: Option<&str> = Some("iron_pickaxe");
 const AXE: Option<&str> = Some("iron_axe");
 
-/// Grim's FastBreak adds about 45 ms of "balance" for every full-length break done at exact
-/// vanilla speed and flags past 1000 ms, a few more than 20 in one session (seen on this server;
-/// a vanilla client sends the same packets). So only a dozen breaks here run for their full time:
-/// the first rows, which fix the vanilla timing per shape. The rest run under Haste 255, where the
-/// right tool breaks them on the start packet (the instamine path, no finishing packet).
+/// Every row runs for its full vanilla time except the last, which runs under Haste 255 (the
+/// instamine path). Before fork patch 10, Grim's FastBreak flagged after about 20 full-length
+/// breaks, so most rows ran under Haste; the cause was the bot's timing, not Grim.
 const BREAKS: &[Brk] = &[
     // instant at hardness 0: the break goes out on the start packet (BlockBreakSent from the instamine path)
     Brk { name: "break_redstone_wire", setup: &[(0, 0, 0, "redstone_wire")], ..B },
@@ -372,32 +370,32 @@ const BREAKS: &[Brk] = &[
     Brk { name: "break_stairs", setup: &[(0, 0, 0, "oak_stairs[facing=east,half=bottom]")], tool: AXE, hardness: 2.0, speed: 6.0, ..B },
     Brk { name: "break_lantern", setup: &[(0, 0, 0, "lantern[hanging=false]")], tool: PICK, hardness: 3.5, speed: 6.0, ..B },
     Brk { name: "break_farmland", setup: &[(0, 0, 0, "farmland")], hardness: 0.6, ..B },
-    // Haste 255 with the right tool: instamine
-    Brk { name: "break_pressure_plate_hasted", setup: &[(0, 0, 0, "stone_pressure_plate")], tool: PICK, hardness: 0.5, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_snow_layer_hasted", setup: &[(0, 0, 0, "snow[layers=1]")], tool: Some("iron_shovel"), hardness: 0.1, speed: 6.0, haste: true, ..B },
+    Brk { name: "break_pressure_plate", setup: &[(0, 0, 0, "stone_pressure_plate")], tool: PICK, hardness: 0.5, speed: 6.0, ..B },
+    Brk { name: "break_snow_layer", setup: &[(0, 0, 0, "snow[layers=1]")], tool: Some("iron_shovel"), hardness: 0.1, speed: 6.0, ..B },
+    Brk { name: "break_iron_bars", setup: &[(0, 0, 0, "iron_bars")], tool: PICK, hardness: 5.0, speed: 6.0, ..B },
+    Brk { name: "break_chain_x", setup: &[(0, 0, 0, "iron_chain[axis=x]")], tool: PICK, hardness: 5.0, speed: 6.0, ..B },
+    Brk { name: "break_chain_z", setup: &[(0, 0, 0, "iron_chain[axis=z]")], tool: PICK, hardness: 5.0, speed: 6.0, ..B },
+    Brk { name: "break_lightning_rod", setup: &[(0, 0, 0, "lightning_rod[facing=up]")], tool: PICK, hardness: 3.0, speed: 6.0, ..B },
+    Brk { name: "break_slab", setup: &[(0, 0, 0, "oak_slab[type=bottom]")], tool: AXE, hardness: 2.0, speed: 6.0, ..B },
+    Brk { name: "break_dirt_path", setup: &[(0, 0, 0, "dirt_path")], hardness: 0.65, ..B },
+    Brk { name: "break_soul_sand", setup: &[(0, 0, 0, "soul_sand")], hardness: 0.5, ..B },
+    Brk { name: "break_chest", setup: &[(0, 0, 0, "chest[facing=south]")], tool: AXE, hardness: 2.5, speed: 6.0, ..B },
+    Brk { name: "break_enchanting_table", setup: &[(0, 0, 0, "enchanting_table")], tool: PICK, hardness: 5.0, speed: 6.0, ..B },
+    Brk { name: "break_ladder", setup: &[(0, 0, 1, "stone"), (0, 0, 0, "ladder[facing=north]")], hardness: 0.4, ..B },
+    Brk { name: "break_trapdoor", setup: &[(0, 0, 0, "oak_trapdoor[half=bottom,facing=north]")], tool: AXE, hardness: 3.0, speed: 6.0, ..B },
+    Brk { name: "break_door_lower_half", setup: &[(0, 1, 0, "oak_door[half=upper,facing=north]"), (0, 0, 0, "oak_door[half=lower,facing=north]")], tool: AXE, hardness: 3.0, speed: 6.0, ..B },
+    Brk { name: "break_bed", setup: &[(0, 0, 1, "white_bed[part=head,facing=south]"), (0, 0, 0, "white_bed[part=foot,facing=south]")], hardness: 0.2, ..B },
+    Brk { name: "break_banner", setup: &[(0, 0, 0, "white_banner[rotation=0]")], hardness: 1.0, ..B },
+    Brk { name: "break_skull", setup: &[(0, 0, 0, "skeleton_skull[rotation=0]")], hardness: 1.0, ..B },
+    Brk { name: "break_cauldron", setup: &[(0, 0, 0, "cauldron")], tool: PICK, hardness: 2.0, speed: 6.0, ..B },
+    Brk { name: "break_hopper", setup: &[(0, 0, 0, "hopper[facing=down]")], tool: PICK, hardness: 3.0, speed: 6.0, ..B },
+    Brk { name: "break_composter", setup: &[(0, 0, 0, "composter[level=0]")], hardness: 0.6, ..B },
+    Brk { name: "break_anvil", setup: &[(0, 0, 0, "anvil[facing=north]")], tool: PICK, hardness: 5.0, speed: 6.0, ..B },
+    Brk { name: "break_bell", setup: &[(0, 0, 0, "bell[attachment=floor,facing=north]")], tool: PICK, hardness: 5.0, speed: 6.0, ..B },
+    Brk { name: "break_campfire", setup: &[(0, 0, 0, "campfire[lit=false]")], tool: AXE, hardness: 2.0, speed: 6.0, ..B },
+    Brk { name: "break_cake", setup: &[(0, 0, 0, "cake")], hardness: 0.5, ..B },
+    // Haste 255 with the right tool: instamine (the break goes out on the start packet)
     Brk { name: "break_wall_hasted", setup: &[(0, 0, 0, "cobblestone_wall")], tool: PICK, hardness: 2.0, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_iron_bars_hasted", setup: &[(0, 0, 0, "iron_bars")], tool: PICK, hardness: 5.0, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_chain_x_hasted", setup: &[(0, 0, 0, "iron_chain[axis=x]")], tool: PICK, hardness: 5.0, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_chain_z_hasted", setup: &[(0, 0, 0, "iron_chain[axis=z]")], tool: PICK, hardness: 5.0, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_lightning_rod_hasted", setup: &[(0, 0, 0, "lightning_rod[facing=up]")], tool: PICK, hardness: 3.0, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_slab_hasted", setup: &[(0, 0, 0, "oak_slab[type=bottom]")], tool: AXE, hardness: 2.0, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_dirt_path_hasted", setup: &[(0, 0, 0, "dirt_path")], hardness: 0.65, haste: true, ..B },
-    Brk { name: "break_soul_sand_hasted", setup: &[(0, 0, 0, "soul_sand")], hardness: 0.5, haste: true, ..B },
-    Brk { name: "break_chest_hasted", setup: &[(0, 0, 0, "chest[facing=south]")], tool: AXE, hardness: 2.5, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_enchanting_table_hasted", setup: &[(0, 0, 0, "enchanting_table")], tool: PICK, hardness: 5.0, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_ladder_hasted", setup: &[(0, 0, 1, "stone"), (0, 0, 0, "ladder[facing=north]")], hardness: 0.4, haste: true, ..B },
-    Brk { name: "break_trapdoor_hasted", setup: &[(0, 0, 0, "oak_trapdoor[half=bottom,facing=north]")], tool: AXE, hardness: 3.0, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_door_lower_half_hasted", setup: &[(0, 1, 0, "oak_door[half=upper,facing=north]"), (0, 0, 0, "oak_door[half=lower,facing=north]")], tool: AXE, hardness: 3.0, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_bed_hasted", setup: &[(0, 0, 1, "white_bed[part=head,facing=south]"), (0, 0, 0, "white_bed[part=foot,facing=south]")], hardness: 0.2, haste: true, ..B },
-    Brk { name: "break_banner_hasted", setup: &[(0, 0, 0, "white_banner[rotation=0]")], hardness: 1.0, haste: true, ..B },
-    Brk { name: "break_skull_hasted", setup: &[(0, 0, 0, "skeleton_skull[rotation=0]")], hardness: 1.0, haste: true, ..B },
-    Brk { name: "break_cauldron_hasted", setup: &[(0, 0, 0, "cauldron")], tool: PICK, hardness: 2.0, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_hopper_hasted", setup: &[(0, 0, 0, "hopper[facing=down]")], tool: PICK, hardness: 3.0, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_composter_hasted", setup: &[(0, 0, 0, "composter[level=0]")], hardness: 0.6, haste: true, ..B },
-    Brk { name: "break_anvil_hasted", setup: &[(0, 0, 0, "anvil[facing=north]")], tool: PICK, hardness: 5.0, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_bell_hasted", setup: &[(0, 0, 0, "bell[attachment=floor,facing=north]")], tool: PICK, hardness: 5.0, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_campfire_hasted", setup: &[(0, 0, 0, "campfire[lit=false]")], tool: AXE, hardness: 2.0, speed: 6.0, haste: true, ..B },
-    Brk { name: "break_cake_hasted", setup: &[(0, 0, 0, "cake")], hardness: 0.5, haste: true, ..B },
 ];
 
 /// The bot-side tick count of a break must equal vanilla's (`ticks_between_packets`).

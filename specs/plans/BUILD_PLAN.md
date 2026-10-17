@@ -5,9 +5,9 @@
 ## Layout
 
 - Code lives in this repo: a Cargo workspace at the root, crates under `crates/`, tools under `tools/`, scripts under `scripts/`. `specs/` stays the single source of truth for documents.
-- The root `rust-toolchain.toml` pins `nightly-2026-10-12`, the Azalea fork's toolchain. Decision crates must also build with `cargo +stable`. `scripts/check_boundary.sh` checks that, and checks that no crate outside the allowlist (`mc-adapter`, `mc-nav`, `mc-act`, and binaries that link them) depends on `bevy*` or `azalea*` (F5 §4.1).
-- The Azalea fork is a path dependency: `~/Desktop/null-spikes/azalea`.
-- Test servers are outside the repo, under `~/Desktop/null-spikes/`: `combat-server/` (flat, PvP; port 25566, RCON 25576) and `skeleton-server/` (S4; port 25567, RCON 25577). The bench server keeps 25565.
+- The root `rust-toolchain.toml` pins `nightly-2026-10-12`, the Azalea fork's toolchain. Decision crates must also build with `cargo +stable`. `scripts/check_boundary.sh` checks that, and checks that no crate outside the allowlist (`mc-adapter` and the binaries that link it: `null-node`, `null-abilitycheck`, `null-duel`; the planned `mc-nav` and `mc-act` were dropped 2026-10-17, their raw capability goes in the fork) depends on `bevy*` or `azalea*` (F5 §4.1).
+- The Azalea fork is a git dependency on the public fork `allen546/azalea`, pinned by commit in `Cargo.toml` (local clone `~/Desktop/null-spikes/azalea`).
+- Test servers: `harness/skeleton-server/` (vanilla, S4; port 25567, RCON 25577) and `harness/grim-server/` (Paper + GrimAC; port 25568, RCON 25578) keep their scripts and READMEs in the repo, with worlds untracked; `~/Desktop/null-spikes/combat-server/` (flat, PvP; port 25566, RCON 25576) stays outside. The bench server keeps 25565.
 - Nothing is committed without Allen asking.
 
 ## Step 1: skeleton (ARCHITECTURE §7.1)

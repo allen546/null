@@ -12,7 +12,7 @@
 | 4.3 | Mechanics table: schema and lookup | Deterministic | A keyed table queried by feature |
 | 4.4 | Mechanics table: values | Measured | Each value is probed in the harness or sourced, with a confidence mark |
 | 4.5 | Feature queries | Deterministic | `has_feature("crafter")`, never version numbers |
-| 4.6 | Server settings | Measured | Vanilla settings change mechanics in known, testable ways; other server software is out of scope |
+| 4.6 | Server settings | Measured | Vanilla settings change mechanics in known, testable ways; other server software is not a target, but mechanism code must also run cleanly on Paper with an anticheat |
 | 4.7 | Porting procedure | Deterministic | Generate, fill, fix, test, in that order |
 | 4.8 | Content compatibility across versions | Interface · runtime decision · person | When a community machine breaks on a new version, only a redesign fixes it |
 
@@ -96,9 +96,12 @@ Skills ask `has_feature("crafter")`, `has_feature("copper_bulb")`, `has_feature(
 
 ### 4.6 Server settings
 
-Null targets pure vanilla servers only (project memory; Allen, 2026-10-13: which server doesn't matter, adapting is easy). Profiles cover vanilla server settings that change mechanics: gamerules, view and simulation distance, spawn limits, difficulty. Other server software (Paper's duper-breaking defaults, Folia's regionised ticking) is out of scope; if one is ever targeted, its differences become mechanics overrides keyed by server software, measured in the harness (spec audit #13, 2026-10-13).
+Null targets vanilla servers only (Allen, 2026-10-13, confirmed 2026-10-17). Profiles cover vanilla server settings that change mechanics: gamerules, view and simulation distance, spawn limits, difficulty. Other server software (Paper's duper-breaking defaults, Folia's regionised ticking, plugin settings) is not a target: plans and skills don't adapt to it. If one is ever targeted, its differences become mechanics overrides keyed by server software, measured in the harness (spec audit #13, 2026-10-13).
 
-**Open (2026-10-17, Allen's call):** this conflicts with Paper + GrimAC being the reference test server (`harness/grim-server`) and with Paper and plugin settings that change mechanics (the shield's raise-to-block delay). Proposed: targets are vanilla and Paper/Spigot servers, possibly with an anticheat; every server-configurable mechanic is a per-server belief, with a prior from the item's components or the mechanics table, refined by what the bot observes; zero Grim alerts is the bar. See HANDOFF.md.
+**Mechanism code must also run cleanly on Paper with an anticheat (Allen, 2026-10-17).** The Azalea fork and `mc-adapter` must give the same results, at vanilla timing, with zero anticheat alerts on Paper + GrimAC, because those mechanics are well documented. In practice this means:
+- a bot sends only what a vanilla client could send; a request a vanilla client could not make is refused on the client, with a reason, and nothing is sent;
+- the ability check (`specs/plans/ABILITY_CHECK.md`) passes on both test servers: vanilla `harness/skeleton-server` (the target) and Paper + Grim `harness/grim-server` (the strict check, timing included);
+- a timing that an item or a vanilla setting can change is a belief, not a fact: a prior from the item's components or the mechanics table, refined by what the bot observes (example: the shield's raise-to-block delay, the held item's `blocks_attacks.block_delay_seconds`).
 
 ### 4.7 Porting procedure
 

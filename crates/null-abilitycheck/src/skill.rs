@@ -3,8 +3,23 @@
 
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex, mpsc::{Receiver, Sender}},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{Receiver, Sender},
+    },
+    time::Instant,
 };
+
+/// Wall time between client ticks, for diagnosing Grim's Timer check (packets faster than real
+/// time): the longest gap, and how many ticks came under 25 ms after the one before (catch-up).
+pub static TICK_GAP_MAX_MS: AtomicU64 = AtomicU64::new(0);
+pub static TICK_FAST: AtomicU64 = AtomicU64::new(0);
+
+/// The bot's own view when it last refused a click on the client (reason set, nothing sent):
+/// position, look, ground, velocity and the target block as it sees it. Printed on the row, so an
+/// intermittent "crosshair does not hit it" shows whether the eye, the look or the world was off.
+pub static REFUSAL_VIEW: Mutex<Option<String>> = Mutex::new(None);
 
 use null_bot_api::{
     BlockAction, BlockOutcome, BlockPos, BotCommands, BotView, Face, ItemStack, Look, NavStatus, Skill,
@@ -71,6 +86,7 @@ pub struct RemoteSkill {
     cur: Option<Run>,
     items: crate::skill_items::ItemState,
     chain: Chain,
+    last_step: Option<Instant>,
 }
 
 /// Progress of a `BreakChain`: the block looked at (and when), and the breaks logged so far.
@@ -78,7 +94,12 @@ pub struct RemoteSkill {
 struct Chain {
     looked: Option<(BlockPos, u64)>,
     log: Vec<(BlockPos, Option<u64>, BlockOutcome)>,
+    /// First tick every block read as air.
+    all_air: Option<u64>,
 }
+
+/// The chain gives up after this many ticks, before the runner's 60 s wait.
+const CHAIN_TICKS: u64 = 1000;
 
 struct Run {
     op: Op,
@@ -88,7 +109,7 @@ struct Run {
 
 impl RemoteSkill {
     pub fn new(ops: Arc<Mutex<Receiver<Op>>>, out: Sender<Report>) -> Self {
-        Self { ops, out, cur: None, items: Default::default(), chain: Chain::default() }
+        Self { ops, out, cur: None, items: Default::default(), chain: Chain::default(), last_step: None }
     }
 }
 
@@ -124,6 +145,14 @@ impl Skill for RemoteSkill {
 
     // Spec: specs/plans/ABILITY_CHECK.md (scenario ops: A1 slots, A2 break, A3 pickup, A4 place)
     fn step(&mut self, v: &dyn BotView, c: &mut dyn BotCommands) -> SkillStatus {
+        let wall = Instant::now();
+        if let Some(t) = self.last_step.replace(wall) {
+            let gap = wall.duration_since(t).as_millis() as u64;
+            TICK_GAP_MAX_MS.fetch_max(gap, Ordering::Relaxed);
+            if gap < 25 {
+                TICK_FAST.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         let now = v.tick();
         if self.cur.is_none()
             && let Ok(op) = self.ops.lock().unwrap().try_recv()
@@ -245,7 +274,13 @@ impl Skill for RemoteSkill {
                 {
                     ch.log.push((a.pos, a.finish_tick.map(|f| f - a.start_tick), a.outcome));
                 }
+                // The adapter keeps one break record; a new break command replaces it. So the next
+                // break waits until the last one's result (the server's ack) is in, or it is lost.
+                let unanswered = v.last_break().is_some_and(|a| a.start_tick >= run.t0 && a.outcome == BlockOutcome::Pending);
                 let next = list.iter().copied().find(|p| v.block_at(*p).as_deref() != Some("minecraft:air"));
+                if next.is_none() && ch.all_air.is_none() {
+                    ch.all_air = Some(now);
+                }
                 match next {
                     // Look at the next block as soon as the last one is gone; the fork holds the
                     // start until vanilla's destroy delay has passed.
@@ -255,12 +290,17 @@ impl Skill for RemoteSkill {
                         None
                     }
                     Some(p) => {
-                        if ch.looked.is_some_and(|(_, t)| now >= t + LOOK_TICKS) {
+                        let started_p = v.last_break().is_some_and(|a| a.start_tick >= run.t0 && a.pos == p);
+                        if ch.looked.is_some_and(|(_, t)| now >= t + LOOK_TICKS) && (!unanswered || started_p) {
                             c.break_block(p);
                         }
-                        (age > 3000).then_some(Info::Timeout)
+                        (age > CHAIN_TICKS).then(|| Info::Chain(ch.log.clone()))
                     }
-                    None if ch.log.len() >= list.len() || age > 3000 => Some(Info::Chain(ch.log.clone())),
+                    // All air: done when every break is logged; a missing result fails the row
+                    // with the log after 40 ticks rather than hanging.
+                    None if ch.log.len() >= list.len() || ch.all_air.is_some_and(|t| now > t + 40) || age > CHAIN_TICKS => {
+                        Some(Info::Chain(ch.log.clone()))
+                    }
                     None => None,
                 }
             }
@@ -280,6 +320,21 @@ impl Skill for RemoteSkill {
                     .then(|| Info::Snapshot(snapshot(v)))
             }
         };
+        if let Some(Info::Action(a)) = &done
+            && a.outcome == BlockOutcome::Refused
+            && a.ack_tick.is_none()
+            && let Some(why) = a.reason
+        {
+            *REFUSAL_VIEW.lock().unwrap() = Some(format!(
+                "bot view at refusal ({why}): pos {:?}, look {:?}, on ground {}, velocity {:?}, target {:?} seen as {:?}",
+                v.position(),
+                v.look(),
+                v.on_ground(),
+                v.velocity(),
+                a.pos,
+                v.block_at(a.pos)
+            ));
+        }
         if let Some(info) = done {
             say(info);
             self.cur = None;

@@ -28,6 +28,8 @@ pub struct Outcome {
     pub name: String,
     pub pass: bool,
     pub evidence: String,
+    /// Already printed (by `Ctx::run`, as soon as the row finished).
+    pub shown: bool,
 }
 
 pub struct Ctx {
@@ -254,7 +256,14 @@ impl Ctx {
     pub(crate) fn run(&mut self, id: &'static str, name: &str, body: impl FnOnce(&mut Self) -> (bool, String)) -> Outcome {
         let mark = self.log_len();
         sleep(Duration::from_millis(100));
+        crate::skill::TICK_GAP_MAX_MS.store(0, std::sync::atomic::Ordering::Relaxed);
+        crate::skill::TICK_FAST.store(0, std::sync::atomic::Ordering::Relaxed);
+        *crate::skill::REFUSAL_VIEW.lock().unwrap() = None;
         let (mut pass, mut evidence) = body(self);
+        // Only on a failed row: refusal rows that expect a refusal stay short.
+        if !pass && let Some(v) = crate::skill::REFUSAL_VIEW.lock().unwrap().take() {
+            evidence += &format!("; {v}");
+        }
         sleep(Duration::from_millis(300));
         let (bad, grim) = self.log_problems(mark);
         if bad.is_empty() && grim.is_empty() {
@@ -268,7 +277,13 @@ impl Ctx {
                 evidence += &format!("; GRIM ALERTS: {}", grim.join(", "));
             }
         }
-        Outcome { id, name: name.into(), pass, evidence }
+        let (gap, fast) = (crate::skill::TICK_GAP_MAX_MS.load(std::sync::atomic::Ordering::Relaxed), crate::skill::TICK_FAST.load(std::sync::atomic::Ordering::Relaxed));
+        if !grim.is_empty() || gap > 150 {
+            evidence += &format!("; client ticks: longest gap {gap} ms, {fast} under 25 ms (catch-up)");
+        }
+        let o = Outcome { id, name: name.into(), pass, evidence, shown: true };
+        println!("{}", report_line(&o));
+        o
     }
 }
 
@@ -284,8 +299,10 @@ pub fn a1(cx: &mut Ctx) -> Vec<Outcome> {
         let mut ok = true;
         for (slot, item) in [(3u8, "diamond_sword"), (8, "apple"), (0, "")] {
             let view_slot = cx.snap_after(Op::SelectSlot(slot)).selected;
+            let mut server = None;
             let got = cx.poll(1.0, |cx| {
-                last_int(&cx.r(&format!("data get entity {n} SelectedItemSlot"))) == Some(slot as i64)
+                server = last_int(&cx.r(&format!("data get entity {n} SelectedItemSlot")));
+                server == Some(slot as i64)
             });
             let held = if item.is_empty() {
                 cx.r(&format!("execute unless items entity {n} weapon.mainhand *")).contains("passed")
@@ -293,7 +310,7 @@ pub fn a1(cx: &mut Ctx) -> Vec<Outcome> {
                 cx.r(&format!("execute if items entity {n} weapon.mainhand minecraft:{item}")).contains("passed")
             };
             ok &= got.is_some() && held;
-            ev.push(format!("slot {slot}: bot view {view_slot}, server SelectedItemSlot {} ({} ms), mainhand {}", if got.is_some() { "=" } else { "!=" }, got.map_or(-1, |s| (s * 1000.0) as i64), if item.is_empty() { "empty" } else { item }));
+            ev.push(format!("slot {slot}: bot view {view_slot}, server SelectedItemSlot {server:?} ({} ms), mainhand {}", got.map_or(-1, |s| (s * 1000.0) as i64), if item.is_empty() { "empty" } else { item }));
         }
         (ok, ev.join("; "))
     }));
@@ -346,9 +363,10 @@ fn chain_of_breaks(cx: &mut Ctx) -> Outcome {
         sleep(Duration::from_millis(500));
         let air = list.iter().filter(|p| cx.block_is(**p, "air")).count();
         let bad: Vec<_> = log.iter().filter(|(_, t, o)| *t != Some(want) || *o != BlockOutcome::Done).collect();
+        let unlogged: Vec<_> = list.iter().filter(|p| !log.iter().any(|(q, _, _)| q == *p)).collect();
         (
             air == list.len() && log.len() == list.len() && bad.is_empty(),
-            format!("{} of {} logs air on the server; {} breaks logged, each want {want} ticks (vanilla {n}) and Done; off: {bad:?}", air, list.len(), log.len()),
+            format!("{} of {} logs air on the server; {} breaks logged, each want {want} ticks (vanilla {n}) and Done; off: {bad:?}; no result logged for: {unlogged:?}", air, list.len(), log.len()),
         )
     })
 }
