@@ -14,6 +14,7 @@ Null is a swarm of Minecraft bots (Rust, on a public Azalea fork) with an LLM co
 - Raw game capability (placing with results, item use, attackers, menus and clicks, pathfinder moves) goes in the Azalea fork as normal Azalea APIs. `mc-adapter` only translates fork components to the version-stable `BotView`/`BotCommands` in `null-bot-api` (F5 §4.1). Only `mc-adapter` and `null-node` import Azalea or Bevy (`scripts/check_boundary.sh`).
 - Null targets vanilla servers. The fork and adapter must also run cleanly on Paper + GrimAC, timing included, with zero alerts (F5 §4.6). An ability passes only when it passes on both test servers.
 - A bot never sends a packet a vanilla client couldn't send. It refuses on the client, with a reason, and sends nothing.
+- Null computes exactly what a vanilla client decides or sends (its own physics, input, timing, clicks and their predicted results), and nothing the server decides. It skips display, and hidden server state is a belief (F5 §4.6, "What Null computes").
 - Server-configurable timings are beliefs, not facts (example: the shield's raise-to-block delay).
 - Builder work: the product is the safety guarantee, not finishing. A plan is certified (clean full replay, deterministic) or the result is a stuck report; no retries on a live server. Never trade safety for completion (no unproven fallbacks to get past a step).
 
