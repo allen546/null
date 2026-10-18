@@ -6,6 +6,7 @@
 use azalea::{
     BlockPos as ABlockPos, ItemInUse, Vec3 as AVec3,
     attackers::{RecentAttackers, age_recent_attackers},
+    tags::ServerTags,
     attack::{AttackQueued, AttackStrengthScale},
     core::{entity_id::MinecraftEntityId, tick::GameTick},
     entity::{
@@ -185,7 +186,7 @@ fn decide(
             &WorldName,
             &Pathfinder,
             Option<&ExecutingPath>,
-            (Option<&HostFlags>, Option<&BlockActionResults>, Option<&RecentAttackers>),
+            (Option<&HostFlags>, Option<&BlockActionResults>, Option<&RecentAttackers>, Option<&ServerTags>),
         ),
         (With<LocalEntity>, With<HasClientLoaded>, Without<Dead>),
     >,
@@ -194,7 +195,7 @@ fn decide(
 ) {
     tick.0 += 1;
     let now = tick.0;
-    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, results, attackers)) in
+    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, results, attackers, tags)) in
         &mut bots
     {
         let nav_pending = flags.and_then(|f| f.nav_requested).is_some_and(|t| now - t <= 2);
@@ -218,6 +219,7 @@ fn decide(
                 blocks: flags.map(|f| &f.blocks),
                 results,
                 attackers,
+                tags,
             },
             &others,
         );

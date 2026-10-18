@@ -1,7 +1,7 @@
 //! Bot-side ops for A5-A8 (item use, attack, attackers). `RemoteSkill::step` calls `step` for
 //! `Op::Items`; everything goes through `BotView` / `BotCommands` only.
 
-use null_bot_api::{Attacker, BotCommands, BotView, Hand, ShieldHit, UsingItem, Vec3};
+use null_bot_api::{Attacker, BotCommands, BotView, Hand, ItemStack, ShieldHit, UsingItem, Vec3};
 use null_mechanics::BlockDelayBelief;
 
 use crate::skill::{Info, look_at};
@@ -73,7 +73,7 @@ fn info(v: &dyn BotView, st: &ItemState, waited: u64) -> Info {
         attackers,
         waited,
         note: st.note.clone(),
-        held_delay: v.held_item().and_then(|s| s.block_delay_ticks),
+        held_delay: v.held_item().and_then(ItemStack::block_delay_ticks),
         shield: st.shield.belief().copied(),
         shield_hits: v.shield_hits().to_vec(),
     })

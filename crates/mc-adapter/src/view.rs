@@ -16,6 +16,7 @@ use azalea::{
     world::WorldName,
 };
 use azalea::ecs::prelude::*;
+use azalea::registry::{DataRegistry, HolderSet};
 use null_bot_api as api;
 use null_bot_api::BotView;
 
@@ -40,6 +41,7 @@ pub struct ViewParts<'a> {
     pub blocks: Option<&'a crate::blocks::BlockActions>,
     pub results: Option<&'a azalea::block_actions::BlockActionResults>,
     pub attackers: Option<&'a azalea::attackers::RecentAttackers>,
+    pub tags: Option<&'a azalea::tags::ServerTags>,
 }
 
 /// Other entities, for `BotView::entities`.
@@ -75,17 +77,62 @@ fn v3(v: azalea::Vec3) -> api::Vec3 {
     api::Vec3::new(v.x, v.y, v.z)
 }
 
-fn stack(s: &azalea::inventory::ItemStack) -> Option<api::ItemStack> {
-    match s {
-        azalea::inventory::ItemStack::Empty => None,
-        azalea::inventory::ItemStack::Present(d) => Some(api::ItemStack {
-            item: d.kind.to_str().to_string(),
-            count: d.count.clamp(0, 255) as u8,
+const DAMAGE_TYPE: &str = "minecraft:damage_type";
+
+impl AzaleaView<'_, '_, '_> {
+    fn stack(&self, s: &azalea::inventory::ItemStack) -> Option<api::ItemStack> {
+        match s {
+            azalea::inventory::ItemStack::Empty => None,
+            azalea::inventory::ItemStack::Present(d) => Some(api::ItemStack {
+                item: d.kind.to_str().to_string(),
+                count: d.count.clamp(0, 255) as u8,
+                blocks_attacks: d
+                    .get_component::<azalea::inventory::components::BlocksAttacks>()
+                    .map(|b| self.blocks_attacks(&b)),
+            }),
+        }
+    }
+
+    // Spec: specs/F5-version-layer.md §4.6 (the item's own rules, as the server sent them)
+    fn blocks_attacks(&self, b: &azalea::inventory::components::BlocksAttacks) -> api::BlocksAttacks {
+        api::BlocksAttacks {
             // Vanilla `BlocksAttacks#blockDelayTicks`: seconds * 20, rounded.
-            block_delay_ticks: d
-                .get_component::<azalea::inventory::components::BlocksAttacks>()
-                .map(|b| (b.block_delay_seconds * 20.0).round().max(0.0) as u32),
-        }),
+            delay_ticks: (b.block_delay_seconds * 20.0).round().max(0.0) as u32,
+            reductions: b
+                .damage_reductions
+                .iter()
+                .map(|r| api::DamageReduction {
+                    angle_deg: r.horizontal_blocking_angle,
+                    types: r.kind.as_ref().map(|k| match k {
+                        HolderSet::Direct { contents } => self.damage_types(contents.iter().map(|d| d.protocol_id())),
+                        HolderSet::Named { key, .. } => self.damage_tag(key),
+                    }),
+                    base: r.base,
+                    factor: r.factor,
+                })
+                .collect(),
+            bypassed_by: b.bypassed_by.as_ref().map(|t| self.damage_tag(t)),
+        }
+    }
+
+    /// A damage type tag, resolved with the tags the server sent.
+    fn damage_tag(&self, tag: &azalea::Identifier) -> api::DamageTypes {
+        let ids = self.p.tags.and_then(|t| t.get(&azalea::Identifier::new(DAMAGE_TYPE), tag));
+        match ids {
+            Some(ids) => self.damage_types(ids.iter().copied()),
+            None => api::DamageTypes::Unknown,
+        }
+    }
+
+    /// Damage type protocol ids to names, through the server's synced registry.
+    fn damage_types(&self, ids: impl Iterator<Item = u32>) -> api::DamageTypes {
+        let w = self.p.world.shared.read();
+        let Some(reg) = w.registries.extra.get(&azalea::Identifier::new(DAMAGE_TYPE)) else {
+            return api::DamageTypes::Unknown;
+        };
+        let names: Option<Vec<String>> =
+            ids.map(|i| reg.map.get_index(i as usize).map(|(id, _)| id.to_string())).collect();
+        names.map_or(api::DamageTypes::Unknown, api::DamageTypes::Known)
     }
 }
 
@@ -149,7 +196,7 @@ impl BotView for AzaleaView<'_, '_, '_> {
         self.hotbar.get_or_init(|| {
             let menu = &self.p.inventory.inventory_menu;
             let start = *menu.hotbar_slots_range().start();
-            std::array::from_fn(|i| menu.slot(start + i).and_then(stack))
+            std::array::from_fn(|i| menu.slot(start + i).and_then(|s| self.stack(s)))
         })
     }
     // Spec: specs/B3-inventory-crafting.md §4.1 (slot management: read all 36 slots)
@@ -159,7 +206,7 @@ impl BotView for AzaleaView<'_, '_, '_> {
             let menu = &self.p.inventory.inventory_menu;
             std::array::from_fn(|i| {
                 let slot = if i < 9 { 36 + i } else { i };
-                menu.slot(slot).and_then(stack)
+                menu.slot(slot).and_then(|s| self.stack(s))
             })
         })
     }
@@ -169,7 +216,7 @@ impl BotView for AzaleaView<'_, '_, '_> {
     fn offhand(&self) -> Option<&api::ItemStack> {
         // Player menu slot 45.
         self.offhand
-            .get_or_init(|| self.p.inventory.inventory_menu.slot(45).and_then(stack))
+            .get_or_init(|| self.p.inventory.inventory_menu.slot(45).and_then(|s| self.stack(s)))
             .as_ref()
     }
     // Spec: specs/B2-survival-upkeep.md §4.1 (the fork's ItemInUse: hand and ticks)

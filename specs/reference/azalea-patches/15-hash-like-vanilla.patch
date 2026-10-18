@@ -1,0 +1,214 @@
+diff --git a/azalea-inventory/src/components/mod.rs b/azalea-inventory/src/components/mod.rs
+index a5dd279..1b76477 100644
+--- a/azalea-inventory/src/components/mod.rs
++++ b/azalea-inventory/src/components/mod.rs
+@@ -589,16 +589,23 @@ impl Default for ToolRule {
+ 
+ #[derive(AzBuf, Clone, Debug, PartialEq, Serialize)]
+ pub struct Tool {
+-    #[serde(serialize_with = "flatten_array")]
++    // Vanilla's codec is a plain list here, even for one rule.
+     pub rules: Vec<ToolRule>,
+-    #[serde(skip_serializing_if = "is_default")]
++    #[serde(skip_serializing_if = "is_default_mining_speed")]
+     pub default_mining_speed: f32,
+     #[var]
+-    #[serde(skip_serializing_if = "is_default")]
++    #[serde(skip_serializing_if = "is_default_damage_per_block")]
+     pub damage_per_block: i32,
+-    #[serde(skip_serializing_if = "is_default")]
++    #[serde(skip_serializing_if = "is_true")]
+     pub can_destroy_blocks_in_creative: bool,
+ }
++// Vanilla `Tool#CODEC` leaves out a field equal to its default: 1.0, 1 and true.
++fn is_default_mining_speed(value: &f32) -> bool {
++    *value == 1.
++}
++fn is_default_damage_per_block(value: &i32) -> bool {
++    *value == 1
++}
+ 
+ impl Tool {
+     pub const fn new() -> Self {
+@@ -1051,6 +1058,7 @@ pub struct ItemModel {
+ #[derive(AzBuf, Clone, Debug, PartialEq, Serialize)]
+ pub struct DamageResistant {
+     /// A damage type tag key, without the '#' its JSON form has (the network form).
++    #[serde(serialize_with = "azalea_registry::identifier::serialize_tag_key")]
+     pub types: Identifier,
+ }
+ 
+@@ -1586,11 +1594,14 @@ pub struct BlocksAttacks {
+     pub block_delay_seconds: f32,
+     #[serde(skip_serializing_if = "is_default_disable_cooldown_scale")]
+     pub disable_cooldown_scale: f32,
+-    #[serde(skip_serializing_if = "is_default")]
++    #[serde(skip_serializing_if = "is_default_damage_reductions")]
+     pub damage_reductions: Vec<DamageReduction>,
+     #[serde(skip_serializing_if = "is_default")]
+     pub item_damage: ItemDamageFunction,
+-    #[serde(skip_serializing_if = "is_default")]
++    #[serde(
++        skip_serializing_if = "is_default",
++        serialize_with = "azalea_registry::identifier::serialize_optional_tag_key"
++    )]
+     pub bypassed_by: Option<Identifier>,
+     #[serde(skip_serializing_if = "is_default")]
+     pub block_sound: Option<azalea_registry::Holder<SoundEvent, CustomSound>>,
+@@ -1600,6 +1611,10 @@ pub struct BlocksAttacks {
+ fn is_default_disable_cooldown_scale(value: &f32) -> bool {
+     *value == 1.
+ }
++// Vanilla's default is one reduction: 90 degrees, every type, base 0, factor 1.
++fn is_default_damage_reductions(value: &[DamageReduction]) -> bool {
++    value == BlocksAttacks::new().damage_reductions
++}
+ 
+ impl BlocksAttacks {
+     pub fn new() -> Self {
+@@ -1629,7 +1644,7 @@ impl Default for BlocksAttacks {
+ pub struct DamageReduction {
+     #[serde(skip_serializing_if = "is_default_horizontal_blocking_angle")]
+     pub horizontal_blocking_angle: f32,
+-    #[serde(skip_serializing_if = "is_default")]
++    #[serde(rename = "type", skip_serializing_if = "is_default")]
+     pub kind: Option<HolderSet<DamageKind, Identifier>>,
+     pub base: f32,
+     pub factor: f32,
+@@ -1680,6 +1695,8 @@ pub struct AssetInfo {
+ #[derive(AzBuf, Clone, Debug, PartialEq, Serialize)]
+ #[serde(transparent)]
+ pub struct ProvidesBannerPatterns {
++    /// A banner pattern tag key, without the '#'.
++    #[serde(serialize_with = "azalea_registry::identifier::serialize_tag_key")]
+     pub key: Identifier,
+ }
+ 
+diff --git a/azalea-inventory/tests/components.rs b/azalea-inventory/tests/components.rs
+index 4a5af7c..6715f29 100644
+--- a/azalea-inventory/tests/components.rs
++++ b/azalea-inventory/tests/components.rs
+@@ -203,3 +203,70 @@ fn test_glider_checksum() {
+     let c = Glider;
+     assert_eq!(get_checksum(&c, &Default::default()).unwrap().0, 3312760008);
+ }
++
++// Tag keys hash as "#namespace:path" (vanilla `TagKey#hashedCodec`, `HolderSetCodec`). Values from
++// vanilla 1.21.11's own HashOps with registry access, as the client's `decoratedHashOpsGenerator`.
++fn named<D: azalea_registry::Registry>(key: &str) -> azalea_registry::HolderSet<D, azalea_registry::identifier::Identifier> {
++    azalea_registry::HolderSet::Named { key: key.into(), contents: vec![] }
++}
++
++#[test]
++fn test_damage_resistant_tag_checksum() {
++    let c = azalea_inventory::components::DamageResistant { types: "minecraft:is_fire".into() };
++    assert_eq!(get_checksum(&c, &Default::default()).unwrap().0, 1644159004);
++}
++
++#[test]
++fn test_provides_banner_patterns_tag_checksum() {
++    let c = azalea_inventory::components::ProvidesBannerPatterns { key: "minecraft:pattern_item/flower".into() };
++    assert_eq!(get_checksum(&c, &Default::default()).unwrap().0, 269714998);
++}
++
++#[test]
++fn test_blocks_attacks_bypassed_by_checksum() {
++    use azalea_inventory::components::{BlocksAttacks, ItemDamageFunction};
++    use azalea_registry::{Holder, builtin::SoundEvent};
++    let c = BlocksAttacks {
++        block_delay_seconds: 1.0,
++        item_damage: ItemDamageFunction { threshold: 3.0, base: 1.0, factor: 1.0 },
++        bypassed_by: Some("minecraft:bypasses_shield".into()),
++        block_sound: Some(Holder::Reference(SoundEvent::ItemShieldBlock)),
++        disabled_sound: Some(Holder::Reference(SoundEvent::ItemShieldBreak)),
++        ..BlocksAttacks::new()
++    };
++    assert_eq!(get_checksum(&c, &Default::default()).unwrap().0, 3979443873);
++}
++
++#[test]
++fn test_blocks_attacks_reduction_tag_checksum() {
++    use azalea_inventory::components::{BlocksAttacks, DamageReduction};
++    let c = BlocksAttacks {
++        block_delay_seconds: 0.25,
++        damage_reductions: vec![DamageReduction {
++            horizontal_blocking_angle: 90.0,
++            kind: Some(named("minecraft:is_fire")),
++            base: 0.0,
++            factor: 1.0,
++        }],
++        ..BlocksAttacks::new()
++    };
++    assert_eq!(get_checksum(&c, &Default::default()).unwrap().0, 1858893056);
++}
++
++#[test]
++fn test_tool_rule_tag_checksum() {
++    use azalea_inventory::components::{Tool, ToolRule};
++    let c = Tool {
++        rules: vec![ToolRule { blocks: named("minecraft:mineable/pickaxe"), speed: Some(6.0), correct_for_drops: Some(true) }],
++        default_mining_speed: 1.0,
++        damage_per_block: 1,
++        can_destroy_blocks_in_creative: true,
++    };
++    assert_eq!(get_checksum(&c, &Default::default()).unwrap().0, 2849864817);
++}
++
++#[test]
++fn test_repairable_tag_checksum() {
++    let c = azalea_inventory::components::Repairable { items: named("minecraft:wooden_tool_materials") };
++    assert_eq!(get_checksum(&c, &Default::default()).unwrap().0, 3701220917);
++}
+diff --git a/azalea-registry/src/identifier.rs b/azalea-registry/src/identifier.rs
+index 912d7b3..eb3420e 100644
+--- a/azalea-registry/src/identifier.rs
++++ b/azalea-registry/src/identifier.rs
+@@ -118,6 +118,25 @@ impl AzBuf for Identifier {
+     }
+ }
+ 
++/// Serializes a tag key the way vanilla's codec writes it: `#namespace:path` (vanilla
++/// `TagKey#hashedCodec`). Item hashes depend on it; the network form has no `#`.
++#[cfg(feature = "serde")]
++pub fn serialize_tag_key<S: Serializer>(key: &Identifier, serializer: S) -> Result<S::Ok, S::Error> {
++    serializer.serialize_str(&format!("#{key}"))
++}
++
++/// [`serialize_tag_key`] for an optional field.
++#[cfg(feature = "serde")]
++pub fn serialize_optional_tag_key<S: Serializer>(
++    key: &Option<Identifier>,
++    serializer: S,
++) -> Result<S::Ok, S::Error> {
++    match key {
++        Some(key) => serialize_tag_key(key, serializer),
++        None => serializer.serialize_none(),
++    }
++}
++
+ #[cfg(feature = "serde")]
+ impl Serialize for Identifier {
+     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+diff --git a/azalea-registry/src/lib.rs b/azalea-registry/src/lib.rs
+index e60a096..7d234d8 100644
+--- a/azalea-registry/src/lib.rs
++++ b/azalea-registry/src/lib.rs
+@@ -178,7 +178,7 @@ impl<D: Registry, Identifier: AzBuf> From<Vec<D>> for HolderSet<D, Identifier> {
+     }
+ }
+ #[cfg(feature = "serde")]
+-impl<D: Registry + Serialize, Identifier: AzBuf + Serialize> Serialize
++impl<D: Registry + Serialize, Identifier: AzBuf + Serialize + fmt::Display> Serialize
+     for HolderSet<D, Identifier>
+ {
+     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+@@ -193,7 +193,8 @@ impl<D: Registry + Serialize, Identifier: AzBuf + Serialize> Serialize
+                     contents.serialize(serializer)
+                 }
+             }
+-            Self::Named { key, contents: _ } => key.serialize(serializer),
++            // A tag, as vanilla's codec writes it (`HolderSetCodec`, `TagKey#hashedCodec`).
++            Self::Named { key, contents: _ } => serializer.serialize_str(&format!("#{key}")),
+         }
+     }
+ }

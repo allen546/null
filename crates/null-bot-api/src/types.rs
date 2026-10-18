@@ -131,18 +131,71 @@ impl Look {
 pub struct EntityId(pub u32);
 
 /// Item id is the namespaced name, e.g. "minecraft:iron_sword".
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ItemStack {
     pub item: String,
     pub count: u8,
-    /// For an item that blocks attacks (a shield): its raise-to-block delay in server ticks, from
-    /// the `blocks_attacks` component the server sent. A prior; see `null_mechanics::belief`.
-    pub block_delay_ticks: Option<u32>,
+    /// For an item that blocks attacks (a shield): its `blocks_attacks` component.
+    pub blocks_attacks: Option<BlocksAttacks>,
 }
 
 impl ItemStack {
     pub fn new(item: &str, count: u8) -> Self {
-        Self { item: item.to_string(), count, block_delay_ticks: None }
+        Self { item: item.to_string(), count, blocks_attacks: None }
+    }
+
+    /// The raise-to-block delay in server ticks, for an item that blocks attacks.
+    pub fn block_delay_ticks(&self) -> Option<u32> {
+        self.blocks_attacks.as_ref().map(|b| b.delay_ticks)
+    }
+}
+
+/// The `blocks_attacks` component the server sent with an item (vanilla `BlocksAttacks`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlocksAttacks {
+    /// Raise-to-block delay in server ticks (`block_delay_seconds` * 20, rounded). A prior; see
+    /// `null_mechanics::belief`.
+    pub delay_ticks: u32,
+    pub reductions: Vec<DamageReduction>,
+    /// Damage types that go through (`bypassed_by`); None if the item names no tag.
+    pub bypassed_by: Option<DamageTypes>,
+}
+
+/// One entry of `damage_reductions`: a hit within `angle_deg` of the facing, of a listed type,
+/// loses `base + factor * damage`, clamped to `0..=damage`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DamageReduction {
+    pub angle_deg: f32,
+    /// None: every damage type.
+    pub types: Option<DamageTypes>,
+    pub base: f32,
+    pub factor: f32,
+}
+
+/// Damage type ids ("minecraft:arrow"), resolved with the server's registry and tags.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DamageTypes {
+    Known(Vec<String>),
+    /// A tag or id the server never sent us.
+    Unknown,
+}
+
+impl BlocksAttacks {
+    // Spec: specs/F5-version-layer.md §4.6 (the item's own rules, as the server sent them)
+    /// Whether the raised item surely blocks a hit above 0 damage of `damage_type` from
+    /// `angle_deg` off the holder's facing (vanilla `LivingEntity#applyItemBlocking`). False when
+    /// it might not: a set we can't resolve, or a reduction that is 0 for some damage.
+    pub fn surely_blocks(&self, damage_type: &str, angle_deg: f64) -> bool {
+        let has = |t: &DamageTypes| matches!(t, DamageTypes::Known(v) if v.iter().any(|x| x == damage_type));
+        if self.bypassed_by.as_ref().is_some_and(|t| !matches!(t, DamageTypes::Known(_)) || has(t)) {
+            return false;
+        }
+        // Blocked when the summed reduction is above 0; each term is clamped to 0 or more.
+        self.reductions.iter().any(|r| {
+            angle_deg <= r.angle_deg as f64
+                && r.types.as_ref().is_none_or(has)
+                && ((r.base >= 0.0 && r.factor > 0.0) || (r.base > 0.0 && r.factor >= 0.0))
+        })
     }
 }
 
