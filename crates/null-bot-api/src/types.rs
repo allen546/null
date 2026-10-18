@@ -199,6 +199,82 @@ impl BlocksAttacks {
     }
 }
 
+/// A click on a window slot, as a vanilla client makes them (B3 §4.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Click {
+    /// Pick up the stack, put the carried stack down, or swap them. Outside the window: drop the
+    /// carried stack.
+    Left,
+    /// Pick up half, or put one down. Outside the window: drop one carried item.
+    Right,
+    /// Shift + left click: move the stack to the other part of the window.
+    ShiftLeft,
+    /// Number key over the slot: swap it with hotbar slot `0..=8`.
+    SwapHotbar(u8),
+    /// F over the slot: swap it with the offhand.
+    SwapOffhand,
+    /// Q over the slot: drop one.
+    Drop,
+    /// Ctrl + Q over the slot: drop the stack.
+    DropStack,
+    /// Double click with a carried stack: gather matching items onto it.
+    DoubleClick,
+}
+
+/// The open window: the player's inventory or a container (B3 §4.1, §4.8).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Window {
+    /// The server's window id; 0 for the player's own inventory.
+    pub id: i32,
+    /// Every slot in the window's own numbering (the player inventory window: 0 crafting result,
+    /// 1-4 crafting grid, 5-8 armour head to feet, 9-35 main, 36-44 hotbar, 45 offhand). A
+    /// container lists its own slots, then the main inventory, then the hotbar.
+    pub slots: Vec<Option<ItemStack>>,
+    /// The stack on the cursor.
+    pub carried: Option<ItemStack>,
+}
+
+impl Window {
+    pub fn is_player_inventory(&self) -> bool {
+        self.id == 0
+    }
+
+    // Spec: specs/B3-inventory-crafting.md §4.1 (slot numbering)
+    /// The window slot that shows inventory slot `i` (`BotView::inventory` numbering: 0-8
+    /// hotbar, 9-35 main).
+    pub fn slot_of_inventory(&self, i: usize) -> Option<u16> {
+        if i > 35 {
+            return None;
+        }
+        let start = if self.is_player_inventory() { 9 } else { self.slots.len().checked_sub(36)? };
+        Some((if i < 9 { start + 27 + i } else { start + i - 9 }) as u16)
+    }
+}
+
+/// What came of the latest click (B3 §4.1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClickOutcome {
+    /// The clicked window slot; None outside the window.
+    pub slot: Option<u16>,
+    /// Why the client refused it (nothing was sent), if it did.
+    pub refused: Option<&'static str>,
+    /// Ticks since the click.
+    pub ticks: u32,
+    /// Window slots the server set after the click (`None` = the cursor). Vanilla sends a slot
+    /// after a click only where its result differs from ours, so these are corrections (or the
+    /// server's own changes, such as a crafting result).
+    pub corrected: Vec<Option<u16>>,
+    /// Times the server resent the whole window after the click.
+    pub full_resends: u32,
+}
+
+impl ClickOutcome {
+    /// Sent, and the server has changed nothing since.
+    pub fn uncorrected(&self) -> bool {
+        self.refused.is_none() && self.corrected.is_empty() && self.full_resends == 0
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hand {
     Main,

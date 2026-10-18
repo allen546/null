@@ -1,0 +1,1369 @@
+From 623a59ef513e598e70543364974e8cda8834220e Mon Sep 17 00:00:00 2001
+From: bench <bench@local>
+Date: Sun, 18 Oct 2026 16:16:04 +0800
+Subject: [PATCH] null patch: 17-inventory-like-vanilla
+
+---
+ azalea-client/src/plugins/inventory/mod.rs   | 230 ++++++++++++-
+ azalea-client/src/plugins/movement.rs        |   3 +-
+ azalea-client/src/plugins/packet/game/mod.rs | 131 +++++---
+ azalea-entity/src/inventory.rs               | 334 ++++++++++++-------
+ azalea-inventory/src/item/mod.rs             |   8 +
+ azalea-inventory/src/operations.rs           | 264 +++++++++------
+ azalea/src/container.rs                      |   2 +
+ 7 files changed, 689 insertions(+), 283 deletions(-)
+
+diff --git a/azalea-client/src/plugins/inventory/mod.rs b/azalea-client/src/plugins/inventory/mod.rs
+index 908ebe6..527e10c 100644
+--- a/azalea-client/src/plugins/inventory/mod.rs
++++ b/azalea-client/src/plugins/inventory/mod.rs
+@@ -2,7 +2,10 @@ pub mod equipment_effects;
+ 
+ use azalea_chat::FormattedText;
+ use azalea_core::tick::GameTick;
+-use azalea_entity::{PlayerAbilities, inventory::Inventory as Inv};
++use azalea_entity::{
++    Crouching, Jumping, PlayerAbilities, inventory::Inventory as Inv, metadata::Sprinting,
++};
++use azalea_physics::client_movement::{ClientMovementState, WalkDirection};
+ use azalea_inventory::operations::ClickOperation;
+ pub use azalea_inventory::*;
+ use azalea_protocol::packets::game::{
+@@ -15,10 +18,12 @@ use azalea_world::{WorldName, Worlds};
+ use bevy_app::{App, Plugin};
+ use bevy_ecs::prelude::*;
+ use indexmap::IndexMap;
+-use tracing::{error, warn};
++use tracing::warn;
+ 
+ use crate::{
+     inventory::equipment_effects::{collect_equipment_changes, handle_equipment_changes},
++    mining::Mining,
++    movement::ItemInUse,
+     packet::game::SendGamePacketEvent,
+ };
+ 
+@@ -38,8 +43,10 @@ impl Plugin for InventoryPlugin {
+                 collect_equipment_changes
+                     .after(super::interact::handle_start_use_item_queued)
+                     .before(azalea_physics::ai_step),
++                tick_open_screen.after(super::movement::send_position),
+             ),
+         )
++        .add_observer(handle_open_inventory_event)
+         .add_observer(handle_client_side_close_container_trigger)
+         .add_observer(handle_menu_opened_trigger)
+         .add_observer(handle_container_close_event)
+@@ -68,11 +75,157 @@ pub struct MenuOpenedEvent {
+     pub menu_type: MenuKind,
+     pub title: FormattedText,
+ }
+-fn handle_menu_opened_trigger(event: On<MenuOpenedEvent>, mut query: Query<&mut Inv>) {
++fn handle_menu_opened_trigger(
++    event: On<MenuOpenedEvent>,
++    mut commands: Commands,
++    mut query: Query<&mut Inv>,
++) {
+     let mut inventory = query.get_mut(event.entity).unwrap();
+     inventory.id = event.window_id;
+     inventory.container_menu = Some(Menu::from_kind(event.menu_type));
+     inventory.container_menu_title = Some(event.title.clone());
++    commands.entity(event.entity).insert(OpenScreen::default());
++}
++
++// Spec: specs/B3-inventory-crafting.md §4.1 (clicks only as a vanilla client makes them)
++/// Null fork: a screen is open (the player's inventory or a container), as on a vanilla client.
++///
++/// While it is open the bot holds still: vanilla releases every key when a screen opens
++/// (`Minecraft#setScreen`), so no movement, sprint or sneak input goes out. Clicks wait until the
++/// tick after it opened, so the server (and Grim's `MultiActionsC`) has seen that input first.
++#[derive(Clone, Component, Debug, Default)]
++pub struct OpenScreen {
++    /// Ticks since it opened (0 on the tick it opened).
++    pub ticks: u32,
++}
++
++/// Null fork: open the player's own inventory, as vanilla's inventory key does. Vanilla sends no
++/// packet for this. Refused (see [`ClickResults::open_refusal`]) while a screen is already open,
++/// a block is being mined or an item is in use.
++#[derive(EntityEvent)]
++pub struct OpenInventoryEvent {
++    pub entity: Entity,
++}
++
++/// Null fork: why a click or an open was refused on the client. Nothing was sent.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum ClickRefusal {
++    /// No screen is open; a vanilla client can't click without one.
++    NoScreen,
++    /// The screen opened this tick; the still input must reach the server first.
++    ScreenJustOpened,
++    /// Still sprinting or crouching.
++    NotStill,
++    /// The click names another window than the open one.
++    WrongWindow,
++    /// A screen is already open (for an open).
++    AlreadyOpen,
++    /// Mining a block or using an item (for an open).
++    Busy,
++}
++
++impl ClickRefusal {
++    pub fn reason(self) -> &'static str {
++        match self {
++            ClickRefusal::NoScreen => "no screen open",
++            ClickRefusal::ScreenJustOpened => "screen opened this tick",
++            ClickRefusal::NotStill => "still sprinting or crouching",
++            ClickRefusal::WrongWindow => "another window is open",
++            ClickRefusal::AlreadyOpen => "a screen is already open",
++            ClickRefusal::Busy => "mining or using an item",
++        }
++    }
++}
++
++/// Null fork: the latest container click and what the server said after it.
++///
++/// After a click, vanilla's server sends a slot only where its own result differs from what the
++/// click reported (`ServerGamePacketListenerImpl#handleContainerClick`: the click's slots and
++/// hashes become the remote state, then `broadcastChanges`), and the whole menu when the state id
++/// was stale. So server updates after a click are corrections: a wrong prediction or a wrong
++/// component hash. Server-side changes of their own (a pickup, a crafting result) show up too.
++#[derive(Clone, Component, Debug, Default)]
++pub struct ClickResults {
++    pub last: Option<ClickResult>,
++    /// Set when the latest open was refused; cleared by a successful open.
++    pub open_refusal: Option<ClickRefusal>,
++}
++
++#[derive(Clone, Debug)]
++pub struct ClickResult {
++    pub window_id: i32,
++    /// The clicked slot (-999 for outside the window).
++    pub slot_num: i16,
++    /// None when the click was sent.
++    pub refusal: Option<ClickRefusal>,
++    /// Ticks since the click.
++    pub ticks: u32,
++    /// Slots the server set after the click, in this window's numbering; -1 is the cursor.
++    pub corrected_slots: Vec<i16>,
++    /// Whole-window resends after the click (a stale state id, or the server resynced).
++    pub full_resends: u32,
++}
++
++impl ClickResults {
++    /// Notes a server update of `slot` (-1 the cursor; None the whole window) after our click.
++    pub fn note_server_update(&mut self, slot: Option<i16>) {
++        if let Some(r) = self.last.as_mut().filter(|r| r.refusal.is_none()) {
++            match slot {
++                Some(s) => r.corrected_slots.push(s),
++                None => r.full_resends += 1,
++            }
++        }
++    }
++}
++
++fn handle_open_inventory_event(
++    event: On<OpenInventoryEvent>,
++    mut commands: Commands,
++    mut query: Query<(&Inv, Has<OpenScreen>, Has<Mining>, Has<ItemInUse>, Option<&mut ClickResults>)>,
++) {
++    let Ok((inventory, open, mining, using, results)) = query.get_mut(event.entity) else {
++        return;
++    };
++    let refusal = if open || inventory.id != 0 {
++        Some(ClickRefusal::AlreadyOpen)
++    } else if mining || using {
++        Some(ClickRefusal::Busy)
++    } else {
++        None
++    };
++    match results {
++        Some(mut r) => r.open_refusal = refusal,
++        None => {
++            commands.entity(event.entity).insert(ClickResults { last: None, open_refusal: refusal });
++        }
++    }
++    if refusal.is_none() {
++        commands.entity(event.entity).insert(OpenScreen::default());
++    }
++}
++
++/// Null fork: no movement, sprint, sneak or jump input while a screen is open (see
++/// [`OpenScreen`]). Runs first in the physics tick, after everything that sets input.
++pub fn hold_still_while_screen_open(
++    mut query: Query<(&mut ClientMovementState, &mut Jumping), With<OpenScreen>>,
++) {
++    for (mut mv, mut jumping) in &mut query {
++        mv.move_direction = WalkDirection::None;
++        mv.trying_to_sprint = false;
++        mv.trying_to_crouch = false;
++        **jumping = false;
++    }
++}
++
++fn tick_open_screen(mut screens: Query<&mut OpenScreen>, mut results: Query<&mut ClickResults>) {
++    for mut s in &mut screens {
++        s.ticks = s.ticks.saturating_add(1);
++    }
++    for mut r in &mut results {
++        if let Some(last) = r.last.as_mut() {
++            last.ticks = last.ticks.saturating_add(1);
++        }
++    }
+ }
+ 
+ /// Tell the server that we want to close a container.
+@@ -91,9 +244,14 @@ pub struct CloseContainerEvent {
+ fn handle_container_close_event(
+     close_container: On<CloseContainerEvent>,
+     mut commands: Commands,
+-    query: Query<(Entity, &Inv)>,
++    query: Query<(Entity, &Inv, Has<OpenScreen>)>,
+ ) {
+-    let (entity, inventory) = query.get(close_container.entity).unwrap();
++    let (entity, inventory, open) = query.get(close_container.entity).unwrap();
++    // Null fork: a vanilla client sends a close only when it closes a screen.
++    if !open {
++        warn!("Tried to close container {} with no screen open", close_container.id);
++        return;
++    }
+     if close_container.id != inventory.id {
+         warn!(
+             "Tried to close container with ID {}, but the current container ID is {}",
+@@ -127,9 +285,11 @@ pub struct ClientsideCloseContainerEvent {
+ }
+ pub fn handle_client_side_close_container_trigger(
+     event: On<ClientsideCloseContainerEvent>,
++    mut commands: Commands,
+     mut query: Query<&mut Inv>,
+ ) {
+     let mut inventory = query.get_mut(event.entity).unwrap();
++    commands.entity(event.entity).remove::<OpenScreen>();
+ 
+     // copy the Player part of the container_menu to the inventory_menu
+     if let Some(inventory_menu) = inventory.container_menu.take() {
+@@ -164,19 +324,54 @@ pub struct ContainerClickEvent {
+     pub window_id: i32,
+     pub operation: ClickOperation,
+ }
++// Spec: specs/B3-inventory-crafting.md §4.1 (clicks only as a vanilla client makes them)
++#[allow(clippy::type_complexity)]
+ pub fn handle_container_click_event(
+     container_click: On<ContainerClickEvent>,
+     mut commands: Commands,
+-    mut query: Query<(Entity, &mut Inv, Option<&PlayerAbilities>, &WorldName)>,
++    mut query: Query<(
++        Entity,
++        &mut Inv,
++        Option<&PlayerAbilities>,
++        &WorldName,
++        Option<&OpenScreen>,
++        Option<&Sprinting>,
++        Option<&Crouching>,
++        Option<&mut ClickResults>,
++    )>,
+     worlds: Res<Worlds>,
+ ) {
+-    let (entity, mut inventory, player_abilities, world_name) =
++    let (entity, mut inventory, player_abilities, world_name, screen, sprinting, crouching, results) =
+         query.get_mut(container_click.entity).unwrap();
+-    if inventory.id != container_click.window_id {
+-        error!(
+-            "Tried to click container with ID {}, but the current container ID is {}. Click packet won't be sent.",
+-            container_click.window_id, inventory.id
+-        );
++    let slot_num = container_click.operation.slot_num().map(|n| n as i16).unwrap_or(-999);
++    // Null fork: refuse what a vanilla client couldn't send (see `OpenScreen`).
++    let refusal = if inventory.id != container_click.window_id {
++        Some(ClickRefusal::WrongWindow)
++    } else if screen.is_none() {
++        Some(ClickRefusal::NoScreen)
++    } else if screen.is_some_and(|s| s.ticks == 0) {
++        Some(ClickRefusal::ScreenJustOpened)
++    } else if sprinting.is_some_and(|s| **s) || crouching.is_some_and(|c| **c) {
++        Some(ClickRefusal::NotStill)
++    } else {
++        None
++    };
++    let result = ClickResult {
++        window_id: container_click.window_id,
++        slot_num,
++        refusal,
++        ticks: 0,
++        corrected_slots: Vec::new(),
++        full_resends: 0,
++    };
++    match results {
++        Some(mut r) => r.last = Some(result),
++        None => {
++            commands.entity(entity).insert(ClickResults { last: Some(result), open_refusal: None });
++        }
++    }
++    if let Some(refusal) = refusal {
++        warn!("Container click refused on the client: {}", refusal.reason());
+         return;
+     }
+ 
+@@ -190,6 +385,8 @@ pub fn handle_container_click_event(
+         player_abilities.unwrap_or(&PlayerAbilities::default()),
+     );
+     let new_slots = inventory.menu().slots();
++    // Null fork: the player menu always holds the inventory (vanilla shares it between menus).
++    inventory.sync_player_slots_from_container();
+ 
+     let registry_holder = &world.read().registries;
+ 
+@@ -205,17 +402,15 @@ pub fn handle_container_click_event(
+             );
+         }
+     }
++    // An offhand swap from a container changes a slot that window doesn't have; vanilla reports
++    // only the window's own slots too.
+ 
+     commands.trigger(SendGamePacketEvent::new(
+         entity,
+         ServerboundContainerClick {
+             container_id: container_click.window_id,
+             state_id: inventory.state_id,
+-            slot_num: container_click
+-                .operation
+-                .slot_num()
+-                .map(|n| n as i16)
+-                .unwrap_or(-999),
++            slot_num,
+             button_num: container_click.operation.button_num(),
+             click_type: container_click.operation.click_type(),
+             changed_slots,
+@@ -253,6 +448,7 @@ pub fn handle_set_container_content_trigger(
+             *slot_mut = slot.clone();
+         }
+     }
++    inventory.sync_player_slots_from_container();
+ }
+ 
+ /// An ECS message to switch our hand to a different hotbar slot.
+diff --git a/azalea-client/src/plugins/movement.rs b/azalea-client/src/plugins/movement.rs
+index 70ba403..7d33964 100644
+--- a/azalea-client/src/plugins/movement.rs
++++ b/azalea-client/src/plugins/movement.rs
+@@ -57,7 +57,8 @@ impl Plugin for MovementPlugin {
+             .add_systems(
+                 GameTick,
+                 (
+-                    (tick_controls, local_player_ai_step, update_pose)
++                    // Null fork: a screen holds the bot still before input is read.
++                    (super::inventory::hold_still_while_screen_open, tick_controls, local_player_ai_step, update_pose)
+                         .chain()
+                         .in_set(PhysicsSystems)
+                         .before(ai_step)
+diff --git a/azalea-client/src/plugins/packet/game/mod.rs b/azalea-client/src/plugins/packet/game/mod.rs
+index 2abe640..23e55c3 100644
+--- a/azalea-client/src/plugins/packet/game/mod.rs
++++ b/azalea-client/src/plugins/packet/game/mod.rs
+@@ -38,7 +38,7 @@ use crate::{
+     cookies::{RequestCookieEvent, StoreCookieEvent},
+     disconnect::DisconnectEvent,
+     interact::BlockStatePredictionHandler,
+-    inventory::{ClientsideCloseContainerEvent, MenuOpenedEvent, SetContainerContentEvent},
++    inventory::{ClickResults, ClientsideCloseContainerEvent, MenuOpenedEvent, SetContainerContentEvent},
+     local_player::{Experience, Hunger, LocalGameMode, TabList, WorldHolder},
+     movement::{KnockbackData, KnockbackEvent},
+     packet::{
+@@ -389,8 +389,17 @@ impl GamePacketHandler<'_> {
+         });
+     }
+ 
++    // Null fork: vanilla `ClientPacketListener#handleSetCursorItem` sets the carried item.
+     pub fn set_cursor_item(&mut self, p: &ClientboundSetCursorItem) {
+         debug!("Got set cursor item packet {p:?}");
++
++        as_system::<Query<(&mut Inventory, Option<&mut ClickResults>)>>(self.ecs, |mut query| {
++            let (mut inventory, results) = query.get_mut(self.player).unwrap();
++            inventory.carried = p.contents.clone();
++            if let Some(mut r) = results {
++                r.note_server_update(Some(-1));
++            }
++        });
+     }
+ 
+     pub fn update_tags(&mut self, p: &ClientboundUpdateTags) {
+@@ -1152,28 +1161,42 @@ impl GamePacketHandler<'_> {
+ 
+     pub fn command_suggestions(&mut self, _p: &ClientboundCommandSuggestions) {}
+ 
++    // Null fork: vanilla `ClientPacketListener#handleContainerContent` also takes the state id
++    // and the cursor (`AbstractContainerMenu#initializeContents`).
+     pub fn container_set_content(&mut self, p: &ClientboundContainerSetContent) {
+         debug!("Got container set content packet {p:?}");
+ 
+-        as_system::<(Commands, Query<&mut Inventory>)>(self.ecs, |(mut commands, mut query)| {
+-            let mut inventory = query.get_mut(self.player).unwrap();
++        as_system::<(Commands, Query<(&mut Inventory, Option<&mut ClickResults>)>)>(
++            self.ecs,
++            |(mut commands, mut query)| {
++                let (mut inventory, results) = query.get_mut(self.player).unwrap();
+ 
+-            // container id 0 is always the player's inventory
+-            if p.container_id == 0 {
+-                // this is just so it has the same type as the `else` block
+-                for (i, slot) in p.items.iter().enumerate() {
+-                    if let Some(slot_mut) = inventory.inventory_menu.slot_mut(i) {
+-                        *slot_mut = slot.clone();
++                if p.container_id == 0 {
++                    for (i, slot) in p.items.iter().enumerate() {
++                        if let Some(slot_mut) = inventory.inventory_menu.slot_mut(i) {
++                            *slot_mut = slot.clone();
++                        }
++                    }
++                    if inventory.id == 0 {
++                        inventory.state_id = p.state_id;
++                        inventory.carried = p.carried_item.clone();
+                     }
++                } else if p.container_id == inventory.id {
++                    inventory.state_id = p.state_id;
++                    inventory.carried = p.carried_item.clone();
++                    commands.trigger(SetContainerContentEvent {
++                        entity: self.player,
++                        slots: p.items.clone(),
++                        container_id: p.container_id,
++                    });
+                 }
+-            } else {
+-                commands.trigger(SetContainerContentEvent {
+-                    entity: self.player,
+-                    slots: p.items.clone(),
+-                    container_id: p.container_id,
+-                });
+-            }
+-        });
++                if let Some(mut r) = results
++                    && r.last.as_ref().is_some_and(|l| l.window_id == p.container_id)
++                {
++                    r.note_server_update(None);
++                }
++            },
++        );
+     }
+ 
+     pub fn container_set_data(&mut self, p: &ClientboundContainerSetData) {
+@@ -1189,38 +1212,40 @@ impl GamePacketHandler<'_> {
+         // });
+     }
+ 
++    // Null fork: vanilla 1.21.11 `ClientPacketListener#handleContainerSetSlot`. Window 0 always
++    // updates the player menu (with its state id), even with a container open; the cursor (-1)
++    // and the -2 window came out in 1.21.2 (`ClientboundSetCursorItem`, `SetPlayerInventory`).
+     pub fn container_set_slot(&mut self, p: &ClientboundContainerSetSlot) {
+         debug!("Got container set slot packet {p:?}");
+ 
+-        as_system::<Query<&mut Inventory>>(self.ecs, |mut query| {
+-            let mut inventory = query.get_mut(self.player).unwrap();
++        as_system::<Query<(&mut Inventory, Option<&mut ClickResults>)>>(self.ecs, |mut query| {
++            let (mut inventory, results) = query.get_mut(self.player).unwrap();
++            let slot = p.slot as usize;
+ 
+-            if p.container_id == -1 {
+-                // -1 means carried item
+-                inventory.carried = p.item_stack.clone();
+-            } else if p.container_id == -2 {
+-                if let Some(slot) = inventory.inventory_menu.slot_mut(p.slot.into()) {
+-                    *slot = p.item_stack.clone();
++            if p.container_id == 0 {
++                if let Some(slot_mut) = inventory.inventory_menu.slot_mut(slot) {
++                    *slot_mut = p.item_stack.clone();
+                 }
+-            } else {
+-                let is_creative_mode_and_inventory_closed = false;
+-                // technically minecraft has slightly different behavior here if you're in
+-                // creative mode and have your inventory open
+-                if p.container_id == 0 && azalea_inventory::Player::is_hotbar_slot(p.slot.into()) {
+-                    // minecraft also sets a "pop time" here which is used for an animation
+-                    // but that's not really necessary
+-                    if let Some(slot) = inventory.inventory_menu.slot_mut(p.slot.into()) {
+-                        *slot = p.item_stack.clone();
+-                    }
+-                } else if p.container_id == inventory.id
+-                    && (p.container_id != 0 || !is_creative_mode_and_inventory_closed)
+-                {
+-                    // var2.containerMenu.setItem(var4, var1.getStateId(), var3);
+-                    if let Some(slot) = inventory.menu_mut().slot_mut(p.slot.into()) {
+-                        *slot = p.item_stack.clone();
+-                        inventory.state_id = p.state_id;
++                if inventory.id == 0 {
++                    inventory.state_id = p.state_id;
++                } else if (9..=44).contains(&slot) {
++                    // the open container shows the same inventory slot
++                    let i = if slot >= 36 { slot - 36 } else { slot };
++                    if let Some(s) = inventory.player_slot_mut(i) {
++                        *s = p.item_stack.clone();
+                     }
+                 }
++            } else if p.container_id == inventory.id {
++                if let Some(slot_mut) = inventory.menu_mut().slot_mut(slot) {
++                    *slot_mut = p.item_stack.clone();
++                    inventory.state_id = p.state_id;
++                }
++                inventory.sync_player_slots_from_container();
++            }
++            if let Some(mut r) = results
++                && r.last.as_ref().is_some_and(|l| l.window_id == p.container_id)
++            {
++                r.note_server_update(Some(p.slot as i16));
+             }
+         });
+     }
+@@ -1638,7 +1663,27 @@ impl GamePacketHandler<'_> {
+             }
+         });
+     }
+-    pub fn set_player_inventory(&mut self, _p: &ClientboundSetPlayerInventory) {}
++    // Null fork: vanilla `ClientPacketListener#handleSetPlayerInventory` sets one slot in the
++    // player inventory's own numbering (0-8 hotbar, 9-35 main, 36-39 armour, 40 offhand).
++    pub fn set_player_inventory(&mut self, p: &ClientboundSetPlayerInventory) {
++        debug!("Got set player inventory packet {p:?}");
++
++        as_system::<Query<&mut Inventory>>(self.ecs, |mut query| {
++            let mut inventory = query.get_mut(self.player).unwrap();
++            let i = p.slot as usize;
++            if let Some(menu_index) = Inventory::player_menu_index(i)
++                && let Some(s) = inventory.inventory_menu.slot_mut(menu_index)
++            {
++                *s = p.contents.clone();
++            }
++            if inventory.container_menu.is_some()
++                && i <= 35
++                && let Some(s) = inventory.player_slot_mut(i)
++            {
++                *s = p.contents.clone();
++            }
++        });
++    }
+     pub fn projectile_power(&mut self, _p: &ClientboundProjectilePower) {}
+     pub fn custom_report_details(&mut self, _p: &ClientboundCustomReportDetails) {}
+     pub fn server_links(&mut self, _p: &ClientboundServerLinks) {}
+diff --git a/azalea-entity/src/inventory.rs b/azalea-entity/src/inventory.rs
+index 19b2e82..18c2af1 100644
+--- a/azalea-entity/src/inventory.rs
++++ b/azalea-entity/src/inventory.rs
+@@ -252,7 +252,8 @@ impl Inventory {
+ 
+         match operation {
+             // left clicking outside inventory
+-            ClickOperation::Pickup(PickupClick::Left { slot: None })
++            // Null fork: `LeftOutside`/`RightOutside` are the same clicks (slot -999).
++            ClickOperation::Pickup(PickupClick::Left { slot: None } | PickupClick::LeftOutside)
+                 if self.carried.is_present() =>
+             {
+                 // vanilla has `player.drop`s but they're only used
+@@ -263,7 +264,7 @@ impl Inventory {
+                 // player.drop(self.carried, true);
+                 self.carried = ItemStack::Empty;
+             }
+-            ClickOperation::Pickup(PickupClick::Right { slot: None })
++            ClickOperation::Pickup(PickupClick::Right { slot: None } | PickupClick::RightOutside)
+                 if self.carried.is_present() =>
+             {
+                 let _item = self.carried.split(1);
+@@ -311,12 +312,7 @@ impl Inventory {
+                                     let place_count = if is_left_click { carried.count } else { 1 };
+                                     self.carried =
+                                         self.safe_insert(slot, self.carried.clone(), place_count);
+-                                } else if carried.count
+-                                    <= self
+-                                        .menu()
+-                                        .max_stack_size(slot)
+-                                        .min(carried.kind.max_stack_size())
+-                                {
++                                } else if carried.count <= self.menu().max_stack_size_for(slot, &carried) {
+                                     // swap slot_item and carried
+                                     self.carried = slot_item.clone();
+                                     let slot_item = self.menu_mut().slot_mut(slot).unwrap();
+@@ -326,7 +322,7 @@ impl Inventory {
+                                 && let Some(removed) = self.try_remove(
+                                     slot,
+                                     slot_item.count(),
+-                                    carried.kind.max_stack_size() - carried.count,
++                                    carried.max_stack_size() - carried.count,
+                                 )
+                             {
+                                 self.carried.as_present_mut().unwrap().count += removed.count();
+@@ -362,65 +358,49 @@ impl Inventory {
+                     }
+                 }
+             }
++            // Null fork: vanilla `AbstractContainerMenu#doClick` SWAP. The button names a player
++            // inventory slot (0-8 hotbar, 40 offhand), not a menu slot.
+             ClickOperation::Swap(s) => {
+-                let source_slot_index = s.source_slot as usize;
+-                let target_slot_index = s.target_slot as usize;
+-
+-                let Some(source_slot) = self.menu().slot(source_slot_index) else {
++                let source_index = s.source_slot as usize;
++                let button = s.target_slot as usize;
++                if !(button < 9 || button == 40) {
+                     return;
+-                };
+-                let Some(target_slot) = self.menu().slot(target_slot_index) else {
++                }
++                let (Some(source), Some(target)) =
++                    (self.menu().slot(source_index).cloned(), self.player_slot(button).cloned())
++                else {
+                     return;
+                 };
+-                if source_slot.is_empty() && target_slot.is_empty() {
+-                    return;
+-                }
+-
+-                if target_slot.is_empty() {
+-                    if self.menu().may_pickup(source_slot_index) {
+-                        let source_slot = source_slot.clone();
+-                        let target_slot = self.menu_mut().slot_mut(target_slot_index).unwrap();
+-                        *target_slot = source_slot;
++                match (&source, &target) {
++                    (ItemStack::Empty, ItemStack::Empty) => {}
++                    (_, ItemStack::Empty) => {
++                        if self.menu().may_pickup(source_index) {
++                            *self.player_slot_mut(button).unwrap() = source;
++                            *self.menu_mut().slot_mut(source_index).unwrap() = ItemStack::Empty;
++                        }
+                     }
+-                } else if source_slot.is_empty() {
+-                    let target_item = target_slot
+-                        .as_present()
+-                        .expect("target slot was already checked to not be empty");
+-                    if self.menu().may_place(source_slot_index, target_item) {
+-                        // get the target_item but mutable
+-                        let source_max_stack_size = self.menu().max_stack_size(source_slot_index);
+-
+-                        let target_slot = self.menu_mut().slot_mut(target_slot_index).unwrap();
+-                        let new_source_slot =
+-                            target_slot.split(source_max_stack_size.try_into().unwrap());
+-                        *self.menu_mut().slot_mut(source_slot_index).unwrap() = new_source_slot;
++                    (ItemStack::Empty, ItemStack::Present(t)) => {
++                        if self.menu().may_place(source_index, t) {
++                            let max = self.menu().max_stack_size_for(source_index, t);
++                            let mut rest = target.clone();
++                            let moved = rest.split(max as u32);
++                            *self.menu_mut().slot_mut(source_index).unwrap() = moved;
++                            *self.player_slot_mut(button).unwrap() = rest;
++                        }
+                     }
+-                } else if self.menu().may_pickup(source_slot_index) {
+-                    let ItemStack::Present(target_item) = target_slot else {
+-                        unreachable!("target slot is not empty but is not present");
+-                    };
+-                    if self.menu().may_place(source_slot_index, target_item) {
+-                        let source_max_stack = self.menu().max_stack_size(source_slot_index);
+-                        if target_slot.count() > source_max_stack {
+-                            // if there's more than the max stack size in the target slot
+-
+-                            let target_slot = self.menu_mut().slot_mut(target_slot_index).unwrap();
+-                            let new_source_slot =
+-                                target_slot.split(source_max_stack.try_into().unwrap());
+-                            *self.menu_mut().slot_mut(source_slot_index).unwrap() = new_source_slot;
+-                            // if !self.inventory_menu.add(new_source_slot) {
+-                            //     player.drop(new_source_slot, true);
+-                            // }
+-                        } else {
+-                            // normal swap
+-                            let new_target_slot = source_slot.clone();
+-                            let new_source_slot = target_slot.clone();
+-
+-                            let target_slot = self.menu_mut().slot_mut(target_slot_index).unwrap();
+-                            *target_slot = new_target_slot;
+-
+-                            let source_slot = self.menu_mut().slot_mut(source_slot_index).unwrap();
+-                            *source_slot = new_source_slot;
++                    (ItemStack::Present(_), ItemStack::Present(t)) => {
++                        if self.menu().may_pickup(source_index) && self.menu().may_place(source_index, t) {
++                            let max = self.menu().max_stack_size_for(source_index, t);
++                            if t.count > max {
++                                // vanilla then adds the old source item anywhere in the
++                                // inventory (`Inventory#add`); not simulated, the server corrects it
++                                let mut rest = target.clone();
++                                *self.menu_mut().slot_mut(source_index).unwrap() = rest.split(max as u32);
++                                *self.player_slot_mut(button).unwrap() = rest;
++                            } else {
++                                *self.player_slot_mut(button).unwrap() = source;
++                                *self.menu_mut().slot_mut(source_index).unwrap() = target;
++                            }
+                         }
+                     }
+                 }
+@@ -451,65 +431,54 @@ impl Inventory {
+                 let Some(slot) = self.menu_mut().slot_mut(slot_index) else {
+                     return;
+                 };
+-                let ItemStack::Present(slot_item) = slot else {
+-                    return;
+-                };
+-
+                 let dropping_count = match c {
+                     ThrowClick::Single { .. } => 1,
+-                    ThrowClick::All { .. } => slot_item.count,
++                    ThrowClick::All { .. } => slot.count(),
+                 };
+ 
+-                let _dropping = slot_item.split(dropping_count as u32);
++                // Null fork: `ItemStack::split` empties the slot when the last item goes, so the
++                // click reports an empty slot, not a 0-count one.
++                let _dropping = slot.split(dropping_count as u32);
+                 // player.drop(dropping, true);
+             }
++            // Null fork: vanilla `doClick` PICKUP_ALL. Takes only what fits on the cursor, and
++            // never from a crafting result.
+             ClickOperation::PickupAll(PickupAllClick {
+                 slot: source_slot_index,
+                 reversed,
+             }) => {
+                 let source_slot_index = *source_slot_index as usize;
+-
+-                let source_slot = self.menu().slot(source_slot_index).unwrap();
+-                let target_slot = self.carried.clone();
+-
+-                if target_slot.is_empty()
++                let Some(source_slot) = self.menu().slot(source_slot_index) else {
++                    return;
++                };
++                if self.carried.is_empty()
+                     || (source_slot.is_present() && self.menu().may_pickup(source_slot_index))
+                 {
+                     return;
+                 }
+-
+-                let ItemStack::Present(target_slot_item) = &target_slot else {
+-                    unreachable!("target slot is not empty but is not present");
++                let len = self.menu().len();
++                let order: Vec<usize> = if *reversed { (0..len).rev().collect() } else { (0..len).collect() };
++                let no_pick_all = match self.menu() {
++                    Menu::Player(_) | Menu::Crafting { .. } => Some(0),
++                    _ => None,
+                 };
+-
+                 for round in 0..2 {
+-                    let iterator: Box<dyn Iterator<Item = usize>> = if *reversed {
+-                        Box::new((0..self.menu().len()).rev())
+-                    } else {
+-                        Box::new(0..self.menu().len())
+-                    };
+-
+-                    for i in iterator {
+-                        if target_slot_item.count < target_slot_item.kind.max_stack_size() {
+-                            let checking_slot = self.menu().slot(i).unwrap();
+-                            if let ItemStack::Present(checking_item) = checking_slot
+-                                && can_item_quick_replace(checking_slot, &target_slot, true)
+-                                && self.menu().may_pickup(i)
+-                                && (round != 0
+-                                    || checking_item.count != checking_item.kind.max_stack_size())
+-                            {
+-                                // get the checking_slot and checking_item again but mutable
+-                                let checking_slot = self.menu_mut().slot_mut(i).unwrap();
+-
+-                                let taken_item = checking_slot.split(checking_slot.count() as u32);
+-
+-                                // now extend the carried item
+-                                let target_slot = &mut self.carried;
+-                                let ItemStack::Present(target_slot_item) = target_slot else {
+-                                    unreachable!("target slot is not empty but is not present");
+-                                };
+-                                target_slot_item.count += taken_item.count();
+-                            }
++                    for &i in &order {
++                        let ItemStack::Present(carried) = &self.carried else { unreachable!() };
++                        let room = carried.max_stack_size() - carried.count;
++                        if room <= 0 {
++                            return;
++                        }
++                        let checking_slot = self.menu().slot(i).unwrap();
++                        if let ItemStack::Present(checking_item) = checking_slot
++                            && Some(i) != no_pick_all
++                            && can_item_quick_replace(checking_slot, &self.carried, true)
++                            && self.menu().may_pickup(i)
++                            && (round != 0 || checking_item.count != checking_item.max_stack_size())
++                        {
++                            let take = checking_item.count.min(room);
++                            let taken = self.menu_mut().slot_mut(i).unwrap().split(take as u32);
++                            self.carried.as_present_mut().unwrap().count += taken.count();
+                         }
+                     }
+                 }
+@@ -518,6 +487,50 @@ impl Inventory {
+         }
+     }
+ 
++    // Null fork: player inventory numbering (vanilla `Inventory`) as the server uses it in swap
++    // clicks and `ClientboundSetPlayerInventory`.
++    /// The player-menu index of player inventory slot `i`: 0-8 hotbar, 9-35 main, 36-39 feet to
++    /// head, 40 offhand.
++    pub fn player_menu_index(i: usize) -> Option<usize> {
++        Some(match i {
++            0..=8 => 36 + i,
++            9..=35 => i,
++            36..=39 => 8 - (i - 36),
++            40 => 45,
++            _ => return None,
++        })
++    }
++
++    /// Player inventory slot `i`, read from the open container's copy for the main inventory and
++    /// hotbar (the copy the click changes), else from the player menu.
++    pub fn player_slot(&self, i: usize) -> Option<&ItemStack> {
++        match (&self.container_menu, i) {
++            (Some(menu), 0..=35) => menu.slot(container_player_index(menu, i)),
++            _ => self.inventory_menu.slot(Self::player_menu_index(i)?),
++        }
++    }
++
++    pub fn player_slot_mut(&mut self, i: usize) -> Option<&mut ItemStack> {
++        match (&mut self.container_menu, i) {
++            (Some(menu), 0..=35) => {
++                let j = container_player_index(menu, i);
++                menu.slot_mut(j)
++            }
++            _ => self.inventory_menu.slot_mut(Self::player_menu_index(i)?),
++        }
++    }
++
++    /// Copies the open container's player slots into the player menu, which then always holds
++    /// the inventory (vanilla shares one `Inventory` between both menus).
++    pub fn sync_player_slots_from_container(&mut self) {
++        if let Some(menu) = &self.container_menu {
++            let slots = menu.slots()[menu.player_slots_range()].to_vec();
++            for (k, item) in slots.into_iter().enumerate() {
++                *self.inventory_menu.slot_mut(9 + k).unwrap() = item;
++            }
++        }
++    }
++
+     fn reset_quick_craft(&mut self) {
+         self.quick_craft_status = QuickCraftStatusKind::Start;
+         self.quick_craft_slots.clear();
+@@ -539,18 +552,20 @@ impl Inventory {
+         false
+     }
+ 
++    // Null fork: vanilla `Slot#safeInsert` checks `mayPlace` and the slot's own limit.
+     fn safe_insert(&mut self, slot: usize, src_item: ItemStack, take_count: i32) -> ItemStack {
+-        let Some(slot_item) = self.menu_mut().slot_mut(slot) else {
+-            return src_item;
+-        };
+         let ItemStack::Present(mut src_item) = src_item else {
+             return src_item;
+         };
++        if !self.menu().may_place(slot, &src_item) {
++            return src_item.into();
++        }
++        let max = self.menu().max_stack_size_for(slot, &src_item);
++        let Some(slot_item) = self.menu_mut().slot_mut(slot) else {
++            return src_item.into();
++        };
+ 
+-        let take_count = cmp::min(
+-            cmp::min(take_count, src_item.count),
+-            src_item.kind.max_stack_size() - slot_item.count(),
+-        );
++        let take_count = cmp::min(cmp::min(take_count, src_item.count), max - slot_item.count());
+         if take_count <= 0 {
+             return src_item.into();
+         }
+@@ -584,9 +599,8 @@ impl Inventory {
+         // vanilla calls .remove here but i think it has the same behavior as split?
+         let removed = slot_item.split(count as u32);
+ 
+-        if removed.is_present() && slot_item.is_empty() {
+-            *self.menu_mut().slot_mut(slot).unwrap() = ItemStack::Empty;
+-        }
++        // Null fork: the slot keeps what's left (vanilla `Slot#remove`), not just when emptied.
++        *self.menu_mut().slot_mut(slot).unwrap() = slot_item;
+ 
+         Some(removed)
+     }
+@@ -622,6 +636,13 @@ impl Inventory {
+     }
+ }
+ 
++/// Container-menu index of player inventory slot `i` (0-35); container menus list the main
++/// inventory, then the hotbar.
++fn container_player_index(menu: &Menu, i: usize) -> usize {
++    let start = *menu.player_slots_range().start();
++    if i < 9 { start + 27 + i } else { start + i - 9 }
++}
++
+ fn can_item_quick_replace(
+     target_slot: &ItemStack,
+     item: &ItemStack,
+@@ -645,7 +666,7 @@ fn can_item_quick_replace(
+         } else {
+             item.count as u16
+         };
+-    count <= item.kind.max_stack_size() as u16
++    count <= item.max_stack_size() as u16
+ }
+ 
+ fn get_quick_craft_slot_count(
+@@ -720,4 +741,87 @@ mod tests {
+             &spruce_planks
+         );
+     }
++
++    // Null fork: expected slots follow vanilla 1.21.11 `AbstractContainerMenu#doClick`.
++    fn player(slots: &[(usize, ItemKind, i32)]) -> Inventory {
++        let mut inv = Inventory::default();
++        for &(i, kind, n) in slots {
++            *inv.inventory_menu.slot_mut(i).unwrap() = ItemStack::new(kind, n);
++        }
++        inv
++    }
++
++    fn click(inv: &mut Inventory, op: impl Into<ClickOperation>) {
++        inv.simulate_click(&op.into(), &PlayerAbilities::default());
++    }
++
++    #[test]
++    fn shift_click_merges_then_fills_an_empty_slot() {
++        let mut inv = player(&[(9, ItemKind::Stone, 32), (36, ItemKind::Stone, 40)]);
++        click(&mut inv, QuickMoveClick::Left { slot: 9 });
++        let m = &inv.inventory_menu;
++        assert_eq!(m.slot(36), Some(&ItemStack::new(ItemKind::Stone, 64)));
++        assert_eq!(m.slot(37), Some(&ItemStack::new(ItemKind::Stone, 8)));
++        assert_eq!(m.slot(9), Some(&ItemStack::Empty));
++    }
++
++    #[test]
++    fn shift_click_armour_goes_to_its_slot() {
++        let mut inv = player(&[(20, ItemKind::IronHelmet, 1)]);
++        click(&mut inv, QuickMoveClick::Left { slot: 20 });
++        assert_eq!(inv.inventory_menu.slot(5), Some(&ItemStack::new(ItemKind::IronHelmet, 1)));
++        assert_eq!(inv.inventory_menu.slot(20), Some(&ItemStack::Empty));
++    }
++
++    #[test]
++    fn swap_button_is_a_hotbar_slot() {
++        let mut inv = player(&[(9, ItemKind::Dirt, 5), (38, ItemKind::Stone, 7)]);
++        click(&mut inv, azalea_inventory::operations::SwapClick { source_slot: 9, target_slot: 2 });
++        let m = &inv.inventory_menu;
++        assert_eq!(m.slot(9), Some(&ItemStack::new(ItemKind::Stone, 7)));
++        assert_eq!(m.slot(38), Some(&ItemStack::new(ItemKind::Dirt, 5)));
++        assert_eq!(m.slot(2), Some(&ItemStack::Empty));
++    }
++
++    #[test]
++    fn swap_button_40_is_the_offhand() {
++        let mut inv = player(&[(36, ItemKind::Shield, 1)]);
++        click(&mut inv, azalea_inventory::operations::SwapClick { source_slot: 36, target_slot: 40 });
++        assert_eq!(inv.inventory_menu.slot(45), Some(&ItemStack::new(ItemKind::Shield, 1)));
++        assert_eq!(inv.inventory_menu.slot(36), Some(&ItemStack::Empty));
++    }
++
++    #[test]
++    fn pickup_all_stops_at_a_full_stack() {
++        let mut inv = player(&[(9, ItemKind::Stone, 10), (10, ItemKind::Stone, 10)]);
++        inv.carried = ItemStack::new(ItemKind::Stone, 60);
++        click(&mut inv, PickupAllClick { slot: 11, reversed: false });
++        assert_eq!(inv.carried, ItemStack::new(ItemKind::Stone, 64));
++        assert_eq!(inv.inventory_menu.slot(9), Some(&ItemStack::new(ItemKind::Stone, 6)));
++        assert_eq!(inv.inventory_menu.slot(10), Some(&ItemStack::new(ItemKind::Stone, 10)));
++    }
++
++    #[test]
++    fn right_click_takes_half_and_leaves_the_rest() {
++        let mut inv = player(&[(9, ItemKind::Cobblestone, 63)]);
++        click(&mut inv, PickupClick::Right { slot: Some(9) });
++        assert_eq!(inv.carried, ItemStack::new(ItemKind::Cobblestone, 32));
++        assert_eq!(inv.inventory_menu.slot(9), Some(&ItemStack::new(ItemKind::Cobblestone, 31)));
++    }
++
++    #[test]
++    fn throwing_the_last_item_empties_the_slot() {
++        let mut inv = player(&[(9, ItemKind::Stone, 1)]);
++        click(&mut inv, ThrowClick::Single { slot: 9 });
++        assert_eq!(inv.inventory_menu.slot(9), Some(&ItemStack::Empty));
++    }
++
++    #[test]
++    fn nothing_goes_into_the_crafting_result() {
++        let mut inv = player(&[]);
++        inv.carried = ItemStack::new(ItemKind::Stone, 3);
++        click(&mut inv, PickupClick::Left { slot: Some(0) });
++        assert_eq!(inv.carried, ItemStack::new(ItemKind::Stone, 3));
++        assert_eq!(inv.inventory_menu.slot(0), Some(&ItemStack::Empty));
++    }
+ }
+diff --git a/azalea-inventory/src/item/mod.rs b/azalea-inventory/src/item/mod.rs
+index 015ca0e..9f0f7ee 100644
+--- a/azalea-inventory/src/item/mod.rs
++++ b/azalea-inventory/src/item/mod.rs
+@@ -26,3 +26,11 @@ impl MaxStackSizeExt for ItemKind {
+         get_default_component::<MaxStackSize>(*self).map_or(64, |s| s.count)
+     }
+ }
++
++/// Null fork: an item's own `max_stack_size` wins over its kind's, as vanilla
++/// `ItemStack#getMaxStackSize` reads the component.
++impl MaxStackSizeExt for crate::ItemStackData {
++    fn max_stack_size(&self) -> i32 {
++        self.get_component::<MaxStackSize>().map_or(64, |s| s.count)
++    }
++}
+diff --git a/azalea-inventory/src/operations.rs b/azalea-inventory/src/operations.rs
+index afaaf2e..cba0168 100644
+--- a/azalea-inventory/src/operations.rs
++++ b/azalea-inventory/src/operations.rs
+@@ -8,9 +8,11 @@ use crate::{
+     EnchantmentMenuLocation, FurnaceMenuLocation, Generic3x3MenuLocation, Generic9x1MenuLocation,
+     Generic9x2MenuLocation, Generic9x3MenuLocation, Generic9x4MenuLocation, Generic9x5MenuLocation,
+     Generic9x6MenuLocation, GrindstoneMenuLocation, HopperMenuLocation, ItemStack, ItemStackData,
+-    LecternMenuLocation, LoomMenuLocation, Menu, MenuLocation, MerchantMenuLocation, Player,
+-    PlayerMenuLocation, ShulkerBoxMenuLocation, SmithingMenuLocation, SmokerMenuLocation,
+-    StonecutterMenuLocation, item::MaxStackSizeExt,
++    LecternMenuLocation, LoomMenuLocation, Menu, MenuLocation, MerchantMenuLocation,
++    ShulkerBoxMenuLocation, SmithingMenuLocation, SmokerMenuLocation,
++    StonecutterMenuLocation,
++    components::{EquipmentSlot, Equippable},
++    item::MaxStackSizeExt,
+ };
+ 
+ /// A type of click in a Minecraft inventory.
+@@ -283,125 +285,105 @@ impl Menu {
+             .location_for_slot(slot_index)
+             .expect("we just checked to make sure the slot is Some above, so this shouldn't be able to error");
+         match slot_location {
+-            MenuLocation::Player(l) => match l {
+-                PlayerMenuLocation::CraftResult => {
+-                    self.try_move_item_to_slots(slot_index, Player::INVENTORY_SLOTS);
+-                }
+-                PlayerMenuLocation::Craft => {
+-                    self.try_move_item_to_slots(slot_index, Player::INVENTORY_SLOTS);
+-                }
+-                PlayerMenuLocation::Armor => {
+-                    self.try_move_item_to_slots(slot_index, Player::INVENTORY_SLOTS);
+-                }
+-                _ => {
+-                    // TODO: armor handling (see quickMoveStack in
+-                    // InventoryMenu.java)
+-
+-                    // if slot.kind().is_armor() &&
+-
+-                    // also offhand handling
+-
+-                    if l == PlayerMenuLocation::Inventory {
+-                        // shift-clicking in hotbar moves to inventory, and vice versa
+-                        if Player::is_hotbar_slot(slot_index) {
+-                            self.try_move_item_to_slots(
+-                                slot_index,
+-                                Player::INVENTORY_WITHOUT_HOTBAR_SLOTS,
+-                            );
+-                        } else {
+-                            self.try_move_item_to_slots(slot_index, Player::HOTBAR_SLOTS);
+-                        }
+-                    } else {
+-                        self.try_move_item_to_slots(slot_index, self.player_slots_range());
++            // Null fork: vanilla `InventoryMenu#quickMoveStack`, armour and offhand included.
++            MenuLocation::Player(_) => {
++                let equip = self
++                    .slot(slot_index)
++                    .and_then(|s| s.as_present())
++                    .and_then(|s| s.get_component::<Equippable>().map(|e| e.slot));
++                let armor_slot = match equip {
++                    Some(EquipmentSlot::Head) => Some(5),
++                    Some(EquipmentSlot::Chest) => Some(6),
++                    Some(EquipmentSlot::Legs) => Some(7),
++                    Some(EquipmentSlot::Feet) => Some(8),
++                    _ => None,
++                };
++                let empty = |m: &Self, i: usize| m.slot(i).is_some_and(|s| s.is_empty());
++                match slot_index {
++                    0 => self.move_item_stack_to(slot_index, 9..=44, true),
++                    1..=8 => self.move_item_stack_to(slot_index, 9..=44, false),
++                    _ if armor_slot.is_some_and(|j| empty(self, j)) => {
++                        let j = armor_slot.unwrap();
++                        self.move_item_stack_to(slot_index, j..=j, false)
+                     }
+-                }
+-            },
++                    _ if equip == Some(EquipmentSlot::Offhand) && empty(self, 45) => {
++                        self.move_item_stack_to(slot_index, 45..=45, false)
++                    }
++                    9..=35 => self.move_item_stack_to(slot_index, 36..=44, false),
++                    36..=44 => self.move_item_stack_to(slot_index, 9..=35, false),
++                    _ => self.move_item_stack_to(slot_index, 9..=44, false),
++                };
++            }
+             MenuLocation::Generic9x1(l) => match l {
+-                Generic9x1MenuLocation::Contents => {
+-                    self.try_move_item_to_slots(slot_index, self.player_slots_range());
+-                }
+                 Generic9x1MenuLocation::Player => {
+-                    self.try_move_item_to_slots_or_toggle_hotbar(
+-                        slot_index,
+-                        Menu::GENERIC9X1_CONTENTS_SLOTS,
+-                    );
++                    self.move_item_stack_to(slot_index, Menu::GENERIC9X1_CONTENTS_SLOTS, false);
++                }
++                _ => {
++                    let player = self.player_slots_range();
++                    self.move_item_stack_to(slot_index, player, true);
+                 }
+             },
+             MenuLocation::Generic9x2(l) => match l {
+-                Generic9x2MenuLocation::Contents => {
+-                    self.try_move_item_to_slots(slot_index, self.player_slots_range());
+-                }
+                 Generic9x2MenuLocation::Player => {
+-                    self.try_move_item_to_slots_or_toggle_hotbar(
+-                        slot_index,
+-                        Menu::GENERIC9X2_CONTENTS_SLOTS,
+-                    );
++                    self.move_item_stack_to(slot_index, Menu::GENERIC9X2_CONTENTS_SLOTS, false);
++                }
++                _ => {
++                    let player = self.player_slots_range();
++                    self.move_item_stack_to(slot_index, player, true);
+                 }
+             },
+             MenuLocation::Generic9x3(l) => match l {
+-                Generic9x3MenuLocation::Contents => {
+-                    self.try_move_item_to_slots(slot_index, self.player_slots_range());
+-                }
+                 Generic9x3MenuLocation::Player => {
+-                    self.try_move_item_to_slots_or_toggle_hotbar(
+-                        slot_index,
+-                        Menu::GENERIC9X3_CONTENTS_SLOTS,
+-                    );
++                    self.move_item_stack_to(slot_index, Menu::GENERIC9X3_CONTENTS_SLOTS, false);
++                }
++                _ => {
++                    let player = self.player_slots_range();
++                    self.move_item_stack_to(slot_index, player, true);
+                 }
+             },
+             MenuLocation::Generic9x4(l) => match l {
+-                Generic9x4MenuLocation::Contents => {
+-                    self.try_move_item_to_slots(slot_index, self.player_slots_range());
+-                }
+                 Generic9x4MenuLocation::Player => {
+-                    self.try_move_item_to_slots_or_toggle_hotbar(
+-                        slot_index,
+-                        Menu::GENERIC9X4_CONTENTS_SLOTS,
+-                    );
++                    self.move_item_stack_to(slot_index, Menu::GENERIC9X4_CONTENTS_SLOTS, false);
++                }
++                _ => {
++                    let player = self.player_slots_range();
++                    self.move_item_stack_to(slot_index, player, true);
+                 }
+             },
+             MenuLocation::Generic9x5(l) => match l {
+-                Generic9x5MenuLocation::Contents => {
+-                    self.try_move_item_to_slots(slot_index, self.player_slots_range());
+-                }
+                 Generic9x5MenuLocation::Player => {
+-                    self.try_move_item_to_slots_or_toggle_hotbar(
+-                        slot_index,
+-                        Menu::GENERIC9X5_CONTENTS_SLOTS,
+-                    );
++                    self.move_item_stack_to(slot_index, Menu::GENERIC9X5_CONTENTS_SLOTS, false);
++                }
++                _ => {
++                    let player = self.player_slots_range();
++                    self.move_item_stack_to(slot_index, player, true);
+                 }
+             },
+             MenuLocation::Generic9x6(l) => match l {
+-                Generic9x6MenuLocation::Contents => {
+-                    self.try_move_item_to_slots(slot_index, self.player_slots_range());
+-                }
+                 Generic9x6MenuLocation::Player => {
+-                    self.try_move_item_to_slots_or_toggle_hotbar(
+-                        slot_index,
+-                        Menu::GENERIC9X6_CONTENTS_SLOTS,
+-                    );
++                    self.move_item_stack_to(slot_index, Menu::GENERIC9X6_CONTENTS_SLOTS, false);
++                }
++                _ => {
++                    let player = self.player_slots_range();
++                    self.move_item_stack_to(slot_index, player, true);
+                 }
+             },
+             MenuLocation::Generic3x3(l) => match l {
+-                Generic3x3MenuLocation::Contents => {
+-                    self.try_move_item_to_slots(slot_index, self.player_slots_range());
+-                }
+                 Generic3x3MenuLocation::Player => {
+-                    self.try_move_item_to_slots_or_toggle_hotbar(
+-                        slot_index,
+-                        Menu::GENERIC3X3_CONTENTS_SLOTS,
+-                    );
++                    self.move_item_stack_to(slot_index, Menu::GENERIC3X3_CONTENTS_SLOTS, false);
++                }
++                _ => {
++                    let player = self.player_slots_range();
++                    self.move_item_stack_to(slot_index, player, true);
+                 }
+             },
+             MenuLocation::Crafter3x3(l) => match l {
+-                Crafter3x3MenuLocation::Contents => {
+-                    self.try_move_item_to_slots(slot_index, self.player_slots_range());
+-                }
+                 Crafter3x3MenuLocation::Player => {
+-                    self.try_move_item_to_slots_or_toggle_hotbar(
+-                        slot_index,
+-                        Menu::GENERIC3X3_CONTENTS_SLOTS,
+-                    );
++                    self.move_item_stack_to(slot_index, Menu::GENERIC3X3_CONTENTS_SLOTS, false);
++                }
++                _ => {
++                    let player = self.player_slots_range();
++                    self.move_item_stack_to(slot_index, player, true);
+                 }
+             },
+             MenuLocation::Anvil(l) => match l {
+@@ -495,13 +477,11 @@ impl Menu {
+             },
+             MenuLocation::Hopper(l) => match l {
+                 HopperMenuLocation::Player => {
+-                    self.try_move_item_to_slots_or_toggle_hotbar(
+-                        slot_index,
+-                        Menu::HOPPER_CONTENTS_SLOTS,
+-                    );
++                    self.move_item_stack_to(slot_index, Menu::HOPPER_CONTENTS_SLOTS, false);
+                 }
+                 _ => {
+-                    self.try_move_item_to_slots(slot_index, self.player_slots_range());
++                    let player = self.player_slots_range();
++                    self.move_item_stack_to(slot_index, player, true);
+                 }
+             },
+             MenuLocation::Lectern(l) => match l {
+@@ -539,13 +519,11 @@ impl Menu {
+             },
+             MenuLocation::ShulkerBox(l) => match l {
+                 ShulkerBoxMenuLocation::Player => {
+-                    self.try_move_item_to_slots_or_toggle_hotbar(
+-                        slot_index,
+-                        Menu::SHULKER_BOX_CONTENTS_SLOTS,
+-                    );
++                    self.move_item_stack_to(slot_index, Menu::SHULKER_BOX_CONTENTS_SLOTS, false);
+                 }
+                 _ => {
+-                    self.try_move_item_to_slots(slot_index, self.player_slots_range());
++                    let player = self.player_slots_range();
++                    self.move_item_stack_to(slot_index, player, true);
+                 }
+             },
+             MenuLocation::Smithing(l) => match l {
+@@ -614,11 +592,24 @@ impl Menu {
+         }
+     }
+ 
+-    /// Whether the given item could be placed in this menu.
++    /// Whether the given item could be placed in this slot.
+     ///
+-    /// TODO: right now this always returns true
+-    pub fn may_place(&self, _target_slot_index: usize, _item: &ItemStackData) -> bool {
+-        true
++    /// Null fork: result slots take nothing and armour slots only matching armour (vanilla
++    /// `ResultSlot#mayPlace`, `ArmorSlot#mayPlace`); other slots still return true.
++    pub fn may_place(&self, target_slot_index: usize, item: &ItemStackData) -> bool {
++        match self {
++            Menu::Player(_) => match target_slot_index {
++                0 => false,
++                5..=8 => {
++                    let want = [EquipmentSlot::Head, EquipmentSlot::Chest, EquipmentSlot::Legs, EquipmentSlot::Feet]
++                        [target_slot_index - 5];
++                    item.get_component::<Equippable>().is_some_and(|e| e.slot == want)
++                }
++                _ => true,
++            },
++            Menu::Crafting { .. } => target_slot_index != 0,
++            _ => true,
++        }
+     }
+ 
+     /// Whether the item in the given slot could be clicked and picked up.
+@@ -641,8 +632,67 @@ impl Menu {
+     }
+ 
+     /// Get the maximum number of items that can be placed in this slot.
+-    pub fn max_stack_size(&self, _target_slot_index: usize) -> i32 {
+-        64
++    ///
++    /// Null fork: vanilla containers allow 99 (`Container#getMaxStackSize`) and armour slots 1;
++    /// the item's own limit applies on top (see [`Self::max_stack_size_for`]).
++    pub fn max_stack_size(&self, target_slot_index: usize) -> i32 {
++        match self {
++            Menu::Player(_) if (5..=8).contains(&target_slot_index) => 1,
++            _ => 99,
++        }
++    }
++
++    /// Vanilla `Slot#getMaxStackSize(ItemStack)`: the slot's limit and the item's.
++    pub fn max_stack_size_for(&self, target_slot_index: usize, item: &ItemStackData) -> i32 {
++        self.max_stack_size(target_slot_index).min(item.max_stack_size())
++    }
++
++    // Null fork: vanilla `AbstractContainerMenu#moveItemStackTo`. Merge into matching stacks,
++    // then put the rest in the first empty slot that takes it; `reverse` walks the range backwards.
++    fn move_item_stack_to(&mut self, from: usize, range: RangeInclusive<usize>, reverse: bool) -> bool {
++        let Some(ItemStack::Present(mut item)) = self.slot(from).cloned() else {
++            return false;
++        };
++        let order: Vec<usize> = if reverse { range.rev().collect() } else { range.collect() };
++        let mut moved = false;
++        if item.max_stack_size() > 1 {
++            for &i in &order {
++                if item.count <= 0 {
++                    break;
++                }
++                let max = match self.slot(i) {
++                    Some(ItemStack::Present(t)) if i != from && t.is_same_item_and_components(&item) => {
++                        self.max_stack_size_for(i, t)
++                    }
++                    _ => continue,
++                };
++                let ItemStack::Present(target) = self.slot_mut(i).unwrap() else { unreachable!() };
++                if target.count + item.count <= max {
++                    target.count += item.count;
++                    item.count = 0;
++                    moved = true;
++                } else if target.count < max {
++                    item.count -= max - target.count;
++                    target.count = max;
++                    moved = true;
++                }
++            }
++        }
++        if item.count > 0 {
++            for &i in &order {
++                if self.slot(i).is_some_and(|s| s.is_empty()) && self.may_place(i, &item) {
++                    let n = item.count.min(self.max_stack_size_for(i, &item));
++                    let mut part = item.clone();
++                    part.count = n;
++                    *self.slot_mut(i).unwrap() = ItemStack::Present(part);
++                    item.count -= n;
++                    moved = true;
++                    break;
++                }
++            }
++        }
++        *self.slot_mut(from).unwrap() = if item.count > 0 { ItemStack::Present(item) } else { ItemStack::Empty };
++        moved
+     }
+ 
+     /// Try moving an item to a set of slots in this menu.
+diff --git a/azalea/src/container.rs b/azalea/src/container.rs
+index 0a5c8c0..20c787d 100644
+--- a/azalea/src/container.rs
++++ b/azalea/src/container.rs
+@@ -142,6 +142,8 @@ impl Client {
+     pub fn open_inventory(&self) -> AzaleaResult<Option<ContainerHandle>> {
+         let inventory = self.component::<Inventory>()?;
+         Ok(if inventory.id == 0 {
++            // Null fork: open the screen first; clicks wait a tick after it (`OpenScreen`).
++            self.ecs.write().trigger(azalea_client::inventory::OpenInventoryEvent { entity: self.entity });
+             Some(ContainerHandle::new(0, self.clone()))
+         } else {
+             None
+-- 
+2.52.0
+

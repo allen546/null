@@ -95,6 +95,9 @@ impl Skill for Replay {
                 Command::CancelBreak => c.cancel_break(),
                 Command::PlaceBlock { pos, face } => c.place_block(pos, face),
                 Command::LookAtBlock { pos, face } => c.look_at_block(pos, face),
+                Command::OpenInventory => c.open_inventory(),
+                Command::CloseWindow => c.close_window(),
+                Command::ClickSlot { slot, click } => c.click_slot(slot, click),
             }
         }
         SkillStatus::Running

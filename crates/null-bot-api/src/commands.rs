@@ -35,6 +35,16 @@ pub trait BotCommands {
     fn goto(&mut self, target: BlockPos, tolerance: f32);
     /// Cancel navigation only; held walk/sprint input is left alone.
     fn stop_nav(&mut self);
+    // Spec: specs/B3-inventory-crafting.md §4.1 (open the inventory as a vanilla client does)
+    /// Open the player's inventory (vanilla's E). While a window is open the bot holds still;
+    /// refused while mining or using an item (`BotView::open_refusal`). Click from the next tick.
+    fn open_inventory(&mut self);
+    // Spec: specs/B3-inventory-crafting.md §4.1 (close the open window)
+    fn close_window(&mut self);
+    // Spec: specs/B3-inventory-crafting.md §4.1 (click a slot of the open window)
+    /// Click `slot` of the open window (`None` = outside it, for dropping the carried stack).
+    /// Read the result from `BotView::last_click`.
+    fn click_slot(&mut self, slot: Option<u16>, click: Click);
 }
 
 /// One command as data; the fake records these and adapters may queue them.
@@ -57,4 +67,7 @@ pub enum Command {
     LookAtBlock { pos: BlockPos, face: Option<Face> },
     Goto { target: BlockPos, tolerance: f32 },
     StopNav,
+    OpenInventory,
+    CloseWindow,
+    ClickSlot { slot: Option<u16>, click: Click },
 }

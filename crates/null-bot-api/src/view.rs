@@ -39,6 +39,19 @@ pub trait BotView {
     fn last_break(&self) -> Option<BlockAction>;
     fn last_place(&self) -> Option<BlockAction>;
 
+    // Spec: specs/B3-inventory-crafting.md §4.1 (the open window and the latest click)
+    /// The open window, if any.
+    fn window(&self) -> Option<&Window> {
+        None
+    }
+    fn last_click(&self) -> Option<ClickOutcome> {
+        None
+    }
+    /// Why the latest `open_inventory` was refused, until the next one succeeds.
+    fn open_refusal(&self) -> Option<&'static str> {
+        None
+    }
+
     // Spec: specs/B3-inventory-crafting.md §4.1 (slot management: count items)
     /// Total count of `item` ("minecraft:stone") over the 36 main slots and the offhand.
     fn count_item(&self, item: &str) -> u32 {

@@ -15,7 +15,12 @@ use azalea::{
         metadata::Health,
     },
     interact::{BlockStatePredictionHandler, handle_start_use_item_queued},
-    inventory::ensure_has_sent_carried_item,
+    inventory::{
+        ClickResults, CloseContainerEvent, ContainerClickEvent, OpenInventoryEvent, OpenScreen,
+        ensure_has_sent_carried_item,
+        hold_still_while_screen_open,
+        operations::{ClickOperation, PickupAllClick, PickupClick, QuickMoveClick, SwapClick, ThrowClick},
+    },
     item_use::{ReleaseUseItemQueued, SwapOffhandQueued, UseItemQueued, handle_use_item_queued},
     block_actions::{
         BlockActionResults, BreakBlockQueued, LookAtBlockQueued, PlaceBlockQueued, StopMiningQueued,
@@ -101,6 +106,7 @@ impl Plugin for HostPlugin {
                 .before(ensure_has_sent_carried_item)
                 .before(handle_start_use_item_queued)
                 .before(handle_use_item_queued)
+                .before(hold_still_while_screen_open)
                 .before(age_recent_attackers),
         );
     }
@@ -165,6 +171,16 @@ impl null_bot_api::BotCommands for CommandBuffer {
     fn look_at_block(&mut self, pos: null_bot_api::BlockPos, face: Option<null_bot_api::Face>) {
         self.0.push(Command::LookAtBlock { pos, face });
     }
+    // Spec: specs/B3-inventory-crafting.md §4.1 (open, close and click windows)
+    fn open_inventory(&mut self) {
+        self.0.push(Command::OpenInventory);
+    }
+    fn close_window(&mut self) {
+        self.0.push(Command::CloseWindow);
+    }
+    fn click_slot(&mut self, slot: Option<u16>, click: null_bot_api::Click) {
+        self.0.push(Command::ClickSlot { slot, click });
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -186,7 +202,14 @@ fn decide(
             &WorldName,
             &Pathfinder,
             Option<&ExecutingPath>,
-            (Option<&HostFlags>, Option<&BlockActionResults>, Option<&RecentAttackers>, Option<&ServerTags>),
+            (
+                Option<&HostFlags>,
+                Option<&BlockActionResults>,
+                Option<&RecentAttackers>,
+                Option<&ServerTags>,
+                Option<&OpenScreen>,
+                Option<&ClickResults>,
+            ),
         ),
         (With<LocalEntity>, With<HasClientLoaded>, Without<Dead>),
     >,
@@ -195,7 +218,7 @@ fn decide(
 ) {
     tick.0 += 1;
     let now = tick.0;
-    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, results, attackers, tags)) in
+    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, results, attackers, tags, screen, clicks)) in
         &mut bots
     {
         let nav_pending = flags.and_then(|f| f.nav_requested).is_some_and(|t| now - t <= 2);
@@ -220,6 +243,8 @@ fn decide(
                 results,
                 attackers,
                 tags,
+                screen_open: screen.is_some(),
+                clicks,
             },
             &others,
         );
@@ -252,6 +277,23 @@ fn walk_direction(forward: i8, strafe: i8) -> WalkDirection {
         (-1, 1) => WalkDirection::BackwardRight,
         (-1, -1) => WalkDirection::BackwardLeft,
         _ => WalkDirection::None,
+    }
+}
+
+// Spec: specs/B3-inventory-crafting.md §4.1 (clicks as a vanilla client makes them)
+fn click_op(slot: Option<u16>, click: null_bot_api::Click) -> ClickOperation {
+    use null_bot_api::Click;
+    match (slot, click) {
+        (None, Click::Right) => PickupClick::RightOutside.into(),
+        (None, _) => PickupClick::LeftOutside.into(),
+        (Some(slot), Click::Left) => PickupClick::Left { slot: Some(slot) }.into(),
+        (Some(slot), Click::Right) => PickupClick::Right { slot: Some(slot) }.into(),
+        (Some(slot), Click::ShiftLeft) => QuickMoveClick::Left { slot }.into(),
+        (Some(slot), Click::SwapHotbar(n)) => SwapClick { source_slot: slot, target_slot: n.min(8) }.into(),
+        (Some(slot), Click::SwapOffhand) => SwapClick { source_slot: slot, target_slot: 40 }.into(),
+        (Some(slot), Click::Drop) => ThrowClick::Single { slot }.into(),
+        (Some(slot), Click::DropStack) => ThrowClick::All { slot }.into(),
+        (Some(slot), Click::DoubleClick) => PickupAllClick { slot, reversed: false }.into(),
     }
 }
 
@@ -366,6 +408,13 @@ fn apply(
                 Command::StopNav => {
                     stop_nav.write(StopPathfindingEvent { entity, force: false });
                     flags.nav_requested = None;
+                }
+                // Spec: specs/B3-inventory-crafting.md §4.1 (windows are fork events; the fork
+                // refuses clicks a vanilla client couldn't make)
+                Command::OpenInventory => commands.trigger(OpenInventoryEvent { entity }),
+                Command::CloseWindow => commands.trigger(CloseContainerEvent { entity, id: inv.id }),
+                Command::ClickSlot { slot, click } => {
+                    commands.trigger(ContainerClickEvent { entity, window_id: inv.id, operation: click_op(slot, click) });
                 }
             }
         }

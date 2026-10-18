@@ -234,6 +234,15 @@ impl BotCommands for FakeCommands {
     fn stop_nav(&mut self) {
         self.push(Command::StopNav);
     }
+    fn open_inventory(&mut self) {
+        self.push(Command::OpenInventory);
+    }
+    fn close_window(&mut self) {
+        self.push(Command::CloseWindow);
+    }
+    fn click_slot(&mut self, slot: Option<u16>, click: Click) {
+        self.push(Command::ClickSlot { slot, click });
+    }
 }
 
 #[cfg(test)]

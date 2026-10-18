@@ -51,6 +51,8 @@ pub enum Op {
     BreakChain(Vec<BlockPos>),
     /// Item use, attack and attacker ops (A5-A8), in `skill_items`.
     Items(crate::skill_items::ItemOp),
+    /// Inventory window ops (A9), in `skill_inventory`.
+    Inv(crate::skill_inventory::InvOp),
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +73,7 @@ pub enum Info {
     Action(BlockAction),
     Timeout,
     Items(crate::skill_items::ItemsInfo),
+    Inv(crate::skill_inventory::InvInfo),
     /// Per block of a chain: (block, ticks from start to finish, outcome).
     Chain(Vec<(BlockPos, Option<u64>, BlockOutcome)>),
 }
@@ -312,6 +315,7 @@ impl Skill for RemoteSkill {
                 (age >= 3).then(|| Info::Snapshot(snapshot(v)))
             }
             Op::Items(io) => crate::skill_items::step(io, age, &mut self.items, v, c, &say),
+            Op::Inv(io) => crate::skill_inventory::step(io, age, v, c),
             Op::Goto(pos) => {
                 if age == 0 {
                     c.goto(*pos, 0.0);

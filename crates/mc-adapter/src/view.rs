@@ -42,6 +42,9 @@ pub struct ViewParts<'a> {
     pub results: Option<&'a azalea::block_actions::BlockActionResults>,
     pub attackers: Option<&'a azalea::attackers::RecentAttackers>,
     pub tags: Option<&'a azalea::tags::ServerTags>,
+    /// A window is open (the fork's `OpenScreen`).
+    pub screen_open: bool,
+    pub clicks: Option<&'a azalea::inventory::ClickResults>,
 }
 
 /// Other entities, for `BotView::entities`.
@@ -71,6 +74,7 @@ pub struct AzaleaView<'a, 'w, 's> {
     entities: OnceCell<Vec<api::EntitySnapshot>>,
     attackers: OnceCell<Vec<api::Attacker>>,
     shield_hits: OnceCell<Vec<api::ShieldHit>>,
+    window: OnceCell<Option<api::Window>>,
 }
 
 fn v3(v: azalea::Vec3) -> api::Vec3 {
@@ -154,6 +158,7 @@ impl<'a, 'w, 's> AzaleaView<'a, 'w, 's> {
             entities: OnceCell::new(),
             attackers: OnceCell::new(),
             shield_hits: OnceCell::new(),
+            window: OnceCell::new(),
         }
     }
 }
@@ -319,6 +324,37 @@ impl BotView for AzaleaView<'_, '_, '_> {
     // Spec: specs/B6-placement-breaking.md §4.6 (acknowledgement and readback)
     fn last_place(&self) -> Option<api::BlockAction> {
         crate::blocks::translate(api::BlockActionKind::Place, self.p.blocks?.last_place, self.p.results)
+    }
+    // Spec: specs/B3-inventory-crafting.md §4.1 (the open window, in its own numbering)
+    fn window(&self) -> Option<&api::Window> {
+        self.window
+            .get_or_init(|| {
+                if !self.p.screen_open {
+                    return None;
+                }
+                let inv = self.p.inventory;
+                Some(api::Window {
+                    id: inv.id,
+                    slots: inv.menu().slots().iter().map(|s| self.stack(s)).collect(),
+                    carried: self.stack(&inv.carried),
+                })
+            })
+            .as_ref()
+    }
+    // Spec: specs/B3-inventory-crafting.md §4.1 (what the server said after our click)
+    fn last_click(&self) -> Option<api::ClickOutcome> {
+        let c = self.p.clicks?.last.as_ref()?;
+        let slot = |s: i16| u16::try_from(s).ok();
+        Some(api::ClickOutcome {
+            slot: slot(c.slot_num),
+            refused: c.refusal.map(|r| r.reason()),
+            ticks: c.ticks,
+            corrected: c.corrected_slots.iter().map(|&s| slot(s)).collect(),
+            full_resends: c.full_resends,
+        })
+    }
+    fn open_refusal(&self) -> Option<&'static str> {
+        self.p.clicks?.open_refusal.map(|r| r.reason())
     }
     fn nav_status(&self) -> api::NavStatus {
         if self.p.pathfinder.is_calculating || self.p.nav_pending {
