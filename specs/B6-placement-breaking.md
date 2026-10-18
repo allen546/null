@@ -56,7 +56,10 @@ Skills:
 
 - A recipe per target state: item, clicked face, hit point, look yaw and pitch, sneak, and follow-up clicks.
 - Recipes are computed by running the game's own placement logic against the planned look and neighbours (Baritone's `approxPlaceable` idea, probed per version in the simulator), not by hand-written facing rules (builder-hard-cases §3.1, §5.3).
-- Placing clicks are sneaked so they never use the clicked block (ONLINE_BUILDER §2b).
+- Placing clicks are sneaked so they never use the clicked block (ONLINE_BUILDER §2b). **Crouch handling (Allen, 2026-10-18):**
+  - Vanilla rule: a click with an item in either hand while crouching skips the clicked block's own action and places (`MultiPlayerGameMode#performUseItemOn`). The crouch must reach the server at least one tick before the click.
+  - Fork (mechanism): a generated per-version table of blocks that use a click (block classes that override `useWithoutItem` or `useItemOn`), exposed as a query ("does this click need a crouch?"). The place command takes `auto_crouch`. With it off, a click on such a block while not crouching is refused with a reason and nothing is sent. With it on, the command crouches, clicks on the next tick, then restores the previous crouch state: for one-off placements.
+  - Skills (policy): a placement sequence holds the crouch itself and passes `auto_crouch` off. It stays crouched while the next placements need it and are in reach, and stands up only before a longer walk (crouching walks at 30%), with a short delay so the crouch does not flicker between blocks. Only the skill sees the sequence, so the smoothing is not in the fork.
 - Placing a block or using a block is `UseOnCrosshair` or a face-specific `UseItemOn`; an item whose effect doesn't depend on the block (bucket, pearl, food, bow) is `UseItem`. Azalea never sends `UseItem` while a block is under the crosshair, so picking the wrong command silently does nothing (F5 §4.1, spike §6.3).
 - A recipe's face and hit point are produced by setting the look and letting Azalea's raycast make the hit, or by sending `ServerboundUseItemOn` with the recipe's values. Never Azalea's `force_block`, which invents a hit point (block centre, face up) (Azalea reality check, 2026-10-13).
 - Vanilla survival only: state comes from look, face, hit point and sneaking (tier C). No accurate-placement protocol.
