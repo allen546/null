@@ -49,7 +49,7 @@ Rules:
 
 | doc | status | what it is |
 |---|---|---|
-| [plans/BUILD_PLAN.md](plans/BUILD_PLAN.md) | Plan, in progress (2026-10-16) | The whole-swarm build plan in ARCHITECTURE §7's order: step 1, the skeleton, as milestones S1–S6 (workspace, message types and bus, control spine on simulated bots, Azalea adapter and login, skills and belief, the skeleton live with `Obtain(oak_log, 64)`); steps 2–8 outlined. Done: S1, and S4 (20 bots log in and patrol on `skeleton-server`, verified live 2026-10-16). Next: SA, the ability check (2026-10-17). |
+| [plans/BUILD_PLAN.md](plans/BUILD_PLAN.md) | Plan, in progress (2026-10-16) | The whole-swarm build plan in ARCHITECTURE §7's order: step 1, the skeleton, as milestones S1–S6 (workspace, message types and bus, control spine on simulated bots, Azalea adapter and login, skills and belief, the skeleton live with `Obtain(oak_log, 64)`); steps 2–8 outlined. Done: S1, and S4 (20 bots log in and patrol on `skeleton-server`, verified live 2026-10-16). Next: SA, the ability check (2026-10-17): A1–A9 done, A10–A12 open (2026-10-18). |
 | [plans/COMBAT_SCAFFOLD.md](plans/COMBAT_SCAFFOLD.md) | Plan, a track of BUILD_PLAN (2026-10-16) | Milestones M1–M4 for steps 1 and 2 of AD-B5.1: the Cargo workspace and decision API, the combat decision crate with the duel-controller seam, the Azalea adapter and a live duel, and parameter tuning. Done: M1, M2 (with the 20 v 20 swarm duel). |
 | [plans/ABILITY_CHECK.md](plans/ABILITY_CHECK.md) | Plan, milestone SA of BUILD_PLAN (2026-10-17) | Basic abilities (slots, breaking, pickup, placing, eating, shield, attack, attackers, inventory, chests, crafting, respawn) proven live by server readback before S5; fork patches where Azalea falls short. |
 

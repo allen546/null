@@ -1,6 +1,6 @@
 # Open for Allen: start here next thread
 
-> State on `main`, 2026-10-17 (late evening). The Azalea fork's patches 5–10 are pushed (`allen546/azalea`, `null-main`). SA A1–A8 and the shape families pass 195/195 on both test servers (vanilla and Paper + Grim, both on normal), checked by an independent verifier; this evening's changes are not committed yet. For SA, start at [HANDOFF.md](HANDOFF.md). Read this, then `specs/INDEX.md` if more context is needed. Don't load `specs/logs/` (about 600k tokens of old builder logs).
+> State on `main`, 2026-10-18. The Azalea fork's patches 5–17 are pushed (`allen546/azalea`, `null-main`). SA A1–A9 and the shape families pass on both test servers (vanilla and Paper + Grim, both on normal; the full suite 245/245 on each), checked by independent verifiers; everything is committed and pushed. Next: A10 (chests). Standing rules for Claude are in [CLAUDE.md](CLAUDE.md). For SA, start at [HANDOFF.md](HANDOFF.md). Read this, then `specs/INDEX.md` if more context is needed. Don't load `specs/logs/` (about 600k tokens of old builder logs).
 
 ## 1. Nothing blocks building
 
@@ -41,9 +41,9 @@ None of these blocks current work. Each has a default.
 ## 3b. Decided 2026-10-17
 
 - **Fork vs adapter (Allen):** raw game capability (placing with results, item use, attackers, menus, pathfinder moves, the replay switch) goes in the Azalea fork as normal Azalea APIs; `mc-adapter` only translates to `BotView`/`BotCommands`. AD-F5.2 is unchanged (the boundary stands); the planned `mc-act` and `mc-nav` crates are dropped. F5 §4.1, ARCHITECTURE §9.1, CONVENTIONS updated.
-- **Paper + GrimAC is the strict test server, timing included** (vanilla stays the target; see the evening entries below) (`harness/grim-server`, port 25568; your jars from `~/Documents/antigravity/focused-bardeen`). A bot never sends a click a vanilla client couldn't make. Vanilla `skeleton-server` is secondary.
+- **Paper + GrimAC is the strict test server, timing included** (vanilla stays the target; see the evening entries below) (`harness/grim-server`, port 25568; your jars from `~/Documents/antigravity/focused-bardeen`). A bot never sends a click a vanilla client couldn't make.
 - **Server-configurable timings are beliefs, not facts** (example: the shield's raise-to-block delay).
-- **SA progress:** A1–A8 and every non-cube block shape family pass on Paper + Grim with zero alerts (about 200 rows), fork patches 5–10 (`specs/reference/AZALEA_PATCHES.md`). A9–A12 and the open items are in [HANDOFF.md](HANDOFF.md).
+- **SA progress:** A1–A8 and every non-cube block shape family pass on Paper + Grim with zero alerts (about 200 rows), fork patches 5–10 (`specs/reference/AZALEA_PATCHES.md`). A9 done 2026-10-18 (fork patches 16–17); A10–A12 and the open items are in [HANDOFF.md](HANDOFF.md).
 - **Reference sources (evening):** Minecraft client and server (Mojang names first, Yarn optional), Paper and Bukkit source, mineflayer, Meteor Client and Baritone (automation code to refer to), GrimAC; plan in `specs/plans/REFERENCE_SOURCES.md`. Fork patches then cite the vanilla method they reproduce.
 - **Server targets (evening):** vanilla only (F5 §4.6); the Azalea-side code must also run cleanly on Paper with an anticheat. The ability check passes only on both test servers.
 - **Grim server difficulty (evening):** normal.
@@ -58,7 +58,7 @@ None of these blocks current work. Each has a default.
 
 ## 4. Next actions (not decisions)
 
-0. **SA, the ability check**: A1–A8, the shape families, the reference sources (`~/Desktop/null-reference/`) and the shield-delay belief (A6, fork patches 11–12) done and verified on both servers (199/199 each, 2026-10-18); A9 inventory clicks done 2026-10-18 (fork patches 16–17; the full suite passes 245/245 on each server); next A10–A12. Full list in [HANDOFF.md](HANDOFF.md). It comes before the items below.
+0. **SA, the ability check**: A1–A8, the shape families, the reference sources (`~/Desktop/null-reference/`) and the shield-delay belief (A6, fork patches 11–12) done and verified on both servers (199/199 each, 2026-10-18); A9 inventory clicks done 2026-10-18 (fork patches 16–17; the full suite passes 245/245 on each server); next A10 (chests), A11 (crafting by clicks), A12 (respawn), then a verifier runs the whole suite. Full list in [HANDOFF.md](HANDOFF.md). It comes before the items below.
 1. **Bench, remote server.** Borrow the M5 MacBook Airs (family OK pending; backup: hourly VPSes). Add `host=` to `azbench` and a remote mode to `run_one.py`. Ladder 100–500 bots with 3 and 5 threads. Watch the Airs for throttling.
 2. **Shared section cache** in the Azalea fork (99% of section building was repeated), then the same ladder again.
 3. **Bench gaps:** lock-wait and per-thread timing (why the ECS tick waits), the level-off at 22–28 searches per second, re-run 5 threads at 50 bots (suspect value), why 3% of repeated chunks have different bytes.

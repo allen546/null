@@ -20,7 +20,7 @@ The goal: all four levels (HQ, one operation, one squad, two bots) run in one pr
 | S2 | Message types and transport | `null-proto`, `null-bus` | S1 | not started |
 | S3 | Control spine on simulated bots | `null-hq`, `null-op`, `null-squad`, `null-cli`, `null-simbot` | S2 | not started |
 | S4 | Adapter, host and login | `mc-adapter`, `null-node`, `skeleton-server/` | S1 | done 2026-10-16, verified live |
-| SA | Ability check: basic abilities proven live, fixed in the fork where needed ([ABILITY_CHECK.md](ABILITY_CHECK.md)) | `null-abilitycheck`, `mc-adapter`, fork | S4 | in progress: A1–A8 and the block shape families pass on Paper + Grim (2026-10-17); A9–A12 open ([HANDOFF.md](../../HANDOFF.md)) |
+| SA | Ability check: basic abilities proven live, fixed in the fork where needed ([ABILITY_CHECK.md](ABILITY_CHECK.md)) | `null-abilitycheck`, `mc-adapter`, fork | S4 | in progress: A1–A9 and the block shape families pass on vanilla and Paper + Grim (2026-10-18); A10–A12 open ([HANDOFF.md](../../HANDOFF.md)) |
 | S5 | Skills and belief for the goal | `null-skills`, `null-belief` | S4, SA | not started |
 | S6 | Skeleton live | wiring only | S3, S5 | not started |
 
