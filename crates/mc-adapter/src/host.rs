@@ -23,7 +23,7 @@ use azalea::{
     },
     item_use::{ReleaseUseItemQueued, SwapOffhandQueued, UseItemQueued, handle_use_item_queued},
     block_actions::{
-        BlockActionResults, BreakBlockQueued, LookAtBlockQueued, PlaceBlockQueued, StopMiningQueued,
+        BlockActionResults, BreakBlockQueued, LookAtBlockQueued, PlaceBlockQueued, StopMiningQueued, UseBlockQueued,
         handle_break_block_queued, handle_look_at_block_queued,
     },
     mining::MiningSystems,
@@ -175,6 +175,10 @@ impl null_bot_api::BotCommands for CommandBuffer {
     fn open_inventory(&mut self) {
         self.0.push(Command::OpenInventory);
     }
+    // Spec: specs/B3-inventory-crafting.md §4.7 (open a container by right-clicking it)
+    fn open_container(&mut self, pos: null_bot_api::BlockPos, face: Option<null_bot_api::Face>) {
+        self.0.push(Command::OpenContainer { pos, face });
+    }
     fn close_window(&mut self) {
         self.0.push(Command::CloseWindow);
     }
@@ -244,6 +248,7 @@ fn decide(
                 attackers,
                 tags,
                 screen_open: screen.is_some(),
+                screen_kind: screen.and_then(|s| s.kind),
                 clicks,
             },
             &others,
@@ -412,6 +417,13 @@ fn apply(
                 // Spec: specs/B3-inventory-crafting.md §4.1 (windows are fork events; the fork
                 // refuses clicks a vanilla client couldn't make)
                 Command::OpenInventory => commands.trigger(OpenInventoryEvent { entity }),
+                Command::OpenContainer { pos, face } => {
+                    commands.entity(entity).insert(UseBlockQueued {
+                        position: blocks::block_pos(pos),
+                        direction: face.map(blocks::face_to_dir),
+                    });
+                    flags.blocks.last_open = Some(Issued::new_open(tick.0, pos, results.last_use.map(|r| r.id)));
+                }
                 Command::CloseWindow => commands.trigger(CloseContainerEvent { entity, id: inv.id }),
                 Command::ClickSlot { slot, click } => {
                     commands.trigger(ContainerClickEvent { entity, window_id: inv.id, operation: click_op(slot, click) });

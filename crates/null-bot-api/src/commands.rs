@@ -39,6 +39,12 @@ pub trait BotCommands {
     /// Open the player's inventory (vanilla's E). While a window is open the bot holds still;
     /// refused while mining or using an item (`BotView::open_refusal`). Click from the next tick.
     fn open_inventory(&mut self);
+    // Spec: specs/B3-inventory-crafting.md §4.7 (open a container by right-clicking it)
+    /// Right-click the block at `pos` (on `face`, or any visible face) with the main hand, as a
+    /// vanilla client does. Look at it first (`look_at_block`, two ticks). Refused with a reason,
+    /// sending nothing, when out of reach, crouching with an item in hand, or a screen is open.
+    /// Read the result from `BotView::last_open`.
+    fn open_container(&mut self, pos: BlockPos, face: Option<Face>);
     // Spec: specs/B3-inventory-crafting.md §4.1 (close the open window)
     fn close_window(&mut self);
     // Spec: specs/B3-inventory-crafting.md §4.1 (click a slot of the open window)
@@ -68,6 +74,7 @@ pub enum Command {
     Goto { target: BlockPos, tolerance: f32 },
     StopNav,
     OpenInventory,
+    OpenContainer { pos: BlockPos, face: Option<Face> },
     CloseWindow,
     ClickSlot { slot: Option<u16>, click: Click },
 }

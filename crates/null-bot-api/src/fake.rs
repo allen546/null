@@ -237,6 +237,9 @@ impl BotCommands for FakeCommands {
     fn open_inventory(&mut self) {
         self.push(Command::OpenInventory);
     }
+    fn open_container(&mut self, pos: BlockPos, face: Option<Face>) {
+        self.push(Command::OpenContainer { pos, face });
+    }
     fn close_window(&mut self) {
         self.push(Command::CloseWindow);
     }

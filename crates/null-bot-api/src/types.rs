@@ -226,10 +226,16 @@ pub enum Click {
 pub struct Window {
     /// The server's window id; 0 for the player's own inventory.
     pub id: i32,
+    /// The menu kind of a container ("minecraft:generic_9x3", "minecraft:hopper"); None for the
+    /// player's own inventory.
+    pub kind: Option<&'static str>,
     /// Every slot in the window's own numbering (the player inventory window: 0 crafting result,
     /// 1-4 crafting grid, 5-8 armour head to feet, 9-35 main, 36-44 hotbar, 45 offhand). A
     /// container lists its own slots, then the main inventory, then the hotbar.
     pub slots: Vec<Option<ItemStack>>,
+    /// Window slots whose content the server computes (a crafting result), so an update there
+    /// after a click is not a correction. Empty for storage blocks.
+    pub computed_slots: Vec<u16>,
     /// The stack on the cursor.
     pub carried: Option<ItemStack>,
 }
@@ -249,6 +255,34 @@ impl Window {
         let start = if self.is_player_inventory() { 9 } else { self.slots.len().checked_sub(36)? };
         Some((if i < 9 { start + 27 + i } else { start + i - 9 }) as u16)
     }
+}
+
+/// What came of the latest `open_container` (B3 §4.7).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenResult {
+    pub target: OpenTarget,
+    pub outcome: OpenOutcome,
+    /// Why the client refused it (nothing was sent), if it did.
+    pub refused: Option<&'static str>,
+    /// Ticks since the click was sent.
+    pub ticks: u32,
+}
+
+/// What was right-clicked to open a window. Entity containers (minecart, boat) join later.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OpenTarget {
+    Block(BlockPos),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum OpenOutcome {
+    /// Sent; the server has not answered.
+    Pending,
+    /// The server opened this window.
+    Opened { window_id: i32, kind: &'static str },
+    /// Sent and acknowledged, but no screen came (a chest with a solid block on top).
+    NoScreen,
+    Refused,
 }
 
 /// What came of the latest click (B3 §4.1).

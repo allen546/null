@@ -44,6 +44,8 @@ pub struct ViewParts<'a> {
     pub tags: Option<&'a azalea::tags::ServerTags>,
     /// A window is open (the fork's `OpenScreen`).
     pub screen_open: bool,
+    /// The open container's menu kind.
+    pub screen_kind: Option<azalea::registry::builtin::MenuKind>,
     pub clicks: Option<&'a azalea::inventory::ClickResults>,
 }
 
@@ -335,7 +337,10 @@ impl BotView for AzaleaView<'_, '_, '_> {
                 let inv = self.p.inventory;
                 Some(api::Window {
                     id: inv.id,
+                    kind: self.p.screen_kind.map(|k| k.to_str()),
                     slots: inv.menu().slots().iter().map(|s| self.stack(s)).collect(),
+                    // Only the player window's crafting result so far; storage blocks have none.
+                    computed_slots: if inv.id == 0 { vec![0] } else { vec![] },
                     carried: self.stack(&inv.carried),
                 })
             })
@@ -352,6 +357,10 @@ impl BotView for AzaleaView<'_, '_, '_> {
             corrected: c.corrected_slots.iter().map(|&s| slot(s)).collect(),
             full_resends: c.full_resends,
         })
+    }
+    // Spec: specs/B3-inventory-crafting.md §4.7 (the latest container open)
+    fn last_open(&self) -> Option<api::OpenResult> {
+        crate::blocks::translate_open(self.p.blocks?.last_open, self.p.results)
     }
     fn open_refusal(&self) -> Option<&'static str> {
         self.p.clicks?.open_refusal.map(|r| r.reason())

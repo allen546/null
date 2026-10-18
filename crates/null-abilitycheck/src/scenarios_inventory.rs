@@ -25,21 +25,21 @@ const fn w(i: u16) -> Option<u16> {
 
 /// One stack the server holds: inventory slot, item id, count.
 #[derive(Clone, Debug, PartialEq)]
-struct Held {
-    slot: i64,
-    id: String,
-    count: i64,
+pub(crate) struct Held {
+    pub slot: i64,
+    pub id: String,
+    pub count: i64,
 }
 
 /// The quoted string in an RCON reply ("... entity data: \"minecraft:stone\"").
-fn quoted(r: &str) -> Option<String> {
+pub(crate) fn quoted(r: &str) -> Option<String> {
     let (_, rest) = r.split_once('"')?;
     Some(rest.split_once('"')?.0.to_string())
 }
 
 /// The server's main inventory and hotbar, then armour (36 feet to 39 head) and the offhand (40).
 /// Read one field at a time: Paper cuts long `data get` replies short with "...".
-fn server_inventory(cx: &mut Ctx) -> Vec<Held> {
+pub(crate) fn server_inventory(cx: &mut Ctx) -> Vec<Held> {
     let n = cx.name.clone();
     let mut out = Vec::new();
     for k in 0..41 {
@@ -62,19 +62,19 @@ fn server_inventory(cx: &mut Ctx) -> Vec<Held> {
     out
 }
 
-fn inv(cx: &mut Ctx, op: InvOp) -> InvInfo {
+pub(crate) fn inv(cx: &mut Ctx, op: InvOp) -> InvInfo {
     match cx.call(Op::Inv(op)).info {
         Info::Inv(i) => i,
         i => panic!("expected inventory info: {i:?}"),
     }
 }
 
-fn short(s: &Option<ItemStack>) -> String {
+pub(crate) fn short(s: &Option<ItemStack>) -> String {
     s.as_ref().map_or("-".into(), |s| format!("{} {}", s.item.trim_start_matches("minecraft:"), s.count))
 }
 
 /// The bot's own view as (slot, id, count), in the server's numbering (40 = offhand).
-fn view_slots(i: &InvInfo) -> Vec<(i64, String, i64)> {
+pub(crate) fn view_slots(i: &InvInfo) -> Vec<(i64, String, i64)> {
     let mut v: Vec<(i64, String, i64)> = i
         .inventory
         .iter()

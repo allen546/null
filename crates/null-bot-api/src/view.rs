@@ -47,6 +47,11 @@ pub trait BotView {
     fn last_click(&self) -> Option<ClickOutcome> {
         None
     }
+    // Spec: specs/B3-inventory-crafting.md §4.7 (the latest container open)
+    /// The latest `open_container` and what came of it.
+    fn last_open(&self) -> Option<OpenResult> {
+        None
+    }
     /// Why the latest `open_inventory` was refused, until the next one succeeds.
     fn open_refusal(&self) -> Option<&'static str> {
         None

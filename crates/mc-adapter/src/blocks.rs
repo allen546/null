@@ -7,7 +7,8 @@ use azalea::{
     block_actions::{BlockActionOutcome, BlockActionResult, BlockActionResults},
     core::direction::Direction,
 };
-use null_bot_api::{BlockAction, BlockActionKind, BlockOutcome, BlockPos, Face};
+use azalea::block_actions::{UseBlockOutcome, UseBlockResult};
+use null_bot_api::{OpenOutcome, OpenResult, BlockAction, BlockActionKind, BlockOutcome, BlockPos, Face};
 
 /// A command we issued, kept so a result left over from an earlier action is not mistaken for it.
 #[derive(Clone, Copy)]
@@ -19,6 +20,9 @@ pub struct Issued {
 }
 
 impl Issued {
+    pub fn new_open(tick: u64, target: BlockPos, prev_id: Option<u32>) -> Self {
+        Self { tick, target, prev_id: prev_id.unwrap_or(0) }
+    }
     pub fn new(tick: u64, target: BlockPos, prev: Option<&BlockActionResult>) -> Self {
         Self { tick, target, prev_id: prev.map_or(0, |r| r.id) }
     }
@@ -40,6 +44,7 @@ pub fn same_break_pending(issued: Option<Issued>, pos: BlockPos, cur: Option<&Bl
 pub struct BlockActions {
     pub last_break: Option<Issued>,
     pub last_place: Option<Issued>,
+    pub last_open: Option<Issued>,
 }
 
 // Spec: specs/B6-placement-breaking.md §4.2 (click face as the fork's Direction)
@@ -102,4 +107,22 @@ pub fn translate(
         a.ack_tick = r.ack_ticks.map(|t| i.tick + r.finish_ticks.unwrap_or(0) as u64 + t as u64);
     }
     Some(a)
+}
+
+// Spec: specs/B3-inventory-crafting.md §4.7 (the latest container open, as the api's OpenResult)
+/// The api's view of our latest `open_container`; Pending until the fork opens its result.
+pub fn translate_open(issued: Option<Issued>, results: Option<&BlockActionResults>) -> Option<OpenResult> {
+    let i = issued?;
+    let mut o = OpenResult { target: null_bot_api::OpenTarget::Block(i.target), outcome: OpenOutcome::Pending, refused: None, ticks: 0 };
+    if let Some(r) = results.and_then(|r| r.last_use).filter(|r: &UseBlockResult| r.id != i.prev_id) {
+        o.outcome = match r.outcome {
+            UseBlockOutcome::Pending => OpenOutcome::Pending,
+            UseBlockOutcome::Opened { window_id, menu } => OpenOutcome::Opened { window_id, kind: menu.to_str() },
+            UseBlockOutcome::NoScreen => OpenOutcome::NoScreen,
+            UseBlockOutcome::Refused => OpenOutcome::Refused,
+        };
+        o.refused = r.refusal.map(|w| w.as_str());
+        o.ticks = r.elapsed_ticks;
+    }
+    Some(o)
 }
