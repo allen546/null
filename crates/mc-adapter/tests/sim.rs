@@ -93,7 +93,7 @@ impl Skill for Replay {
                 Command::StopNav => c.stop_nav(),
                 Command::BreakBlock(p) => c.break_block(p),
                 Command::CancelBreak => c.cancel_break(),
-                Command::PlaceBlock { pos, face } => c.place_block(pos, face),
+                Command::PlaceBlock { pos, face, auto_crouch } => c.place_block(pos, face, auto_crouch),
                 Command::LookAtBlock { pos, face } => c.look_at_block(pos, face),
                 Command::OpenInventory => c.open_inventory(),
                 Command::OpenContainer { pos, face } => c.open_container(pos, face),

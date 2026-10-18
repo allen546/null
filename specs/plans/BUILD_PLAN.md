@@ -145,7 +145,7 @@ Server: seed 3, world spawn set to 416,70,352, about 38 oaks within 40 blocks, l
 | 3 | Planner | K7, K5 | tech-tree expansion to iron and diamonds unattended; the recipe graph from game data (F5) |
 | 4 | Distribution | F6, F1, K5 | NATS behind `null-bus`; levels across processes and hosts; node failure and account reassignment; a load test with a few hundred bots (the bench hardware plan) |
 | 5 | LLM commander | K3, K2 | needs AD-K2.1 decided (the bake-off didn't settle it) |
-| 6 | Builder integration | C1, C2, B6 | world transformation (`proposals/WORLD_TRANSFORMATION.md`); its tests T-ACC, T-WE, T-OSC, T-COB |
+| 6 | Builder integration | C1, C2, B6 | world transformation (`proposals/WORLD_TRANSFORMATION.md`); its tests T-ACC, T-WE, T-OSC, T-COB; narrow the fork's click-use table to item and state conditions (temporary wide table, B6 §4.2) |
 | 7 | Nether and End | B5 (PvE), C5, C6 | the full `KillDragon` goal |
 | 8 | Faction | C7, C8, B5 (PvP) | the combat track below joins here |
 

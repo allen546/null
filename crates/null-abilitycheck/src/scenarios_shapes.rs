@@ -90,6 +90,9 @@ struct Row {
     click: (i32, i32, i32),
     face: Face,
     sneak: bool,
+    /// Place with `auto_crouch`: the block under the click uses the click (fork patch 20), so a
+    /// standing bot crouches for the click and stands up again.
+    auto_crouch: bool,
     /// Aim this far from the face centre (a hit point in the upper half, say); None aims by the
     /// shape (`look_at_block`).
     aim: Option<(f64, f64, f64)>,
@@ -105,6 +108,7 @@ const R: Row = Row {
     click: (0, 0, 0),
     face: Face::Up,
     sneak: false,
+    auto_crouch: false,
     aim: None,
     res: Res::Placed,
     blocks: &[(0, 1, 0, "stone")],
@@ -114,6 +118,8 @@ const R: Row = Row {
 const SIDE: &[Blk] = &[(0, 0, -1, "stone")];
 /// Stone replaces the clicked block itself.
 const INTO: &[Blk] = &[(0, 0, 0, "stone")];
+/// The refusal for a standing click on a block that uses the click (fork patch 20).
+const USES_CLICK: &str = "block uses the click: crouch first (or auto_crouch) to place";
 const GRASS: Blk = (0, -1, 0, "grass_block");
 
 macro_rules! rows {
@@ -126,9 +132,10 @@ macro_rules! rows {
 const CLICKS: &[Row] = rows![
     // thin or low
     // A lone dot of wire toggles to a cross on a click (vanilla); a player sneaks to place on it.
-    Row { name: "click_redstone_wire_line_top", setup: &[(0, 0, 0, "redstone_wire[north=side,south=side,east=none,west=none]")], ..R },
+    Row { name: "click_redstone_wire_line_top", setup: &[(0, 0, 0, "redstone_wire[north=side,south=side,east=none,west=none]")], auto_crouch: true, ..R },
     Row { name: "click_redstone_wire_dot_sneaking_top", setup: &[(0, 0, 0, "redstone_wire")], sneak: true, ..R },
-    Row { name: "click_redstone_wire_dot_toggles_to_cross", setup: &[(0, 0, 0, "redstone_wire")], res: Res::ServerRefused, blocks: &[(0, 0, 0, "redstone_wire[north=side,south=side,east=side,west=side]"), (0, 1, 0, "air")], ..R },
+    // a standing click on a block that uses the click is refused on the client (the dot is not toggled)
+    Row { name: "click_redstone_wire_dot_standing_is_refused", setup: &[(0, 0, 0, "redstone_wire")], res: Res::ClientRefused(Some(USES_CLICK)), blocks: &[(0, 0, 0, "redstone_wire[north=none,south=none,east=none,west=none]"), (0, 1, 0, "air")], ..R },
     Row { name: "click_carpet_top", setup: &[(0, 0, 0, "white_carpet")], ..R },
     Row { name: "click_carpet_side", setup: &[(0, 0, 0, "white_carpet")], face: Face::North, blocks: SIDE, ..R },
     Row { name: "click_rail_top", setup: &[(0, 0, 0, "rail")], ..R },
@@ -141,8 +148,8 @@ const CLICKS: &[Row] = rows![
     Row { name: "click_repeater_top", setup: &[(0, 0, 0, "repeater")], sneak: true, ..R },
     Row { name: "click_daylight_detector_top", setup: &[(0, 0, 0, "daylight_detector")], sneak: true, ..R },
     // posts and connectors
-    Row { name: "click_fence_top", setup: &[(0, 0, 0, "oak_fence")], ..R },
-    Row { name: "click_fence_side", setup: &[(0, 0, 0, "oak_fence")], face: Face::North, blocks: SIDE, ..R },
+    Row { name: "click_fence_top", setup: &[(0, 0, 0, "oak_fence")], auto_crouch: true, ..R },
+    Row { name: "click_fence_side", setup: &[(0, 0, 0, "oak_fence")], face: Face::North, blocks: SIDE, auto_crouch: true, ..R },
     Row { name: "click_wall_top", setup: &[(0, 0, 0, "cobblestone_wall")], ..R },
     Row { name: "click_wall_side", setup: &[(0, 0, 0, "cobblestone_wall")], face: Face::North, blocks: SIDE, ..R },
     Row { name: "click_iron_bars_top", setup: &[(0, 0, 0, "iron_bars")], ..R },
@@ -181,15 +188,15 @@ const CLICKS: &[Row] = rows![
     Row { name: "click_wall_sign_top", setup: &[(0, 0, 1, "stone"), (0, 0, 0, "oak_wall_sign[facing=north]")], sneak: true, ..R },
     Row { name: "click_trapdoor_bottom_top", setup: &[(0, 0, 0, "oak_trapdoor[half=bottom,open=false,facing=north]")], sneak: true, ..R },
     Row { name: "click_trapdoor_top_half_top", setup: &[(0, 0, 0, "oak_trapdoor[half=top,open=false,facing=north]")], sneak: true, ..R },
-    Row { name: "click_trapdoor_without_sneak_opens_it", setup: &[(0, 0, 0, "oak_trapdoor[half=bottom,open=false,facing=north]")], res: Res::ServerRefused, blocks: &[(0, 0, 0, "oak_trapdoor[open=true]")], ..R },
+    Row { name: "click_trapdoor_standing_is_refused", setup: &[(0, 0, 0, "oak_trapdoor[half=bottom,open=false,facing=north]")], res: Res::ClientRefused(Some(USES_CLICK)), blocks: &[(0, 0, 0, "oak_trapdoor[open=false]")], ..R },
     Row { name: "click_door_lower_side", setup: &[(0, 1, 0, "oak_door[half=upper,facing=north]"), (0, 0, 0, "oak_door[half=lower,facing=north]")], face: Face::North, sneak: true, blocks: SIDE, ..R },
-    Row { name: "click_door_upper_top_is_above_the_eye", setup: &[(0, 1, 0, "oak_door[half=upper,facing=north]"), (0, 0, 0, "oak_door[half=lower,facing=north]")], click: (0, 1, 0), res: Res::ClientRefused(Some("face not visible from the eye")), blocks: &[(0, 2, 0, "air")], ..R },
+    Row { name: "click_door_upper_top_is_above_the_eye", setup: &[(0, 1, 0, "oak_door[half=upper,facing=north]"), (0, 0, 0, "oak_door[half=lower,facing=north]")], click: (0, 1, 0), sneak: true, res: Res::ClientRefused(Some("face not visible from the eye")), blocks: &[(0, 2, 0, "air")], ..R },
     Row { name: "click_bed_top", setup: &[(0, 0, 1, "white_bed[part=head,facing=south]"), (0, 0, 0, "white_bed[part=foot,facing=south]")], sneak: true, ..R },
     Row { name: "click_banner_top", setup: &[(0, 0, 0, "white_banner[rotation=0]")], ..R },
     Row { name: "click_skull_top", setup: &[(0, 0, 0, "skeleton_skull[rotation=0]")], ..R },
     // odd interaction shapes
-    Row { name: "click_cauldron_top", setup: &[(0, 0, 0, "cauldron")], ..R },
-    Row { name: "click_water_cauldron_top", setup: &[(0, 0, 0, "water_cauldron[level=3]")], ..R },
+    Row { name: "click_cauldron_top", setup: &[(0, 0, 0, "cauldron")], auto_crouch: true, ..R },
+    Row { name: "click_water_cauldron_top", setup: &[(0, 0, 0, "water_cauldron[level=3]")], auto_crouch: true, ..R },
     Row { name: "click_hopper_top", setup: &[(0, 0, 0, "hopper[facing=down]")], sneak: true, ..R },
     Row { name: "click_hopper_sideways_top", setup: &[(0, 0, 0, "hopper[facing=east]")], sneak: true, ..R },
     Row { name: "click_hopper_spout_side", setup: &[(0, 0, 0, "hopper[facing=north]")], face: Face::North, sneak: true, blocks: SIDE, ..R },
@@ -198,7 +205,7 @@ const CLICKS: &[Row] = rows![
     Row { name: "click_anvil_top", setup: &[(0, 0, 0, "anvil[facing=north]")], sneak: true, ..R },
     Row { name: "click_bell_top", setup: &[(0, 0, 0, "bell[attachment=floor,facing=north]")], sneak: true, ..R },
     Row { name: "click_flower_pot_top", setup: &[(0, 0, 0, "flower_pot")], sneak: true, ..R },
-    Row { name: "click_campfire_top", setup: &[(0, 0, 0, "campfire[lit=false]")], ..R },
+    Row { name: "click_campfire_top", setup: &[(0, 0, 0, "campfire[lit=false]")], auto_crouch: true, ..R },
     Row { name: "click_cake_top", setup: &[(0, 0, 0, "cake")], sneak: true, ..R },
     // a grindstone's shape is a wheel between two legs, turned by its face and facing
     Row { name: "click_grindstone_floor_top", setup: &[(0, 0, 0, "grindstone[face=floor,facing=north]")], sneak: true, ..R },
@@ -303,6 +310,7 @@ fn run_row(cx: &mut Ctx, r: &Row) -> Outcome {
         let before = cx.count(r.item);
         let op = match r.aim {
             Some((x, y, z)) => Op::Place { pos: clicked, face: r.face, aim: Vec3::new(x, y, z) },
+            None if r.auto_crouch => Op::PlaceAimCrouch { pos: clicked, face: r.face, auto_crouch: true },
             None => Op::PlaceAim { pos: clicked, face: r.face },
         };
         let rep = cx.call(op);

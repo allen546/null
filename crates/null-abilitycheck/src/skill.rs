@@ -42,6 +42,8 @@ pub enum Op {
     Goto(BlockPos),
     /// Look at a visible point of the block's real shape on `face`, then click it.
     PlaceAim { pos: BlockPos, face: Face },
+    /// As `PlaceAim`, with `auto_crouch` (B6 §4.2, crouch handling).
+    PlaceAimCrouch { pos: BlockPos, face: Face, auto_crouch: bool },
     /// Look at a visible point of the block's real shape, then break it.
     BreakAim(BlockPos),
     /// Look at the block, then send `break_block` every tick until the result settles.
@@ -61,6 +63,8 @@ pub struct Snap {
     pub selected: u8,
     pub offhand: Option<ItemStack>,
     pub counts: BTreeMap<String, u32>,
+    /// The bot's crouch input (`BotView::sneaking`).
+    pub sneaking: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -126,6 +130,7 @@ fn snapshot(v: &dyn BotView) -> Snap {
         selected: v.selected_slot(),
         offhand: v.offhand().cloned(),
         counts,
+        sneaking: v.sneaking(),
     }
 }
 
@@ -223,7 +228,7 @@ impl Skill for RemoteSkill {
                     let k = pos.center();
                     look_at(v, c, Vec3::new(k.x + dx as f64 * 0.5 + aim.x, k.y + dy as f64 * 0.5 + aim.y, k.z + dz as f64 * 0.5 + aim.z));
                 } else if age == LOOK_TICKS {
-                    c.place_block(*pos, *face);
+                    c.place_block(*pos, *face, false);
                     say(Info::Started);
                 }
                 match v.last_place() {
@@ -233,11 +238,12 @@ impl Skill for RemoteSkill {
                     _ => (age > 200).then_some(Info::Timeout),
                 }
             }
-            Op::PlaceAim { pos, face } => {
+            Op::PlaceAim { pos, face } | Op::PlaceAimCrouch { pos, face, .. } => {
                 if age == 0 {
                     c.look_at_block(*pos, Some(*face));
                 } else if age == LOOK_TICKS {
-                    c.place_block(*pos, *face);
+                    let auto = matches!(run.op, Op::PlaceAimCrouch { auto_crouch: true, .. });
+                    c.place_block(*pos, *face, auto);
                     say(Info::Started);
                 }
                 match v.last_place() {

@@ -34,6 +34,17 @@ pub trait BotView {
     // Spec: specs/B6-placement-breaking.md §4.6 (read back the block the server left)
     /// Namespaced block name at `pos` ("minecraft:oak_log"); None when the chunk is not loaded.
     fn block_at(&self, pos: BlockPos) -> Option<String>;
+    // Spec: specs/B6-placement-breaking.md §4.2 (crouch handling)
+    /// The bot is crouching (the crouch input it sends).
+    fn sneaking(&self) -> bool {
+        false
+    }
+    // Spec: specs/B6-placement-breaking.md §4.2 (crouch handling: does a click on this block need a crouch)
+    /// Whether a right-click on the block at `pos` runs the block's own action, so a placing click
+    /// on it needs a crouch (generated per version from the game's sources). False when unknown.
+    fn block_uses_click(&self, _pos: BlockPos) -> bool {
+        false
+    }
     // Spec: specs/B6-placement-breaking.md §4.4, §4.6 (latest break and placement results)
     /// The latest break (B6 §4.4) and the latest placement (B6 §4.6), until replaced by a newer one.
     fn last_break(&self) -> Option<BlockAction>;

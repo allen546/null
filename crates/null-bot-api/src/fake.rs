@@ -222,8 +222,8 @@ impl BotCommands for FakeCommands {
     fn cancel_break(&mut self) {
         self.push(Command::CancelBreak);
     }
-    fn place_block(&mut self, pos: BlockPos, face: Face) {
-        self.push(Command::PlaceBlock { pos, face });
+    fn place_block(&mut self, pos: BlockPos, face: Face, auto_crouch: bool) {
+        self.push(Command::PlaceBlock { pos, face, auto_crouch });
     }
     fn look_at_block(&mut self, pos: BlockPos, face: Option<Face>) {
         self.push(Command::LookAtBlock { pos, face });
@@ -307,13 +307,13 @@ mod tests {
     fn block_commands_and_reads() {
         let mut c = FakeCommands::default();
         c.break_block(BlockPos::new(1, 64, 2));
-        c.place_block(BlockPos::new(1, 63, 2), Face::Up);
+        c.place_block(BlockPos::new(1, 63, 2), Face::Up, false);
         c.cancel_break();
         assert_eq!(
             c.all(),
             vec![
                 Command::BreakBlock(BlockPos::new(1, 64, 2)),
-                Command::PlaceBlock { pos: BlockPos::new(1, 63, 2), face: Face::Up },
+                Command::PlaceBlock { pos: BlockPos::new(1, 63, 2), face: Face::Up, auto_crouch: false },
                 Command::CancelBreak
             ]
         );

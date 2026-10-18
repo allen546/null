@@ -47,6 +47,8 @@ pub struct ViewParts<'a> {
     /// The open container's menu kind.
     pub screen_kind: Option<azalea::registry::builtin::MenuKind>,
     pub clicks: Option<&'a azalea::inventory::ClickResults>,
+    /// The bot is holding the crouch key (the input the server is sent that tick).
+    pub sneaking: bool,
 }
 
 /// Other entities, for `BotView::entities`.
@@ -318,6 +320,20 @@ impl BotView for AzaleaView<'_, '_, '_> {
     // Spec: specs/B6-placement-breaking.md §4.6 (read back the block the server left)
     fn block_at(&self, pos: api::BlockPos) -> Option<String> {
         crate::blocks::block_name(&self.p.world.shared.read(), pos)
+    }
+    // Spec: specs/B6-placement-breaking.md §4.2 (crouch handling)
+    fn sneaking(&self) -> bool {
+        self.p.sneaking
+    }
+    // Spec: specs/B6-placement-breaking.md §4.2 (crouch handling)
+    fn block_uses_click(&self, pos: api::BlockPos) -> bool {
+        self.p
+            .world
+            .shared
+            .read()
+            .chunks
+            .get_block_state(azalea::BlockPos::new(pos.x, pos.y, pos.z))
+            .is_some_and(azalea::block::state_uses_click)
     }
     // Spec: specs/B6-placement-breaking.md §4.4 (break timing and result)
     fn last_break(&self) -> Option<api::BlockAction> {

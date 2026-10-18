@@ -164,8 +164,8 @@ impl null_bot_api::BotCommands for CommandBuffer {
         self.0.push(Command::CancelBreak);
     }
     // Spec: specs/B6-placement-breaking.md §4.2 (place on a chosen face)
-    fn place_block(&mut self, pos: null_bot_api::BlockPos, face: null_bot_api::Face) {
-        self.0.push(Command::PlaceBlock { pos, face });
+    fn place_block(&mut self, pos: null_bot_api::BlockPos, face: null_bot_api::Face, auto_crouch: bool) {
+        self.0.push(Command::PlaceBlock { pos, face, auto_crouch });
     }
     // Spec: specs/B6-placement-breaking.md §4.2 (click choice: aim at a visible point)
     fn look_at_block(&mut self, pos: null_bot_api::BlockPos, face: Option<null_bot_api::Face>) {
@@ -213,6 +213,7 @@ fn decide(
                 Option<&ServerTags>,
                 Option<&OpenScreen>,
                 Option<&ClickResults>,
+                Option<&ClientMovementState>,
             ),
         ),
         (With<LocalEntity>, With<HasClientLoaded>, Without<Dead>),
@@ -222,7 +223,7 @@ fn decide(
 ) {
     tick.0 += 1;
     let now = tick.0;
-    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, results, attackers, tags, screen, clicks)) in
+    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, results, attackers, tags, screen, clicks, movement)) in
         &mut bots
     {
         let nav_pending = flags.and_then(|f| f.nav_requested).is_some_and(|t| now - t <= 2);
@@ -250,6 +251,7 @@ fn decide(
                 screen_open: screen.is_some(),
                 screen_kind: screen.and_then(|s| s.kind),
                 clicks,
+                sneaking: movement.is_some_and(|m| m.trying_to_crouch),
             },
             &others,
         );
@@ -389,10 +391,11 @@ fn apply(
                     commands.entity(entity).insert(StopMiningQueued);
                 }
                 // Spec: specs/B6-placement-breaking.md §4.2, §4.6 (place on a chosen face)
-                Command::PlaceBlock { pos, face } => {
+                Command::PlaceBlock { pos, face, auto_crouch } => {
                     commands.entity(entity).insert(PlaceBlockQueued {
                         position: blocks::block_pos(pos),
                         direction: blocks::face_to_dir(face),
+                        auto_crouch,
                     });
                     flags.blocks.last_place =
                         Some(Issued::new(tick.0, pos.offset(face), results.last_place.as_ref()));
