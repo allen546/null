@@ -395,7 +395,8 @@ const BREAKS: &[Brk] = &[
     Brk { name: "break_glass_pane", setup: &[(0, 0, 0, "glass_pane")], hardness: 0.3, ..B },
     Brk { name: "break_stairs", setup: &[(0, 0, 0, "oak_stairs[facing=east,half=bottom]")], tool: AXE, hardness: 2.0, speed: 6.0, ..B },
     Brk { name: "break_lantern", setup: &[(0, 0, 0, "lantern[hanging=false]")], tool: PICK, hardness: 3.5, speed: 6.0, ..B },
-    Brk { name: "break_farmland", setup: &[(0, 0, 0, "farmland")], hardness: 0.6, ..B },
+    // moisture 7: dry farmland can turn to dirt on a random tick during the break (FarmBlock#randomTick)
+    Brk { name: "break_farmland", setup: &[(0, 0, 0, "farmland[moisture=7]")], hardness: 0.6, ..B },
     Brk { name: "break_pressure_plate", setup: &[(0, 0, 0, "stone_pressure_plate")], tool: PICK, hardness: 0.5, speed: 6.0, ..B },
     Brk { name: "break_snow_layer", setup: &[(0, 0, 0, "snow[layers=1]")], tool: Some("iron_shovel"), hardness: 0.1, speed: 6.0, ..B },
     Brk { name: "break_iron_bars", setup: &[(0, 0, 0, "iron_bars")], tool: PICK, hardness: 5.0, speed: 6.0, ..B },
