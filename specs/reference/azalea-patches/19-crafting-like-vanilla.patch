@@ -1,0 +1,367 @@
+diff --git a/azalea-client/src/plugins/inventory/mod.rs b/azalea-client/src/plugins/inventory/mod.rs
+index 4ca0da9..5708f20 100644
+--- a/azalea-client/src/plugins/inventory/mod.rs
++++ b/azalea-client/src/plugins/inventory/mod.rs
+@@ -314,6 +314,10 @@ pub fn handle_client_side_close_container_trigger(
+         let new_inventory = inventory_menu.slots()[inventory_menu.player_slots_range()].to_vec();
+         let new_inventory = <[ItemStack; 36]>::try_from(new_inventory).unwrap();
+         *inventory.inventory_menu.as_player_mut().inventory = new_inventory;
++        // Null fork: the cursor stack belongs to a menu in vanilla; the player menu's own is
++        // empty. The server puts a stack that was on the container's cursor back in the
++        // inventory (`AbstractContainerMenu#removed`) and sends no cursor update for menu 0.
++        inventory.carried = ItemStack::Empty;
+     }
+ 
+     inventory.id = 0;
+diff --git a/azalea-entity/src/inventory.rs b/azalea-entity/src/inventory.rs
+index 18c2af1..4a906ce 100644
+--- a/azalea-entity/src/inventory.rs
++++ b/azalea-entity/src/inventory.rs
+@@ -326,7 +326,7 @@ impl Inventory {
+                                 )
+                             {
+                                 self.carried.as_present_mut().unwrap().count += removed.count();
+-                                // slot.onTake(player, removed);
++                                self.took_from(slot);
+                             }
+                         } else {
+                             let pickup_count = if is_left_click {
+@@ -338,7 +338,7 @@ impl Inventory {
+                                 self.try_remove(slot, pickup_count, i32::MAX)
+                             {
+                                 self.carried = new_slot_item;
+-                                // slot.onTake(player, newSlot);
++                                self.took_from(slot);
+                             }
+                         }
+                     }
+@@ -377,6 +377,7 @@ impl Inventory {
+                         if self.menu().may_pickup(source_index) {
+                             *self.player_slot_mut(button).unwrap() = source;
+                             *self.menu_mut().slot_mut(source_index).unwrap() = ItemStack::Empty;
++                            self.took_from(source_index);
+                         }
+                     }
+                     (ItemStack::Empty, ItemStack::Present(t)) => {
+@@ -428,18 +429,23 @@ impl Inventory {
+                 | ThrowClick::All { slot: slot_index }) = c;
+                 let slot_index = *slot_index as usize;
+ 
++                let is_result = self.menu().is_crafting_result(slot_index);
+                 let Some(slot) = self.menu_mut().slot_mut(slot_index) else {
+                     return;
+                 };
++                // a crafting result always leaves whole (`ResultContainer#removeItem`)
+                 let dropping_count = match c {
+-                    ThrowClick::Single { .. } => 1,
+-                    ThrowClick::All { .. } => slot.count(),
++                    ThrowClick::Single { .. } if !is_result => 1,
++                    _ => slot.count(),
+                 };
+ 
+                 // Null fork: `ItemStack::split` empties the slot when the last item goes, so the
+                 // click reports an empty slot, not a 0-count one.
+-                let _dropping = slot.split(dropping_count as u32);
++                let dropping = slot.split(dropping_count as u32);
+                 // player.drop(dropping, true);
++                if is_result && dropping.is_present() {
++                    self.took_from(slot_index);
++                }
+             }
+             // Null fork: vanilla `doClick` PICKUP_ALL. Takes only what fits on the cursor, and
+             // never from a crafting result.
+@@ -552,6 +558,13 @@ impl Inventory {
+         false
+     }
+ 
++    // Null fork: vanilla `Slot#onTake`; only a crafting result does anything on the client.
++    fn took_from(&mut self, slot: usize) {
++        if self.menu().is_crafting_result(slot) {
++            self.menu_mut().craft_took_result();
++        }
++    }
++
+     // Null fork: vanilla `Slot#safeInsert` checks `mayPlace` and the slot's own limit.
+     fn safe_insert(&mut self, slot: usize, src_item: ItemStack, take_count: i32) -> ItemStack {
+         let ItemStack::Present(mut src_item) = src_item else {
+@@ -592,7 +605,8 @@ impl Inventory {
+             return None;
+         }
+ 
+-        let count = count.min(limit);
++        // vanilla `ResultContainer#removeItem` hands over the whole result whatever the count
++        let count = if self.menu().is_crafting_result(slot) { slot_item.count() } else { count.min(limit) };
+         if count <= 0 {
+             return None;
+         }
+@@ -737,7 +751,7 @@ mod tests {
+         let new_slots = inventory.menu().slots();
+         assert_eq!(&new_slots[0], &ItemStack::Empty);
+         assert_eq!(
+-            &new_slots[*Menu::CRAFTING_PLAYER_SLOTS.start()],
++            &new_slots[*Menu::CRAFTING_PLAYER_SLOTS.end()], // vanilla fills from the end
+             &spruce_planks
+         );
+     }
+@@ -824,4 +838,90 @@ mod tests {
+         assert_eq!(inv.carried, ItemStack::new(ItemKind::Stone, 3));
+         assert_eq!(inv.inventory_menu.slot(0), Some(&ItemStack::Empty));
+     }
++
++    // Null fork: vanilla `ResultSlot#onTake` on a client (item defaults, no recipes).
++    fn table(result: (ItemKind, i32), grid: &[(usize, ItemKind, i32)]) -> Inventory {
++        let mut inv = Inventory::default();
++        let mut menu = Menu::from_kind(azalea_registry::builtin::MenuKind::Crafting);
++        *menu.slot_mut(0).unwrap() = ItemStack::new(result.0, result.1);
++        for &(i, kind, n) in grid {
++            *menu.slot_mut(i).unwrap() = ItemStack::new(kind, n);
++        }
++        inv.container_menu = Some(menu);
++        inv.id = 1;
++        inv
++    }
++
++    #[test]
++    fn taking_the_result_uses_one_of_each_ingredient() {
++        let mut inv = table((ItemKind::OakPlanks, 4), &[(1, ItemKind::OakLog, 3)]);
++        click(&mut inv, PickupClick::Left { slot: Some(0) });
++        assert_eq!(inv.carried, ItemStack::new(ItemKind::OakPlanks, 4));
++        assert_eq!(inv.menu().slot(0), Some(&ItemStack::Empty));
++        assert_eq!(inv.menu().slot(1), Some(&ItemStack::new(ItemKind::OakLog, 2)));
++    }
++
++    #[test]
++    fn a_right_click_takes_the_whole_result() {
++        let mut inv = table((ItemKind::Stick, 4), &[(5, ItemKind::OakPlanks, 2), (8, ItemKind::OakPlanks, 2)]);
++        click(&mut inv, PickupClick::Right { slot: Some(0) });
++        assert_eq!(inv.carried, ItemStack::new(ItemKind::Stick, 4));
++        assert_eq!(inv.menu().slot(5), Some(&ItemStack::new(ItemKind::OakPlanks, 1)));
++        assert_eq!(inv.menu().slot(8), Some(&ItemStack::new(ItemKind::OakPlanks, 1)));
++    }
++
++    #[test]
++    fn buckets_stay_behind_in_their_cells() {
++        let grid = [
++            (1, ItemKind::MilkBucket, 1), (2, ItemKind::MilkBucket, 1), (3, ItemKind::MilkBucket, 1),
++            (4, ItemKind::Sugar, 1), (5, ItemKind::Egg, 1), (6, ItemKind::Sugar, 1),
++            (7, ItemKind::Wheat, 1), (8, ItemKind::Wheat, 1), (9, ItemKind::Wheat, 1),
++        ];
++        let mut inv = table((ItemKind::Cake, 1), &grid);
++        click(&mut inv, PickupClick::Left { slot: Some(0) });
++        for i in 1..=3 {
++            assert_eq!(inv.menu().slot(i), Some(&ItemStack::new(ItemKind::Bucket, 1)));
++        }
++        for i in 4..=9 {
++            assert_eq!(inv.menu().slot(i), Some(&ItemStack::Empty));
++        }
++    }
++
++    #[test]
++    fn shift_click_on_the_result_crafts_once_on_the_client() {
++        let mut inv = table((ItemKind::OakPlanks, 4), &[(1, ItemKind::OakLog, 3)]);
++        click(&mut inv, QuickMoveClick::Left { slot: 0 });
++        assert_eq!(inv.menu().slot(0), Some(&ItemStack::Empty));
++        assert_eq!(inv.menu().slot(1), Some(&ItemStack::new(ItemKind::OakLog, 2)));
++        // the result goes to the last free slot of the inventory (hotbar end)
++        assert_eq!(inv.menu().slot(45), Some(&ItemStack::new(ItemKind::OakPlanks, 4)));
++    }
++
++    #[test]
++    fn shift_click_on_a_table_stack_goes_to_the_grid_first() {
++        let mut inv = table((ItemKind::Air, 0), &[]);
++        *inv.menu_mut().slot_mut(10).unwrap() = ItemStack::new(ItemKind::OakLog, 5);
++        click(&mut inv, QuickMoveClick::Left { slot: 10 });
++        assert_eq!(inv.menu().slot(1), Some(&ItemStack::new(ItemKind::OakLog, 5)));
++        assert_eq!(inv.menu().slot(10), Some(&ItemStack::Empty));
++    }
++
++    #[test]
++    fn the_player_grid_is_two_by_two() {
++        let mut inv = player(&[]);
++        *inv.inventory_menu.slot_mut(0).unwrap() = ItemStack::new(ItemKind::Stick, 4);
++        *inv.inventory_menu.slot_mut(2).unwrap() = ItemStack::new(ItemKind::OakPlanks, 2);
++        *inv.inventory_menu.slot_mut(4).unwrap() = ItemStack::new(ItemKind::OakPlanks, 2);
++        click(&mut inv, PickupClick::Left { slot: Some(0) });
++        assert_eq!(inv.inventory_menu.slot(2), Some(&ItemStack::new(ItemKind::OakPlanks, 1)));
++        assert_eq!(inv.inventory_menu.slot(4), Some(&ItemStack::new(ItemKind::OakPlanks, 1)));
++    }
++
++    #[test]
++    fn an_empty_result_slot_changes_nothing() {
++        let mut inv = table((ItemKind::Air, 0), &[(1, ItemKind::OakLog, 3)]);
++        click(&mut inv, PickupClick::Left { slot: Some(0) });
++        assert_eq!(inv.menu().slot(1), Some(&ItemStack::new(ItemKind::OakLog, 3)));
++        assert!(inv.carried.is_empty());
++    }
+ }
+diff --git a/azalea-inventory/src/operations.rs b/azalea-inventory/src/operations.rs
+index 0bdddf0..0165f7f 100644
+--- a/azalea-inventory/src/operations.rs
++++ b/azalea-inventory/src/operations.rs
+@@ -1,6 +1,7 @@
+ use std::ops::RangeInclusive;
+ 
+ use azalea_buf::AzBuf;
++use azalea_registry::builtin::ItemKind;
+ 
+ use crate::{
+     AnvilMenuLocation, BeaconMenuLocation, BlastFurnaceMenuLocation, BrewingStandMenuLocation,
+@@ -300,7 +301,13 @@ impl Menu {
+                 };
+                 let empty = |m: &Self, i: usize| m.slot(i).is_some_and(|s| s.is_empty());
+                 match slot_index {
+-                    0 => self.move_item_stack_to(slot_index, 9..=44, true),
++                    0 => {
++                        // vanilla `InventoryMenu#quickMoveStack`: a taken result uses up the grid
++                        if self.move_item_stack_to(slot_index, 9..=44, true) {
++                            self.craft_took_result();
++                        }
++                        true
++                    }
+                     1..=8 => self.move_item_stack_to(slot_index, 9..=44, false),
+                     _ if armor_slot.is_some_and(|j| empty(self, j)) => {
+                         let j = armor_slot.unwrap();
+@@ -431,15 +438,29 @@ impl Menu {
+                     self.try_move_item_to_slots(slot_index, self.player_slots_range());
+                 }
+             },
++            // Null fork: vanilla `CraftingMenu#quickMoveStack`. The result goes to the inventory
++            // (last slot first) and uses up the grid; inventory stacks go to the grid first, then
++            // across hotbar and main; grid stacks go to the inventory.
+             MenuLocation::Crafting(l) => match l {
+                 CraftingMenuLocation::Player => {
+-                    self.try_move_item_to_slots_or_toggle_hotbar(
+-                        slot_index,
+-                        Menu::CRAFTING_GRID_SLOTS,
+-                    );
++                    if !self.move_item_stack_to(slot_index, Menu::CRAFTING_GRID_SLOTS, false) {
++                        let other = if self.is_hotbar_slot(slot_index) {
++                            self.player_slots_without_hotbar_range()
++                        } else {
++                            self.hotbar_slots_range()
++                        };
++                        self.move_item_stack_to(slot_index, other, false);
++                    }
++                }
++                _ if slot_index == 0 => {
++                    let player = self.player_slots_range();
++                    if self.move_item_stack_to(slot_index, player, true) {
++                        self.craft_took_result();
++                    }
+                 }
+                 _ => {
+-                    self.try_move_item_to_slots(slot_index, self.player_slots_range());
++                    let player = self.player_slots_range();
++                    self.move_item_stack_to(slot_index, player, false);
+                 }
+             },
+             MenuLocation::Enchantment(l) => match l {
+@@ -575,6 +596,94 @@ impl Menu {
+         ItemStack::Empty
+     }
+ 
++
++    /// Whether `slot` is this menu's crafting result (vanilla `ResultSlot`).
++    pub fn is_crafting_result(&self, slot: usize) -> bool {
++        slot == 0 && matches!(self, Menu::Player(_) | Menu::Crafting { .. })
++    }
++
++    /// First grid slot and side length of this menu's crafting grid.
++    fn crafting_grid(&self) -> Option<(usize, usize)> {
++        match self {
++            Menu::Player(_) => Some((1, 2)),
++            Menu::Crafting { .. } => Some((1, 3)),
++            _ => None,
++        }
++    }
++
++    // Spec: specs/B3-inventory-crafting.md §4.2 (crafting by clicks)
++    /// The client's half of taking the crafting result, vanilla `ResultSlot#onTake`: one item of
++    /// each used grid cell goes, and its remainder (an empty bucket) takes its place. The client
++    /// has no recipes, so it uses the item defaults (`CraftingRecipe#defaultCraftingReminder`);
++    /// it never computes the next result, the server sends that.
++    pub fn craft_took_result(&mut self) {
++        let Some((first, width)) = self.crafting_grid() else { return };
++        let present = |m: &Self, r: usize, c: usize| m.slot(first + r * width + c).is_some_and(|s| s.is_present());
++        let rows: Vec<usize> = (0..width).filter(|&r| (0..width).any(|c| present(self, r, c))).collect();
++        let cols: Vec<usize> = (0..width).filter(|&c| (0..width).any(|r| present(self, r, c))).collect();
++        let (Some(&top), Some(&bottom), Some(&left), Some(&right)) =
++            (rows.first(), rows.last(), cols.first(), cols.last())
++        else {
++            return;
++        };
++        // vanilla reads the remainders from the whole box first, then edits cell by cell
++        let mut remainders = Vec::new();
++        for r in top..=bottom {
++            for c in left..=right {
++                remainders.push(crafting_remainder(self.slot(first + r * width + c).map_or(ItemKind::Air, |s| s.kind())));
++            }
++        }
++        let mut k = 0;
++        for r in top..=bottom {
++            for c in left..=right {
++                let i = first + r * width + c;
++                let remainder = remainders[k].take();
++                k += 1;
++                if let Some(cell) = self.slot_mut(i) {
++                    cell.split(1);
++                }
++                let Some(mut rem) = remainder else { continue };
++                match self.slot(i).cloned() {
++                    Some(ItemStack::Present(cell)) => {
++                        if cell.is_same_item_and_components(&rem) {
++                            rem.count += cell.count;
++                            *self.slot_mut(i).unwrap() = ItemStack::Present(rem);
++                        } else {
++                            // vanilla `Inventory#add` (or a drop); approximated hotbar first
++                            self.add_to_player_slots(rem);
++                        }
++                    }
++                    _ => *self.slot_mut(i).unwrap() = ItemStack::Present(rem),
++                }
++            }
++        }
++    }
++
++    /// Merge into the player's stacks, then the first empty slot (hotbar first, as `Inventory`
++    /// orders them). A full inventory drops the item on a real client; nothing to simulate.
++    fn add_to_player_slots(&mut self, mut item: ItemStackData) {
++        let all = self.player_slots_range();
++        let hot = self.hotbar_slots_range();
++        let order: Vec<usize> = hot.clone().chain(all.filter(|i| !hot.contains(i))).collect();
++        for &i in &order {
++            if let Some(ItemStack::Present(t)) = self.slot(i) {
++                let max = self.max_stack_size_for(i, t);
++                if t.is_same_item_and_components(&item) && t.count < max {
++                    let ItemStack::Present(t) = self.slot_mut(i).unwrap() else { unreachable!() };
++                    let n = (max - t.count).min(item.count);
++                    t.count += n;
++                    item.count -= n;
++                    if item.count == 0 {
++                        return;
++                    }
++                }
++            }
++        }
++        if let Some(&i) = order.iter().find(|&&i| self.slot(i).is_some_and(|s| s.is_empty())) {
++            *self.slot_mut(i).unwrap() = ItemStack::Present(item);
++        }
++    }
++
+     fn try_move_item_to_slots_or_toggle_hotbar(
+         &mut self,
+         slot_index: usize,
+@@ -785,3 +894,13 @@ impl Menu {
+         }
+     }
+ }
++
++/// Vanilla `Item#getCraftingRemainder`: the few items that leave something behind.
++fn crafting_remainder(kind: ItemKind) -> Option<ItemStackData> {
++    let left = match kind {
++        ItemKind::WaterBucket | ItemKind::LavaBucket | ItemKind::MilkBucket => ItemKind::Bucket,
++        ItemKind::DragonBreath | ItemKind::HoneyBottle => ItemKind::GlassBottle,
++        _ => return None,
++    };
++    Some(ItemStackData::new(left, 1))
++}

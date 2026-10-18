@@ -5,6 +5,7 @@
 mod rcon;
 mod scenarios;
 mod scenarios_containers;
+mod scenarios_crafting;
 mod scenarios_inventory;
 mod scenarios_items;
 mod scenarios_shapes;
@@ -141,13 +142,14 @@ fn main() {
     type Scenario = fn(&mut Ctx) -> Vec<Outcome>;
     let all: [(&str, Scenario); 4] = [("A1", scenarios::a1), ("A2", scenarios::a2), ("A3", scenarios::a3), ("A4", scenarios::a4)];
     let shapes: [(&str, Scenario); 2] = [("A4S", scenarios_shapes::a4s), ("A2S", scenarios_shapes::a2s)];
-    let items: [(&str, Scenario); 6] = [
+    let items: [(&str, Scenario); 7] = [
         ("A5", scenarios_items::a5),
         ("A6", scenarios_items::a6),
         ("A7", scenarios_items::a7),
         ("A8", scenarios_items::a8),
         ("A9", scenarios_inventory::a9),
         ("A10", scenarios_containers::a10),
+        ("A11", scenarios_crafting::a11),
     ];
     let mut aborted = false;
     for (id, f) in all.into_iter().chain(shapes).chain(items) {

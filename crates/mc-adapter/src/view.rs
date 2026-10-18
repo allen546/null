@@ -335,12 +335,13 @@ impl BotView for AzaleaView<'_, '_, '_> {
                     return None;
                 }
                 let inv = self.p.inventory;
+                let kind = self.p.screen_kind.map(|k| k.to_str());
                 Some(api::Window {
                     id: inv.id,
-                    kind: self.p.screen_kind.map(|k| k.to_str()),
+                    kind,
                     slots: inv.menu().slots().iter().map(|s| self.stack(s)).collect(),
-                    // Only the player window's crafting result so far; storage blocks have none.
-                    computed_slots: if inv.id == 0 { vec![0] } else { vec![] },
+                    // Crafting results are the server's (the client has no recipes); storage has none.
+                    computed_slots: if inv.id == 0 || kind == Some("minecraft:crafting") { vec![0] } else { vec![] },
                     carried: self.stack(&inv.carried),
                 })
             })
