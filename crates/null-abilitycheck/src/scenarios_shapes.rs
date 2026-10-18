@@ -200,6 +200,23 @@ const CLICKS: &[Row] = rows![
     Row { name: "click_flower_pot_top", setup: &[(0, 0, 0, "flower_pot")], sneak: true, ..R },
     Row { name: "click_campfire_top", setup: &[(0, 0, 0, "campfire[lit=false]")], ..R },
     Row { name: "click_cake_top", setup: &[(0, 0, 0, "cake")], sneak: true, ..R },
+    // a grindstone's shape is a wheel between two legs, turned by its face and facing
+    Row { name: "click_grindstone_floor_top", setup: &[(0, 0, 0, "grindstone[face=floor,facing=north]")], sneak: true, ..R },
+    Row { name: "click_grindstone_floor_side_along_wheel", setup: &[(0, 0, 0, "grindstone[face=floor,facing=north]")], face: Face::North, sneak: true, blocks: SIDE, ..R },
+    Row { name: "click_grindstone_floor_side_across_wheel", setup: &[(0, 0, 0, "grindstone[face=floor,facing=east]")], face: Face::North, sneak: true, blocks: SIDE, ..R },
+    Row { name: "click_grindstone_wall_top", setup: &[(0, 0, 0, "grindstone[face=wall,facing=north]")], sneak: true, ..R },
+    Row { name: "click_grindstone_wall_side", setup: &[(0, 0, 0, "grindstone[face=wall,facing=north]")], face: Face::North, sneak: true, blocks: SIDE, ..R },
+    Row { name: "click_grindstone_wall_sideways_side", setup: &[(0, 0, 0, "grindstone[face=wall,facing=east]")], face: Face::North, sneak: true, blocks: SIDE, ..R },
+    Row { name: "click_grindstone_ceiling_top", setup: &[(0, 0, 0, "grindstone[face=ceiling,facing=north]")], sneak: true, ..R },
+    Row { name: "click_grindstone_ceiling_side", setup: &[(0, 0, 0, "grindstone[face=ceiling,facing=east]")], face: Face::North, sneak: true, blocks: SIDE, ..R },
+    // the lectern's outline reaches above its block (to 18/16) and differs from its collision
+    Row { name: "click_lectern_top", setup: &[(0, 0, 0, "lectern[facing=north]")], sneak: true, ..R },
+    Row { name: "click_lectern_side", setup: &[(0, 0, 0, "lectern[facing=east]")], face: Face::North, sneak: true, blocks: SIDE, ..R },
+    Row { name: "click_brewing_stand_top", setup: &[(0, 0, 0, "brewing_stand")], sneak: true, ..R },
+    Row { name: "click_brewing_stand_side", setup: &[(0, 0, 0, "brewing_stand")], face: Face::North, sneak: true, blocks: SIDE, ..R },
+    Row { name: "click_stonecutter_top", setup: &[(0, 0, 0, "stonecutter[facing=north]")], sneak: true, ..R },
+    Row { name: "click_bell_ceiling_side", setup: &[(0, 1, 0, "stone"), (0, 0, 0, "bell[attachment=ceiling,facing=north]")], face: Face::North, sneak: true, blocks: SIDE, ..R },
+    Row { name: "click_bell_single_wall_top", setup: &[(0, 0, 1, "stone"), (0, 0, 0, "bell[attachment=single_wall,facing=north]")], sneak: true, ..R },
     // no collision or replaceable
     Row { name: "click_short_grass_is_replaced", setup: &[GRASS, (0, 0, 0, "short_grass")], blocks: INTO, ..R },
     Row { name: "click_poppy_top", setup: &[GRASS, (0, 0, 0, "poppy")], ..R },
@@ -263,6 +280,13 @@ const PLACES: &[Row] = rows![
     Row { name: "place_flower_pot", item: "flower_pot", click: FLOOR, blocks: &[(0, 0, 0, "flower_pot")], ..R },
     Row { name: "place_enchanting_table", item: "enchanting_table", click: FLOOR, blocks: &[(0, 0, 0, "enchanting_table")], ..R },
     Row { name: "place_bell_on_floor", item: "bell", click: FLOOR, blocks: &[(0, 0, 0, "bell[attachment=floor]")], ..R },
+    // the clicked face decides a grindstone's attachment (`BlockPlaceContext#getNearestLookingDirections`)
+    Row { name: "place_grindstone_on_floor", item: "grindstone", click: FLOOR, blocks: &[(0, 0, 0, "grindstone[face=floor,facing=south]")], ..R },
+    Row { name: "place_grindstone_on_wall", setup: PILLAR, item: "grindstone", face: Face::North, blocks: &[(0, 0, -1, "grindstone[face=wall,facing=north]")], ..R },
+    Row { name: "place_grindstone_under_ceiling", setup: &[(0, 2, 0, "stone")], item: "grindstone", click: (0, 2, 0), face: Face::Down, blocks: &[(0, 1, 0, "grindstone[face=ceiling,facing=south]")], ..R },
+    Row { name: "place_lectern_faces_the_player", item: "lectern", click: FLOOR, blocks: &[(0, 0, 0, "lectern[facing=north,has_book=false]")], ..R },
+    Row { name: "place_stonecutter_faces_the_player", item: "stonecutter", click: FLOOR, blocks: &[(0, 0, 0, "stonecutter[facing=north]")], ..R },
+    Row { name: "place_brewing_stand", item: "brewing_stand", click: FLOOR, blocks: &[(0, 0, 0, "brewing_stand")], ..R },
     Row { name: "place_poppy_on_grass", setup: &[(0, -1, 0, "grass_block")], item: "poppy", click: FLOOR, blocks: &[(0, 0, 0, "poppy")], ..R },
 ];
 
@@ -396,6 +420,11 @@ const BREAKS: &[Brk] = &[
     Brk { name: "break_bell", setup: &[(0, 0, 0, "bell[attachment=floor,facing=north]")], tool: PICK, hardness: 5.0, speed: 6.0, ..B },
     Brk { name: "break_campfire", setup: &[(0, 0, 0, "campfire[lit=false]")], tool: AXE, hardness: 2.0, speed: 6.0, ..B },
     Brk { name: "break_cake", setup: &[(0, 0, 0, "cake")], hardness: 0.5, ..B },
+    Brk { name: "break_grindstone_floor", setup: &[(0, 0, 0, "grindstone[face=floor,facing=north]")], tool: PICK, hardness: 2.0, speed: 6.0, ..B },
+    Brk { name: "break_grindstone_wall", setup: &[(0, 0, 0, "grindstone[face=wall,facing=east]")], tool: PICK, hardness: 2.0, speed: 6.0, ..B },
+    Brk { name: "break_lectern", setup: &[(0, 0, 0, "lectern[facing=north]")], tool: AXE, hardness: 2.5, speed: 6.0, ..B },
+    Brk { name: "break_brewing_stand", setup: &[(0, 0, 0, "brewing_stand")], tool: PICK, hardness: 0.5, speed: 6.0, ..B },
+    Brk { name: "break_stonecutter", setup: &[(0, 0, 0, "stonecutter[facing=north]")], tool: PICK, hardness: 3.5, speed: 6.0, ..B },
     // Haste 255 with the right tool: instamine (the break goes out on the start packet)
     Brk { name: "break_wall_hasted", setup: &[(0, 0, 0, "cobblestone_wall")], tool: PICK, hardness: 2.0, speed: 6.0, haste: true, ..B },
 ];
