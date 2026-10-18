@@ -43,8 +43,6 @@ fn reset(cx: &mut Ctx) {
         format!("fill 507 {FLOOR_Y} 346 514 {FLOOR_Y} 356 minecraft:stone"),
         "kill @e[type=minecraft:item,x=500,y=199,z=342,dx=21,dy=10,dz=21]".to_string(),
         format!("clear {n}"),
-        // full food: a hungry bot eats the cake instead of placing on it (`CakeBlock#useWithoutItem`)
-        format!("effect give {n} minecraft:saturation 1 255 true"),
     ] {
         cx.r(&c);
     }
@@ -201,7 +199,7 @@ const CLICKS: &[Row] = rows![
     Row { name: "click_bell_top", setup: &[(0, 0, 0, "bell[attachment=floor,facing=north]")], sneak: true, ..R },
     Row { name: "click_flower_pot_top", setup: &[(0, 0, 0, "flower_pot")], sneak: true, ..R },
     Row { name: "click_campfire_top", setup: &[(0, 0, 0, "campfire[lit=false]")], ..R },
-    Row { name: "click_cake_top", setup: &[(0, 0, 0, "cake")], ..R },
+    Row { name: "click_cake_top", setup: &[(0, 0, 0, "cake")], sneak: true, ..R },
     // no collision or replaceable
     Row { name: "click_short_grass_is_replaced", setup: &[GRASS, (0, 0, 0, "short_grass")], blocks: INTO, ..R },
     Row { name: "click_poppy_top", setup: &[GRASS, (0, 0, 0, "poppy")], ..R },
