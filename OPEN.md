@@ -1,6 +1,6 @@
 # Open for Allen: start here next thread
 
-> State on `main`, 2026-10-18. The Azalea fork's patches 5–17 are pushed (`allen546/azalea`, `null-main`). SA A1–A9 and the shape families pass on both test servers (vanilla and Paper + Grim, both on normal; the full suite 245/245 on each), checked by independent verifiers; everything is committed and pushed. Next: A10 (chests). Standing rules for Claude are in [CLAUDE.md](CLAUDE.md). For SA, start at [HANDOFF.md](HANDOFF.md). Read this, then `specs/INDEX.md` if more context is needed. Don't load `specs/logs/` (about 600k tokens of old builder logs).
+> State on `main`, 2026-10-18. The Azalea fork's patches 5–20 are pushed (`allen546/azalea`, `null-main`). SA A1–A11, A4C and the shape families pass on both test servers (vanilla and Paper + Grim, both on normal; the full suite 317/317 on each), checked by independent verifiers; rechecked 2026-10-19 (pin, tests, logs); everything is committed and pushed. Next: A12 (respawn), then A10E (storage on entities). Standing rules for Claude are in [CLAUDE.md](CLAUDE.md). For SA, start at [HANDOFF.md](HANDOFF.md). Read this, then `specs/INDEX.md` if more context is needed. Don't load `specs/logs/` (about 600k tokens of old builder logs).
 
 ## 1. Nothing blocks building
 
@@ -58,7 +58,7 @@ None of these blocks current work. Each has a default.
 
 ## 4. Next actions (not decisions)
 
-0. **SA, the ability check**: A1–A8, the shape families, the reference sources (`~/Desktop/null-reference/`) and the shield-delay belief (A6, fork patches 11–12) done and verified on both servers (199/199 each, 2026-10-18); A9 inventory clicks done 2026-10-18 (fork patches 16–17; the full suite passes 245/245 on each server); next A10 (chests), A11 (crafting by clicks), A12 (respawn), then a verifier runs the whole suite. Full list in [HANDOFF.md](HANDOFF.md). It comes before the items below.
+0. **SA, the ability check**: A1–A8, the shape families, the reference sources (`~/Desktop/null-reference/`) and the shield-delay belief (A6, fork patches 11–12) done and verified on both servers (199/199 each, 2026-10-18); A9 inventory clicks done 2026-10-18 (fork patches 16–17; the full suite passes 245/245 on each server); A10 (chests), A11 (crafting by clicks) and A4C (crouch handling, fork patches 18–20) done 2026-10-18, the full suite 317/317 on each server; next A12 (respawn), A10E (storage on entities), then a verifier runs the whole suite. Full list in [HANDOFF.md](HANDOFF.md). It comes before the items below.
 1. **Bench, remote server.** Borrow the M5 MacBook Airs (family OK pending; backup: hourly VPSes). Add `host=` to `azbench` and a remote mode to `run_one.py`. Ladder 100–500 bots with 3 and 5 threads. Watch the Airs for throttling.
 2. **Shared section cache** in the Azalea fork (99% of section building was repeated), then the same ladder again.
 3. **Bench gaps:** lock-wait and per-thread timing (why the ECS tick waits), the level-off at 22–28 searches per second, re-run 5 threads at 50 bots (suspect value), why 3% of repeated chunks have different bytes.
