@@ -10,7 +10,7 @@ use azalea::{
     attack::{AttackQueued, AttackStrengthScale},
     core::{entity_id::MinecraftEntityId, tick::GameTick},
     entity::{
-        Dead, HasClientLoaded, Jumping, LocalEntity, LookDirection, Physics, Position,
+        HasClientLoaded, Jumping, LocalEntity, LookDirection, Physics, Position,
         inventory::Inventory,
         metadata::Health,
     },
@@ -27,6 +27,8 @@ use azalea::{
         handle_break_block_queued, handle_look_at_block_queued,
     },
     mining::MiningSystems,
+    respawn::{DeathScreen, PerformRespawnEvent, RespawnLog},
+    tick_counter::TicksConnected,
     local_player::{Hunger, WorldHolder},
     pathfinder::{
         ExecutingPath, GotoEvent, Pathfinder, PathfinderOpts, StopPathfindingEvent,
@@ -39,7 +41,7 @@ use azalea::{
 use azalea::app::{App, Plugin};
 use azalea::ecs::prelude::*;
 use azalea::entity::indexing::EntityIdIndex;
-use null_bot_api::{Brain, Command, Hand, Skill, SkillStatus};
+use null_bot_api::{AfterDeath, Brain, BotView, Command, Hand, Skill, SkillStatus};
 
 use crate::blocks::{self, BlockActions, Issued};
 use crate::view::{AzaleaView, OthersQuery, ViewParts};
@@ -51,13 +53,19 @@ pub struct BotBrain {
     pub brain: Brain,
     pub skill: Option<Box<dyn Skill>>,
     pending: Vec<Command>,
+    /// Deaths already announced by this brain (`BotDied`).
+    died_seen: u32,
 }
 
 impl BotBrain {
     pub fn new(brain: Brain, skill: Option<Box<dyn Skill>>) -> Self {
-        Self { brain, skill, pending: Vec::new() }
+        Self { brain, skill, pending: Vec::new(), died_seen: 0 }
     }
 }
+
+/// The reason of the `SkillStatus::Failed` that a death writes (F1 §4.4: a job does not survive
+/// a death).
+pub const SKILL_DIED: &str = "died";
 
 /// Host-side bookkeeping that is not the decision code's business.
 #[derive(Component, Default)]
@@ -83,6 +91,14 @@ pub struct SkillEnded {
     pub tick: u64,
 }
 
+/// Written the first host tick that sees a death, with the death record (F1 §4.4).
+#[derive(Message)]
+pub struct BotDied {
+    pub entity: Entity,
+    pub tick: u64,
+    pub death: Option<null_bot_api::Death>,
+}
+
 pub struct HostPlugin;
 
 impl Plugin for HostPlugin {
@@ -91,6 +107,7 @@ impl Plugin for HostPlugin {
         // in setups without the pathfinder plugin.
         app.init_resource::<HostTick>()
             .add_message::<SkillEnded>()
+            .add_message::<BotDied>()
             .add_message::<GotoEvent>()
             .add_message::<StopPathfindingEvent>()
             .add_systems(
@@ -107,7 +124,13 @@ impl Plugin for HostPlugin {
                 .before(handle_start_use_item_queued)
                 .before(handle_use_item_queued)
                 .before(hold_still_while_screen_open)
-                .before(age_recent_attackers),
+                .before(age_recent_attackers)
+                // A dead bot's commands are refused by the fork's guards, which run after us.
+                .before(azalea::respawn::refuse_input_while_dead)
+                .before(azalea::block_actions::refuse_block_actions_while_dead)
+                // The view reads the fork's tick count and death record, so they settle first.
+                .after(azalea::tick_counter::increment_counter)
+                .after(azalea::respawn::tick_death_screen),
         );
     }
 }
@@ -185,6 +208,10 @@ impl null_bot_api::BotCommands for CommandBuffer {
     fn click_slot(&mut self, slot: Option<u16>, click: null_bot_api::Click) {
         self.0.push(Command::ClickSlot { slot, click });
     }
+    // Spec: specs/F1-swarm-runtime.md §4.4 (respawn only as the death screen's button can)
+    fn respawn(&mut self) {
+        self.0.push(Command::Respawn);
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -214,16 +241,20 @@ fn decide(
                 Option<&OpenScreen>,
                 Option<&ClickResults>,
                 Option<&ClientMovementState>,
+                Option<&RespawnLog>,
+                Option<&TicksConnected>,
+                Option<&DeathScreen>,
             ),
         ),
-        (With<LocalEntity>, With<HasClientLoaded>, Without<Dead>),
+        (With<LocalEntity>, With<HasClientLoaded>),
     >,
     others: OthersQuery,
     mut ended: MessageWriter<SkillEnded>,
+    mut died: MessageWriter<BotDied>,
 ) {
     tick.0 += 1;
     let now = tick.0;
-    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, results, attackers, tags, screen, clicks, movement)) in
+    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, results, attackers, tags, screen, clicks, movement, respawn_log, connected, death_screen)) in
         &mut bots
     {
         let nav_pending = flags.and_then(|f| f.nav_requested).is_some_and(|t| now - t <= 2);
@@ -252,11 +283,33 @@ fn decide(
                 screen_kind: screen.and_then(|s| s.kind),
                 clicks,
                 sneaking: movement.is_some_and(|m| m.trying_to_crouch),
+                respawn_log,
+                death_screen,
+                client_tick: connected.map_or(0, |t| t.0),
             },
             &others,
         );
         let mut buf = CommandBuffer::default();
         let bb = &mut *bb;
+        // Spec: specs/F1-swarm-runtime.md §4.4 (the death tick: the skill chooses End or Keep, the
+        // death is reported, reflexes and a kept skill keep their view until the respawn)
+        if death_screen.is_some() && view.deaths() > bb.died_seen {
+            bb.died_seen = view.deaths();
+            let death = view.last_death().cloned();
+            if let (Some(skill), Some(d)) = (bb.skill.as_mut(), death.as_ref())
+                && skill.on_death(&view, d) == AfterDeath::End
+            {
+                let skill = bb.skill.take().unwrap();
+                bb.brain.end_job();
+                ended.write(SkillEnded {
+                    entity,
+                    skill: skill.id().to_string(),
+                    status: SkillStatus::Failed(SKILL_DIED.to_string()),
+                    tick: now,
+                });
+            }
+            died.write(BotDied { entity, tick: now, death });
+        }
         // Written out so the trait-object lifetime shortens (Option does not coerce).
         let skill: Option<&mut dyn Skill> = match bb.skill.as_mut() {
             Some(s) => Some(&mut **s),
@@ -329,6 +382,7 @@ fn apply(
     )>,
     mut goto: MessageWriter<GotoEvent>,
     mut stop_nav: MessageWriter<StopPathfindingEvent>,
+    mut respawn: MessageWriter<PerformRespawnEvent>,
 ) {
     for (entity, mut bb, mut flags, mut mv, mut look, mut jumping, mut inv, _pred, ids, results) in &mut bots
     {
@@ -428,6 +482,9 @@ fn apply(
                     flags.blocks.last_open = Some(Issued::new_open(tick.0, pos, results.last_use.map(|r| r.id)));
                 }
                 Command::CloseWindow => commands.trigger(CloseContainerEvent { entity, id: inv.id }),
+                Command::Respawn => {
+                    respawn.write(PerformRespawnEvent { entity });
+                }
                 Command::ClickSlot { slot, click } => {
                     commands.trigger(ContainerClickEvent { entity, window_id: inv.id, operation: click_op(slot, click) });
                 }

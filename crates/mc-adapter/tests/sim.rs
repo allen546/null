@@ -99,6 +99,7 @@ impl Skill for Replay {
                 Command::OpenContainer { pos, face } => c.open_container(pos, face),
                 Command::CloseWindow => c.close_window(),
                 Command::ClickSlot { slot, click } => c.click_slot(slot, click),
+                Command::Respawn => c.respawn(),
             }
         }
         SkillStatus::Running

@@ -55,6 +55,8 @@ pub enum Op {
     Items(crate::skill_items::ItemOp),
     /// Inventory window ops (A9), in `skill_inventory`.
     Inv(crate::skill_inventory::InvOp),
+    /// Death and respawn ops (A12), in `skill_respawn`.
+    Life(crate::skill_respawn::LifeOp),
 }
 
 #[derive(Clone, Debug)]
@@ -78,6 +80,7 @@ pub enum Info {
     Timeout,
     Items(crate::skill_items::ItemsInfo),
     Inv(crate::skill_inventory::InvInfo),
+    Life(crate::skill_respawn::LifeInfo),
     /// Per block of a chain: (block, ticks from start to finish, outcome).
     Chain(Vec<(BlockPos, Option<u64>, BlockOutcome)>),
 }
@@ -94,6 +97,7 @@ pub struct RemoteSkill {
     items: crate::skill_items::ItemState,
     chain: Chain,
     last_step: Option<Instant>,
+    keep: crate::skill_respawn::KeepState,
 }
 
 /// Progress of a `BreakChain`: the block looked at (and when), and the breaks logged so far.
@@ -116,7 +120,7 @@ struct Run {
 
 impl RemoteSkill {
     pub fn new(ops: Arc<Mutex<Receiver<Op>>>, out: Sender<Report>) -> Self {
-        Self { ops, out, cur: None, items: Default::default(), chain: Chain::default(), last_step: None }
+        Self { ops, out, cur: None, items: Default::default(), chain: Chain::default(), last_step: None, keep: Default::default() }
     }
 }
 
@@ -151,6 +155,15 @@ impl Skill for RemoteSkill {
         "ability-check"
     }
 
+    // Spec: specs/F1-swarm-runtime.md §4.4 (A12 `skill_on_death_keep` sets the flag)
+    fn on_death(&mut self, _v: &dyn BotView, _d: &null_bot_api::Death) -> null_bot_api::AfterDeath {
+        if crate::skill_respawn::KEEP_ARMED.load(std::sync::atomic::Ordering::Relaxed) {
+            null_bot_api::AfterDeath::Keep
+        } else {
+            null_bot_api::AfterDeath::End
+        }
+    }
+
     // Spec: specs/plans/ABILITY_CHECK.md (scenario ops: A1 slots, A2 break, A3 pickup, A4 place)
     fn step(&mut self, v: &dyn BotView, c: &mut dyn BotCommands) -> SkillStatus {
         let wall = Instant::now();
@@ -160,6 +173,9 @@ impl Skill for RemoteSkill {
             if gap < 25 {
                 TICK_FAST.fetch_add(1, Ordering::Relaxed);
             }
+        }
+        if let Some(status) = crate::skill_respawn::keep_step(&mut self.keep, v, c) {
+            return status;
         }
         self.items.shield.update(v);
         let now = v.tick();
@@ -322,6 +338,7 @@ impl Skill for RemoteSkill {
             }
             Op::Items(io) => crate::skill_items::step(io, age, &mut self.items, v, c, &say),
             Op::Inv(io) => crate::skill_inventory::step(io, age, v, c),
+            Op::Life(io) => crate::skill_respawn::step(io, age, v, c),
             Op::Goto(pos) => {
                 if age == 0 {
                     c.goto(*pos, 0.0);

@@ -9,10 +9,12 @@ mod scenarios_crafting;
 mod scenarios_crouch;
 mod scenarios_inventory;
 mod scenarios_items;
+mod scenarios_respawn;
 mod scenarios_shapes;
 mod skill;
 mod skill_inventory;
 mod skill_items;
+mod skill_respawn;
 
 use std::{
     path::PathBuf,
@@ -32,7 +34,7 @@ use scenarios::{Ctx, Outcome};
 use skill::RemoteSkill;
 
 const USAGE: &str = "usage: null-abilitycheck [--server 127.0.0.1:25567] [--account null_check] \
-[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10[,..]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH]";
+[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A11|A12[,..]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH]";
 
 struct Args {
     server: String,
@@ -85,6 +87,8 @@ fn main() {
     let (rep_tx, rep_rx) = mpsc::channel();
     let (ev_tx, ev_rx) = mpsc::channel();
     let ops = Arc::new(Mutex::new(op_rx));
+    let probe: skill_respawn::SharedProbe = Arc::default();
+    let bot_probe = probe.clone();
     let account = args.account.clone();
     let server = args.server.clone();
     // A8 needs a second player online to be the attacker: `<account>2`, with no skill.
@@ -99,7 +103,9 @@ fn main() {
                     return BotBrain::new(Brain::new(), None);
                 }
                 let skill = RemoteSkill::new(ops.clone(), rep_tx.clone());
-                BotBrain::new(Brain::new(), Some(Box::new(skill)))
+                let mut brain = Brain::new();
+                brain.register(Box::new(skill_respawn::DeathProbe::new(bot_probe.clone())));
+                BotBrain::new(brain, Some(Box::new(skill)))
             });
             let mut accounts = vec![Account::offline(&account)];
             if two {
@@ -137,13 +143,13 @@ fn main() {
         }
     }
 
-    let mut cx = Ctx { rc, name: args.account.clone(), ops: op_tx, reports: rep_rx, log: args.log };
+    let mut cx = Ctx { rc, name: args.account.clone(), ops: op_tx, reports: rep_rx, log: args.log, events: ev_rx, probe };
     let wants = |id: &str| args.scenarios.iter().any(|s| s == "ALL" || s == id);
     let mut results: Vec<Outcome> = Vec::new();
     type Scenario = fn(&mut Ctx) -> Vec<Outcome>;
     let all: [(&str, Scenario); 4] = [("A1", scenarios::a1), ("A2", scenarios::a2), ("A3", scenarios::a3), ("A4", scenarios::a4)];
     let shapes: [(&str, Scenario); 3] = [("A4S", scenarios_shapes::a4s), ("A2S", scenarios_shapes::a2s), ("A4C", scenarios_crouch::a4c)];
-    let items: [(&str, Scenario); 7] = [
+    let items: [(&str, Scenario); 8] = [
         ("A5", scenarios_items::a5),
         ("A6", scenarios_items::a6),
         ("A7", scenarios_items::a7),
@@ -151,6 +157,7 @@ fn main() {
         ("A9", scenarios_inventory::a9),
         ("A10", scenarios_containers::a10),
         ("A11", scenarios_crafting::a11),
+        ("A12", scenarios_respawn::a12),
     ];
     let mut aborted = false;
     for (id, f) in all.into_iter().chain(shapes).chain(items) {

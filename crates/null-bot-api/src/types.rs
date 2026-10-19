@@ -394,3 +394,59 @@ pub enum NavStatus {
     /// when a path ends short of it. Nothing will happen until a new goto.
     Stalled,
 }
+
+// Spec: specs/F1-swarm-runtime.md §4.4 (dead, then respawning)
+/// Whether the bot is alive. The host keeps the bot's brain and view through a death, so
+/// reflexes see `Dead` from the death tick on (the running skill ends with `Failed("died")` that
+/// tick). A dead bot can send nothing but the respawn (`BotView::refused_while_dead`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Life {
+    Alive,
+    /// The death screen is up and no respawn request has gone out; `since_tick` is the host tick
+    /// it opened.
+    Dead { since_tick: u64 },
+    /// The respawn request went out (`since_tick`) and the server's answer has not come.
+    RespawnPending { since_tick: u64 },
+}
+
+// Spec: specs/B2-survival-upkeep.md §4.7 (the death report: position and inventory snapshot)
+/// The latest death, as seen when the kill packet arrived (before the server's drops).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Death {
+    /// Host tick of the death (same clock as `BotView::tick`).
+    pub tick: u64,
+    pub position: Vec3,
+    pub dimension: String,
+    /// The server's death message as plain text (empty with `showDeathMessages` off).
+    pub message: String,
+    /// The 36 main slots as `BotView::inventory` numbers them, then armour (head to feet) and
+    /// the offhand.
+    pub inventory: [Option<ItemStack>; 36],
+    pub armor: [Option<ItemStack>; 4],
+    pub offhand: Option<ItemStack>,
+}
+
+/// The latest respawn request that went out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RespawnSent {
+    /// Host tick the packet went out.
+    pub sent_tick: u64,
+    /// Ticks the death screen had been up (20 at the earliest; 0 with immediate respawn).
+    pub screen_ticks: u32,
+    pub immediate: bool,
+    /// Host tick the server's respawn packet arrived.
+    pub completed_tick: Option<u64>,
+    /// Respawn packets sent for this death: one with the death screen; with immediate respawn
+    /// one from the kill packet and one per tick until the answer, as a vanilla client does.
+    pub sends: u32,
+}
+
+// Spec: specs/F1-swarm-runtime.md §4.4 (a dead bot sends nothing a death screen cannot)
+/// An action the fork refused on the client because the bot is dead, with how many times since
+/// the death began.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeadRefusal {
+    pub action: String,
+    pub reason: &'static str,
+    pub count: u32,
+}

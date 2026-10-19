@@ -23,7 +23,7 @@ use azalea::{
 use azalea::ecs::prelude::*;
 use null_bot_api::SkillStatus;
 
-use crate::host::{BotBrain, SkillEnded};
+use crate::host::{BotBrain, BotDied, SKILL_DIED, SkillEnded};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BotState {
@@ -88,6 +88,9 @@ pub struct BotStateChange {
 pub enum HostEvent {
     State(BotStateChange),
     SkillEnded { bot: String, skill: String, status: SkillStatus, tick: u64 },
+    /// The first host tick that saw the death, with the record (position, dimension, message,
+    /// inventory snapshot). A running skill ends the same tick with `Failed("died")`.
+    Died { bot: String, tick: u64, death: Option<null_bot_api::Death> },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -222,10 +225,12 @@ fn lifecycle(
     mut lc: ResMut<Lifecycle>,
     new: Query<(Entity, &Account), Added<Account>>,
     loaded: Query<Entity, Added<HasClientLoaded>>,
+    mut old_brains: Query<&mut BotBrain>,
     mut disconnects: MessageReader<DisconnectEvent>,
     mut failures: MessageReader<ConnectionFailedEvent>,
     mut deaths: MessageReader<DeathEvent>,
     mut ended: MessageReader<SkillEnded>,
+    mut died: MessageReader<BotDied>,
     retry: Query<(&Account, &ConnectOpts)>,
     mut join: MessageWriter<StartJoinServerEvent>,
     mut respawn: MessageWriter<PerformRespawnEvent>,
@@ -245,9 +250,15 @@ fn lifecycle(
         let name = lc.bots[&e].name.clone();
         lc.bots.get_mut(&e).unwrap().spawned_at = Some(Instant::now());
         lc.emit(e, BotState::Spawned);
-        let brain = (lc.factory)(&name);
+        let mut brain = (lc.factory)(&name);
+        // A skill that chose `Keep` at the death (F1 §4.4) is still in the old brain: it takes the
+        // factory's place, as the same instance.
+        if let Some(kept) = old_brains.get_mut(e).ok().and_then(|mut b| b.skill.take()) {
+            brain.skill = Some(kept);
+        }
         let job = brain.skill.as_ref().map(|s| s.id().to_string());
-        // Fresh brain on every spawn: a job does not survive a disconnect or a death (F1 §4.4).
+        // Fresh brain on every spawn: a job does not survive a disconnect, nor a death unless its
+        // skill kept it (F1 §4.4).
         commands.entity(e).insert(brain);
         lc.emit(e, job.map_or(BotState::Idle, BotState::OnJob));
     }
@@ -261,13 +272,23 @@ fn lifecycle(
                 status: ev.status.clone(),
                 tick: ev.tick,
             });
-            lc.emit(ev.entity, BotState::Idle);
+            // A death ends the job but the bot is dead, not idle.
+            if !matches!(&ev.status, SkillStatus::Failed(why) if why == SKILL_DIED) {
+                lc.emit(ev.entity, BotState::Idle);
+            }
+        }
+    }
+
+    for ev in died.read() {
+        if let Some(r) = lc.bots.get(&ev.entity) {
+            let _ = lc.tx.send(HostEvent::Died { bot: r.name.clone(), tick: ev.tick, death: ev.death.clone() });
         }
     }
 
     for ev in deaths.read() {
         if lc.bots.contains_key(&ev.entity) {
-            commands.entity(ev.entity).remove::<(BotBrain, azalea::ItemInUse)>();
+            // The brain stays: its reflexes see the death and the wait for the respawn (F1 §4.4).
+            commands.entity(ev.entity).remove::<azalea::ItemInUse>();
             lc.emit(ev.entity, BotState::Dead);
             if lc.respawn {
                 respawn.write(PerformRespawnEvent { entity: ev.entity });

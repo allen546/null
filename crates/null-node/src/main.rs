@@ -158,6 +158,14 @@ fn log_events(rx: mpsc::Receiver<HostEvent>, mut out: Box<dyn Write + Send>, exi
                 json!({ "wall_ms": wall_ms, "event": "skill_ended", "bot": bot, "skill": skill,
                         "status": st, "reason": reason, "tick": tick })
             }
+            HostEvent::Died { bot, tick, death } => {
+                let at = death.as_ref().map(|d| json!({
+                    "x": d.position.x, "y": d.position.y, "z": d.position.z,
+                    "dimension": d.dimension, "message": d.message,
+                    "stacks": d.inventory.iter().chain(d.armor.iter()).chain(std::iter::once(&d.offhand)).flatten().count(),
+                }));
+                json!({ "wall_ms": wall_ms, "event": "died", "bot": bot, "tick": tick, "death": at })
+            }
         };
         let _ = writeln!(out, "{line}");
         let _ = out.flush();

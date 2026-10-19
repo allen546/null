@@ -68,6 +68,35 @@ pub trait BotView {
         None
     }
 
+    // Spec: specs/F1-swarm-runtime.md §4.4 (death and respawn, as the bot knows them)
+    fn life(&self) -> Life {
+        Life::Alive
+    }
+    /// The latest death and how many there were (B2 §4.7). Kept across respawns.
+    fn last_death(&self) -> Option<&Death> {
+        None
+    }
+    fn deaths(&self) -> u32 {
+        0
+    }
+    /// The latest respawn request that went out.
+    fn last_respawn(&self) -> Option<RespawnSent> {
+        None
+    }
+    /// Why the latest `respawn` was refused (nothing was sent).
+    fn respawn_refusal(&self) -> Option<&'static str> {
+        None
+    }
+    // Spec: specs/F1-swarm-runtime.md §4.4 (nothing while dead)
+    /// What the fork refused since the latest death began (the death screen has no keys or mouse).
+    fn refused_while_dead(&self) -> Vec<DeadRefusal> {
+        Vec::new()
+    }
+    /// Game packets the client sent since the latest death began, by packet name, with counts.
+    fn sent_while_dead(&self) -> Vec<(String, u32)> {
+        Vec::new()
+    }
+
     // Spec: specs/B3-inventory-crafting.md §4.1 (slot management: count items)
     /// Total count of `item` ("minecraft:stone") over the 36 main slots and the offhand.
     fn count_item(&self, item: &str) -> u32 {

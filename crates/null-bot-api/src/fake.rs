@@ -246,6 +246,9 @@ impl BotCommands for FakeCommands {
     fn click_slot(&mut self, slot: Option<u16>, click: Click) {
         self.push(Command::ClickSlot { slot, click });
     }
+    fn respawn(&mut self) {
+        self.push(Command::Respawn);
+    }
 }
 
 #[cfg(test)]

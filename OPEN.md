@@ -1,6 +1,6 @@
 # Open for Allen: start here next thread
 
-> State on `main`, 2026-10-18. The Azalea fork's patches 5–20 are pushed (`allen546/azalea`, `null-main`). SA A1–A11, A4C and the shape families pass on both test servers (vanilla and Paper + Grim, both on normal; the full suite 317/317 on each), checked by independent verifiers; rechecked 2026-10-19 (pin, tests, logs); everything is committed and pushed. Next: A12 (respawn), then A10E (storage on entities). Standing rules for Claude are in [CLAUDE.md](CLAUDE.md). For SA, start at [HANDOFF.md](HANDOFF.md). Read this, then `specs/INDEX.md` if more context is needed. Don't load `specs/logs/` (about 600k tokens of old builder logs).
+> State on `main`, 2026-10-19. The Azalea fork's patches 5–22 are pushed (`allen546/azalea`, `null-main`). SA A1–A12, A4C and the shape families pass on both test servers (vanilla and Paper + Grim, both on normal; the full suite 325/325 on each after A12, 317/317 checked by independent verifiers before it), checked by independent verifiers; rechecked 2026-10-19 (pin, tests, logs); everything is committed and pushed. Next: A12 (respawn), then A10E (storage on entities). Standing rules for Claude are in [CLAUDE.md](CLAUDE.md). For SA, start at [HANDOFF.md](HANDOFF.md). Read this, then `specs/INDEX.md` if more context is needed. Don't load `specs/logs/` (about 600k tokens of old builder logs).
 
 ## 1. Nothing blocks building
 

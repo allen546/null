@@ -1,0 +1,946 @@
+commit a30447e98d5b8069250d543e7701492a492fbfb0
+Author: bench <bench@local>
+Date:   Mon Oct 19 17:05:15 2026 +0800
+
+    null patch: 22-nothing-while-dead
+
+diff --git a/azalea-client/src/plugins/block_actions.rs b/azalea-client/src/plugins/block_actions.rs
+index 78c4979..925c042 100644
+--- a/azalea-client/src/plugins/block_actions.rs
++++ b/azalea-client/src/plugins/block_actions.rs
+@@ -71,6 +71,13 @@ pub struct BlockActionsPlugin;
+ impl Plugin for BlockActionsPlugin {
+     fn build(&self, app: &mut App) {
+         app.add_message::<BlockActionFinished>()
++            .add_systems(
++                GameTick,
++                refuse_block_actions_while_dead
++                    .after(crate::respawn::tick_death_screen)
++                    .before(handle_look_at_block_queued)
++                    .before(handle_break_block_queued),
++            )
+             .add_systems(GameTick, handle_look_at_block_queued.before(handle_break_block_queued))
+             .add_systems(
+                 GameTick,
+@@ -96,6 +103,72 @@ impl Plugin for BlockActionsPlugin {
+     }
+ }
+ 
++// Spec: specs/F1-swarm-runtime.md §4.4 (a dead bot sends nothing a death screen cannot)
++/// Answers break, place and use commands that arrive with the death screen open with a refused
++/// result and sends nothing (`Minecraft#handleKeybinds` does not run then).
++#[allow(clippy::type_complexity)]
++pub fn refuse_block_actions_while_dead(
++    mut commands: Commands,
++    mut query: Query<
++        (
++            Entity,
++            &mut BlockActionResults,
++            &mut crate::respawn::RespawnLog,
++            Option<&BreakBlockQueued>,
++            Option<&PlaceBlockQueued>,
++            Option<&UseBlockQueued>,
++        ),
++        With<crate::respawn::DeathScreen>,
++    >,
++    mut finished: MessageWriter<BlockActionFinished>,
++) {
++    use crate::respawn::DeadAction;
++    for (entity, mut results, mut log, break_q, place_q, use_q) in &mut query {
++        let refused = |id: u32, position: BlockPos| BlockActionResult {
++            id,
++            position,
++            outcome: BlockActionOutcome::Refused,
++            refusal: Some(BlockActionRefusal::Dead),
++            seq: None,
++            finish_ticks: None,
++            ack_ticks: None,
++            elapsed_ticks: 0,
++            before: BlockState::default(),
++        };
++        if let Some(q) = break_q {
++            results.next_id += 1;
++            let result = refused(results.next_id, q.position);
++            finished.write(BlockActionFinished { entity, is_break: true, result });
++            results.last_break = Some(result);
++            log.refuse(DeadAction::BreakBlock);
++            commands.entity(entity).remove::<BreakBlockQueued>();
++        }
++        if let Some(q) = place_q {
++            results.next_id += 1;
++            let result = refused(results.next_id, q.position.offset_with_direction(q.direction));
++            finished.write(BlockActionFinished { entity, is_break: false, result });
++            results.last_place = Some(result);
++            log.refuse(DeadAction::PlaceBlock);
++            commands.entity(entity).remove::<PlaceBlockQueued>();
++        }
++        if let Some(q) = use_q {
++            results.next_id += 1;
++            results.last_use = Some(UseBlockResult {
++                id: results.next_id,
++                position: q.position,
++                outcome: UseBlockOutcome::Refused,
++                refusal: Some(BlockActionRefusal::Dead),
++                seq: None,
++                elapsed_ticks: 0,
++                open_ticks: None,
++                ack_tick: None,
++            });
++            log.refuse(DeadAction::UseBlock);
++            commands.entity(entity).remove::<UseBlockQueued>();
++        }
++    }
++}
++
+ // Spec: specs/B6-placement-breaking.md §4.6 (acknowledgement and readback)
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ pub enum BlockActionOutcome {
+@@ -132,6 +205,8 @@ pub enum BlockActionRefusal {
+     /// The clicked block runs its own action on a right-click (opens, toggles), and the bot is not
+     /// crouching: a vanilla client crouches to place instead. Crouch first, or set `auto_crouch`.
+     BlockUsesClick,
++    /// The death screen is open: a vanilla client has no mouse then (patch 22).
++    Dead,
+ }
+ 
+ impl BlockActionRefusal {
+@@ -146,6 +221,7 @@ impl BlockActionRefusal {
+             Self::ScreenOpen => "a screen is open",
+             Self::Busy => "mining or using an item",
+             Self::BlockUsesClick => "block uses the click: crouch first (or auto_crouch) to place",
++            Self::Dead => "the death screen is open: a vanilla client has no mouse then",
+         }
+     }
+ }
+diff --git a/azalea-client/src/plugins/interact/mod.rs b/azalea-client/src/plugins/interact/mod.rs
+index 25bac66..adf9c99 100644
+--- a/azalea-client/src/plugins/interact/mod.rs
++++ b/azalea-client/src/plugins/interact/mod.rs
+@@ -331,7 +331,13 @@ pub fn handle_entity_interact(
+     mut commands: Commands,
+     client_query: Query<(&ClientMovementState, &EntityIdIndex, &HitResultComponent)>,
+     target_query: Query<&Position>,
++    mut dead: Query<&mut crate::respawn::RespawnLog, With<crate::respawn::DeathScreen>>,
+ ) {
++    // Patch 22: no mouse while the death screen is open.
++    if let Ok(mut log) = dead.get_mut(trigger.client) {
++        log.refuse(crate::respawn::DeadAction::InteractEntity);
++        return;
++    }
+     let Some((physics_state, entity_id_index, hit_result)) = client_query.get(trigger.client).ok()
+     else {
+         warn!(
+@@ -462,7 +468,16 @@ pub fn can_use_game_master_blocks(
+ pub struct SwingArmEvent {
+     pub entity: Entity,
+ }
+-pub fn handle_swing_arm_trigger(swing_arm: On<SwingArmEvent>, mut commands: Commands) {
++pub fn handle_swing_arm_trigger(
++    swing_arm: On<SwingArmEvent>,
++    mut commands: Commands,
++    mut dead: Query<&mut crate::respawn::RespawnLog, With<crate::respawn::DeathScreen>>,
++) {
++    // Patch 22: no mouse while the death screen is open.
++    if let Ok(mut log) = dead.get_mut(swing_arm.entity) {
++        log.refuse(crate::respawn::DeadAction::Swing);
++        return;
++    }
+     commands.trigger(SendGamePacketEvent::new(
+         swing_arm.entity,
+         ServerboundSwing {
+diff --git a/azalea-client/src/plugins/packet/game/events.rs b/azalea-client/src/plugins/packet/game/events.rs
+index 02be26f..1c4f550 100644
+--- a/azalea-client/src/plugins/packet/game/events.rs
++++ b/azalea-client/src/plugins/packet/game/events.rs
+@@ -11,7 +11,12 @@ use parking_lot::RwLock;
+ use tracing::{error, trace};
+ use uuid::Uuid;
+ 
+-use crate::{client::InGameState, connection::RawConnection, player::PlayerInfo};
++use crate::{
++    client::InGameState,
++    connection::RawConnection,
++    player::PlayerInfo,
++    respawn::{DeathScreen, RespawnLog},
++};
+ 
+ /// An event that's sent when we receive a packet.
+ /// ```
+@@ -55,6 +60,7 @@ impl SendGamePacketEvent {
+ pub fn handle_outgoing_packets_observer(
+     trigger: On<SendGamePacketEvent>,
+     mut query: Query<(&mut RawConnection, Option<&InGameState>)>,
++    mut dead: Query<&mut RespawnLog, With<DeathScreen>>,
+ ) {
+     let event = trigger.event();
+ 
+@@ -68,6 +74,11 @@ pub fn handle_outgoing_packets_observer(
+         }
+ 
+         trace!("Sending game packet: {:?}", event.packet);
++        // Patch 22: count what goes out while the death screen is open (the variant's name).
++        if let Ok(mut log) = dead.get_mut(event.sent_by) {
++            let text = format!("{:?}", event.packet);
++            log.note_sent(text.split(['(', ' ', '{']).next().unwrap_or(""));
++        }
+         if let Err(e) = raw_connection.write(event.packet.clone()) {
+             error!("Failed to send packet: {e}");
+         }
+diff --git a/azalea-client/src/plugins/packet/game/mod.rs b/azalea-client/src/plugins/packet/game/mod.rs
+index 0d9edd9..931b904 100644
+--- a/azalea-client/src/plugins/packet/game/mod.rs
++++ b/azalea-client/src/plugins/packet/game/mod.rs
+@@ -433,14 +433,19 @@ impl GamePacketHandler<'_> {
+ 
+         as_system::<(
+             Query<(&mut Physics, &mut LookDirection, &mut Position)>,
++            Query<&mut crate::respawn::DeathScreen>,
+             Commands,
+-        )>(self.ecs, |(mut query, mut commands)| {
++        )>(self.ecs, |(mut query, mut screens, mut commands)| {
+             let Ok((mut physics, mut direction, mut position)) = query.get_mut(self.player) else {
+                 return;
+             };
+ 
+             p.relative
+                 .apply(&p.change, &mut position, &mut direction, &mut physics);
++            // The server may turn a dead player; that is not our input (patch 22).
++            if let Ok(mut screen) = screens.get_mut(self.player) {
++                screen.locked_look = *direction;
++            }
+             // old_pos is set to the current position when we're teleported
+             physics.set_old_pos(*position);
+ 
+@@ -1359,12 +1364,13 @@ impl GamePacketHandler<'_> {
+                 &mut crate::respawn::RespawnLog,
+                 &TicksConnected,
+                 &Position,
++                &LookDirection,
+                 &WorldName,
+                 &Inventory,
+             )>,
+             MessageWriter<_>,
+         )>(self.ecs, |(mut commands, mut query, mut events)| {
+-            let (entity_id, has_screen, show, mut log, ticks, position, world_name, inventory) =
++            let (entity_id, has_screen, show, mut log, ticks, position, look, world_name, inventory) =
+                 query.get_mut(self.player).unwrap();
+ 
+             if *entity_id == p.player_id {
+@@ -1374,10 +1380,12 @@ impl GamePacketHandler<'_> {
+                     self.player,
+                     first,
+                     show.0,
++                    true,
+                     p.message.to_string(),
+                     ticks.0,
+                     &mut log,
+                     **position,
++                    *look,
+                     world_name,
+                     inventory,
+                 );
+@@ -1466,8 +1474,10 @@ impl GamePacketHandler<'_> {
+                 ));
+                 commands.trigger(ClientsideCloseContainerEvent { entity: self.player });
+             }
++            // Vanilla builds a new `LocalPlayer` for every respawn packet (death or dimension
++            // change), so the inventory is new each time; the server resends its contents.
++            *inventory = Inventory::default();
+             if was_dead {
+-                *inventory = Inventory::default();
+                 if let Ok(mut log) = logs.get_mut(self.player) {
+                     log.respawns += 1;
+                     if let Some(r) = log.last_respawn.as_mut() {
+@@ -1722,12 +1732,19 @@ impl GamePacketHandler<'_> {
+     pub fn set_held_slot(&mut self, p: &ClientboundSetHeldSlot) {
+         debug!("Got set held slot packet {p:?}");
+ 
+-        as_system::<Query<&mut Inventory>>(self.ecs, |mut query| {
+-            let mut inventory = query.get_mut(self.player).unwrap();
+-            if p.slot <= 8 {
+-                inventory.selected_hotbar_slot = p.slot as u8;
+-            }
+-        });
++        as_system::<(Query<&mut Inventory>, Query<&mut crate::respawn::DeathScreen>)>(
++            self.ecs,
++            |(mut query, mut screens)| {
++                let mut inventory = query.get_mut(self.player).unwrap();
++                if p.slot <= 8 {
++                    inventory.selected_hotbar_slot = p.slot as u8;
++                    // The server may change a dead player's slot; that is not our input.
++                    if let Ok(mut screen) = screens.get_mut(self.player) {
++                        screen.locked_slot = p.slot as u8;
++                    }
++                }
++            },
++        );
+     }
+     // Null fork: vanilla `ClientPacketListener#handleSetPlayerInventory` sets one slot in the
+     // player inventory's own numbering (0-8 hotbar, 9-35 main, 36-39 armour, 40 offhand).
+diff --git a/azalea-client/src/plugins/packet/mod.rs b/azalea-client/src/plugins/packet/mod.rs
+index 511c0c8..f5fc270 100644
+--- a/azalea-client/src/plugins/packet/mod.rs
++++ b/azalea-client/src/plugins/packet/mod.rs
+@@ -1,4 +1,4 @@
+-use azalea_entity::{LocalEntity, Position, inventory::Inventory, metadata::Health};
++use azalea_entity::{LocalEntity, LookDirection, Position, inventory::Inventory, metadata::Health};
+ use azalea_world::WorldName;
+ use bevy_app::{App, Plugin, Update};
+ use bevy_ecs::{
+@@ -9,6 +9,7 @@ use bevy_ecs::{
+ use self::game::DeathEvent;
+ use crate::{
+     client_chat::ChatReceivedEvent,
++    inventory::{CloseContainerEvent, OpenScreen},
+     respawn::{DeathScreen, RespawnLog, ShowDeathScreen, begin_death},
+     tick_counter::TicksConnected,
+ };
+@@ -21,7 +22,10 @@ pub mod relative_updates;
+ pub struct PacketPlugin;
+ 
+ /// Health at or below 0 on a local player opens the death screen when no kill packet did
+-/// (`Minecraft#tick` -> `setScreen(null)`); other entities just get the event.
++/// (`Minecraft#tick` -> `setScreen(null)`); other entities just get the event. `Minecraft#tick`
++/// leaves a screen that is open alone; a container screen then closes itself on its own tick
++/// (`AbstractContainerScreen#tick` -> `LocalPlayer#closeContainer`, which sends the close) and
++/// the death screen follows in that same tick.
+ // Spec: specs/B2-survival-upkeep.md §4.7
+ #[allow(clippy::type_complexity)]
+ pub fn death_event_on_0_health(
+@@ -32,8 +36,10 @@ pub fn death_event_on_0_health(
+         &mut RespawnLog,
+         &TicksConnected,
+         &Position,
++        &LookDirection,
+         &WorldName,
+         &Inventory,
++        Has<OpenScreen>,
+     )>,
+     mut death_events: MessageWriter<DeathEvent>,
+ ) {
+@@ -41,16 +47,24 @@ pub fn death_event_on_0_health(
+         if **health > 0. {
+             continue;
+         }
+-        if is_local && let Ok((show, mut log, ticks, position, world_name, inventory)) = local.get_mut(entity) {
++        if is_local
++            && let Ok((show, mut log, ticks, position, look, world_name, inventory, screen_open)) =
++                local.get_mut(entity)
++        {
++            if screen_open {
++                commands.trigger(CloseContainerEvent { entity, id: inventory.id });
++            }
+             begin_death(
+                 &mut commands,
+                 entity,
+                 true,
+                 show.0,
++                false,
+                 String::new(),
+                 ticks.0,
+                 &mut log,
+                 **position,
++                *look,
+                 world_name,
+                 inventory,
+             );
+@@ -71,7 +85,10 @@ impl Plugin for PacketPlugin {
+         .add_observer(game::handle_outgoing_packets_observer)
+         .add_observer(config::handle_outgoing_packets_observer)
+         .add_observer(login::handle_outgoing_packets_observer)
+-        .add_systems(Update, death_event_on_0_health)
++        .add_systems(
++            Update,
++            death_event_on_0_health.after(azalea_entity::clamp_look_direction),
++        )
+         .add_message::<game::ReceiveGamePacketEvent>()
+         .add_message::<config::ReceiveConfigPacketEvent>()
+         .add_message::<login::ReceiveLoginPacketEvent>()
+diff --git a/azalea-client/src/plugins/respawn.rs b/azalea-client/src/plugins/respawn.rs
+index d098bfc..cf992f9 100644
+--- a/azalea-client/src/plugins/respawn.rs
++++ b/azalea-client/src/plugins/respawn.rs
+@@ -6,9 +6,18 @@
+ //! (`DeathScreen#tick`), and a click sends `PERFORM_RESPAWN` (`LocalPlayer#respawn`). With the
+ //! "immediate respawn" rule the client sends it at once and shows no screen. The screen replaces
+ //! any open container screen, so all keys are released while dead.
++//!
++//! Patch 22 (nothing while dead). With a screen open `Minecraft#tick` skips `handleKeybinds` and
++//! `setScreen` releases the mouse and every key (`KeyMapping#releaseAll`), so a dead client makes
++//! no movement, look change, slot select, swap, drop, attack, use, break or place. What it still
++//! sends each tick is the position packet (`LocalPlayer#sendPosition`, falls and slides included),
++//! the client tick end, a sprint stop and one input packet for the released keys, answers to the
++//! server (keep-alive, pong, teleport), and the respawn packet. [`DeadAction`] lists what the fork
++//! refuses; [`RespawnLog::sent_while_dead`] counts what it sent.
+ 
+ use azalea_core::{position::Vec3, tick::GameTick};
+-use azalea_entity::inventory::Inventory;
++use azalea_entity::{Jumping, LookDirection, inventory::Inventory};
++use azalea_physics::client_movement::{ClientMovementState, WalkDirection};
+ use azalea_inventory::ItemStack;
+ use azalea_protocol::packets::game::s_client_command::{self, ServerboundClientCommand};
+ use azalea_world::WorldName;
+@@ -16,7 +25,19 @@ use bevy_app::{App, Plugin, Update};
+ use bevy_ecs::prelude::*;
+ use tracing::debug;
+ 
+-use crate::{packet::game::SendGamePacketEvent, tick_counter::TicksConnected};
++use crate::{
++    attack::{AttackQueued, handle_attack_queued},
++    block_actions::{
++        AutoCrouchHold, LookAtBlockQueued, StopMiningQueued, handle_break_block_queued,
++        handle_look_at_block_queued,
++    },
++    interact::{StartUseItemQueued, handle_start_use_item_queued},
++    inventory::{ensure_has_sent_carried_item, hold_still_while_screen_open},
++    item_use::{ReleaseUseItemQueued, SwapOffhandQueued, UseItemQueued, handle_use_item_queued},
++    mining::{LeftClickMine, Mining, MiningQueued, MiningSystems},
++    packet::game::SendGamePacketEvent,
++    tick_counter::TicksConnected,
++};
+ 
+ /// The respawn button is active from this screen tick (`DeathScreen#tick`: `delayTicker == 20`).
+ pub const RESPAWN_BUTTON_TICKS: u32 = 20;
+@@ -61,6 +82,10 @@ pub struct DeathScreen {
+     /// A request came before the button was active and waits for it.
+     pub held_request: bool,
+     pub opened_tick: u64,
++    /// The look and held slot when the screen opened: a vanilla client cannot change them now.
++    /// Server updates (teleport, held slot packet) replace them.
++    pub locked_look: LookDirection,
++    pub locked_slot: u8,
+ }
+ 
+ /// What we remember of a death. `tick` counts like [`TicksConnected`].
+@@ -83,6 +108,62 @@ pub struct RespawnRecord {
+     pub immediate: bool,
+     /// The tick the server's respawn packet arrived.
+     pub completed_tick: Option<u64>,
++    /// Respawn packets sent for this death. With immediate respawn a vanilla client sends one in
++    /// the kill packet's handler and one per tick after, until the respawn arrives
++    /// (`Minecraft#tick` -> `setScreen(null)` -> `LocalPlayer#respawn`).
++    pub sends: u32,
++}
++
++/// An input-driven action that a vanilla client cannot make while the death screen is open.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum DeadAction {
++    Walk,
++    Sprint,
++    Sneak,
++    Jump,
++    Look,
++    SelectSlot,
++    SwapOffhand,
++    Attack,
++    UseItem,
++    ReleaseUse,
++    BreakBlock,
++    StopBreak,
++    PlaceBlock,
++    UseBlock,
++    LookAtBlock,
++    InteractEntity,
++    Swing,
++    Goto,
++}
++
++impl DeadAction {
++    pub fn name(self) -> &'static str {
++        match self {
++            DeadAction::Walk => "walk",
++            DeadAction::Sprint => "sprint",
++            DeadAction::Sneak => "sneak",
++            DeadAction::Jump => "jump",
++            DeadAction::Look => "look",
++            DeadAction::SelectSlot => "select_slot",
++            DeadAction::SwapOffhand => "swap_offhand",
++            DeadAction::Attack => "attack",
++            DeadAction::UseItem => "use_item",
++            DeadAction::ReleaseUse => "release_use",
++            DeadAction::BreakBlock => "break_block",
++            DeadAction::StopBreak => "stop_break",
++            DeadAction::PlaceBlock => "place_block",
++            DeadAction::UseBlock => "use_block",
++            DeadAction::LookAtBlock => "look_at_block",
++            DeadAction::InteractEntity => "interact_entity",
++            DeadAction::Swing => "swing",
++            DeadAction::Goto => "goto",
++        }
++    }
++
++    pub fn reason(self) -> &'static str {
++        "the death screen is open: a vanilla client has no keys or mouse then"
++    }
+ }
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+@@ -110,6 +191,29 @@ pub struct RespawnLog {
+     pub last_death: Option<DeathRecord>,
+     pub last_respawn: Option<RespawnRecord>,
+     pub last_refusal: Option<RespawnRefusal>,
++    /// Actions refused since the last death began, with how many times (patch 22).
++    pub refused_while_dead: Vec<(DeadAction, u32)>,
++    /// Game packets sent since the last death began, by name, up to the respawn packet.
++    pub sent_while_dead: Vec<(String, u32)>,
++}
++
++impl RespawnLog {
++    /// Notes a refused action (nothing was sent).
++    pub fn refuse(&mut self, action: DeadAction) {
++        debug!("{} refused on the client: {}", action.name(), action.reason());
++        match self.refused_while_dead.iter_mut().find(|(a, _)| *a == action) {
++            Some((_, n)) => *n += 1,
++            None => self.refused_while_dead.push((action, 1)),
++        }
++    }
++
++    /// Notes a packet sent while the death screen was open.
++    pub fn note_sent(&mut self, name: &str) {
++        match self.sent_while_dead.iter_mut().find(|(n, _)| n == name) {
++            Some((_, n)) => *n += 1,
++            None => self.sent_while_dead.push((name.to_string(), 1)),
++        }
++    }
+ }
+ 
+ /// Whether a request may go out, and whether it must wait (pure; the tests cover it).
+@@ -132,28 +236,43 @@ pub fn check_respawn_request(
+ impl DeathScreen {
+     /// `shown` follows [`ShowDeathScreen`].
+     pub fn open(shown: bool, message: String, tick: u64) -> Self {
+-        Self { ticks: 0, shown, message, respawn_sent: false, held_request: false, opened_tick: tick }
++        Self {
++            ticks: 0,
++            shown,
++            message,
++            respawn_sent: false,
++            held_request: false,
++            opened_tick: tick,
++            locked_look: LookDirection::default(),
++            locked_slot: 0,
++        }
+     }
+ }
+ 
+ /// Opens the death state: the first death is recorded, a repeat only resets the screen.
+ /// Returns true when this is the first of the death. Shared by the packet handler and the
+-/// 0-health tick.
++/// 0-health tick. `from_packet`: the kill packet's handler sends the respawn itself when the rules
++/// show no screen (`ClientPacketListener#handlePlayerCombatKill`); the 0-health path leaves it to
++/// the tick (`Minecraft#tick`).
+ // Spec: specs/B2-survival-upkeep.md §4.7
+ pub fn begin_death(
+     commands: &mut Commands,
+     entity: Entity,
+     first: bool,
+     show: bool,
++    from_packet: bool,
+     message: String,
+     tick: u64,
+     log: &mut RespawnLog,
+     position: Vec3,
++    look: LookDirection,
+     dimension: &WorldName,
+     inventory: &Inventory,
+ ) {
+     if first {
+         log.deaths += 1;
++        log.refused_while_dead.clear();
++        log.sent_while_dead.clear();
+         log.last_death = Some(DeathRecord {
+             tick,
+             position,
+@@ -161,9 +280,22 @@ pub fn begin_death(
+             message: message.clone(),
+             slots: inventory.inventory_menu.slots(),
+         });
++        // The screen releases every key (`KeyMapping#releaseAll`); that is not a refusal.
++        commands.entity(entity).queue(|mut e: EntityWorldMut| {
++            if let Some(mut mv) = e.get_mut::<ClientMovementState>() {
++                mv.move_direction = WalkDirection::None;
++                mv.trying_to_sprint = false;
++                mv.trying_to_crouch = false;
++            }
++            if let Some(mut jumping) = e.get_mut::<Jumping>() {
++                **jumping = false;
++            }
++        });
+     }
+     let mut screen = DeathScreen::open(show, message, tick);
+-    if !show {
++    screen.locked_look = look;
++    screen.locked_slot = inventory.selected_hotbar_slot;
++    if !show && from_packet {
+         // No screen: the client respawns at once (`LocalPlayer#respawn`).
+         send_respawn(commands, entity, &mut screen, log, tick);
+     }
+@@ -182,6 +314,10 @@ fn send_respawn(
+         entity,
+         ServerboundClientCommand { action: s_client_command::Action::PerformRespawn },
+     ));
++    if screen.respawn_sent && let Some(r) = log.last_respawn.as_mut() {
++        r.sends += 1;
++        return;
++    }
+     screen.respawn_sent = true;
+     screen.held_request = false;
+     log.last_respawn = Some(RespawnRecord {
+@@ -189,6 +325,7 @@ fn send_respawn(
+         screen_ticks: screen.ticks,
+         immediate: !screen.shown,
+         completed_tick: None,
++        sends: 1,
+     });
+ }
+ 
+@@ -202,6 +339,21 @@ impl Plugin for RespawnPlugin {
+             .add_systems(
+                 GameTick,
+                 tick_death_screen.after(crate::tick_counter::increment_counter),
++            )
++            // After whatever sets input (the host, the pathfinder), before everything that acts on it.
++            .add_systems(
++                GameTick,
++                refuse_input_while_dead
++                    .after(tick_death_screen)
++                    .after(crate::block_actions::refuse_block_actions_while_dead)
++                    .before(handle_attack_queued)
++                    .before(handle_use_item_queued)
++                    .before(handle_start_use_item_queued)
++                    .before(handle_break_block_queued)
++                    .before(handle_look_at_block_queued)
++                    .before(ensure_has_sent_carried_item)
++                    .before(hold_still_while_screen_open)
++                    .before(MiningSystems),
+             );
+     }
+ }
+@@ -239,12 +391,98 @@ pub fn tick_death_screen(
+ ) {
+     for (entity, mut screen, mut log, ticks) in &mut query {
+         screen.ticks = screen.ticks.saturating_add(1);
+-        if screen.held_request && !screen.respawn_sent && screen.ticks >= RESPAWN_BUTTON_TICKS {
++        if !screen.shown {
++            // `Minecraft#tick`: dead with no screen -> `setScreen(null)` -> `respawn()`, every tick
++            // until the respawn packet replaces the player.
++            send_respawn(&mut commands, entity, &mut screen, &mut log, ticks.0);
++        } else if screen.held_request && !screen.respawn_sent && screen.ticks >= RESPAWN_BUTTON_TICKS {
+             send_respawn(&mut commands, entity, &mut screen, &mut log, ticks.0);
+         }
+     }
+ }
+ 
++/// Refuses what a vanilla client cannot do with the death screen open: `handleKeybinds` does not
++/// run and the keys and mouse are released, so no movement, look, slot select, swap, attack, use,
++/// break or place. Queued actions are dropped, input written by the caller is undone, and each
++/// refusal is noted in [`RespawnLog::refused_while_dead`]. Block commands are refused in
++/// `block_actions.rs` (they carry a result); the pathfinder stops itself (`azalea` crate).
++// Spec: specs/F1-swarm-runtime.md §4.4 (a dead bot sends only what the death screen sends)
++#[allow(clippy::type_complexity)]
++pub fn refuse_input_while_dead(
++    mut commands: Commands,
++    mut query: Query<(
++        Entity,
++        &DeathScreen,
++        &mut RespawnLog,
++        (&mut ClientMovementState, &mut Jumping, &mut LookDirection, &mut Inventory),
++        (
++            Has<AttackQueued>,
++            Has<UseItemQueued>,
++            Has<ReleaseUseItemQueued>,
++            Has<SwapOffhandQueued>,
++            Has<StartUseItemQueued>,
++            Has<MiningQueued>,
++            Has<StopMiningQueued>,
++            Has<LookAtBlockQueued>,
++        ),
++        (Has<Mining>, Has<LeftClickMine>, Has<AutoCrouchHold>),
++    )>,
++) {
++    for (
++        entity,
++        screen,
++        mut log,
++        (mut mv, mut jumping, mut look, mut inventory),
++        (attack, use_item, release, swap, start_use, mine, stop_mine, look_at),
++        (mining, left_click, auto_crouch),
++    ) in &mut query
++    {
++        for (is_set, action) in [
++            (attack, DeadAction::Attack),
++            (use_item || start_use, DeadAction::UseItem),
++            (release, DeadAction::ReleaseUse),
++            (swap, DeadAction::SwapOffhand),
++            (mine, DeadAction::BreakBlock),
++            (stop_mine, DeadAction::StopBreak),
++            (look_at, DeadAction::LookAtBlock),
++            (mv.move_direction != WalkDirection::None, DeadAction::Walk),
++            (mv.trying_to_sprint, DeadAction::Sprint),
++            (mv.trying_to_crouch, DeadAction::Sneak),
++            (**jumping, DeadAction::Jump),
++            (*look != screen.locked_look, DeadAction::Look),
++            (inventory.selected_hotbar_slot != screen.locked_slot, DeadAction::SelectSlot),
++        ] {
++            if is_set {
++                log.refuse(action);
++            }
++        }
++        mv.move_direction = WalkDirection::None;
++        mv.trying_to_sprint = false;
++        mv.trying_to_crouch = false;
++        **jumping = false;
++        *look = screen.locked_look;
++        inventory.selected_hotbar_slot = screen.locked_slot;
++        // A mining in progress ends without a packet (no `handleKeybinds` to continue or stop it).
++        if attack || use_item || release || swap || start_use || mine || stop_mine || look_at || mining
++            || left_click || auto_crouch
++        {
++            commands.entity(entity).remove::<(
++                AttackQueued,
++                UseItemQueued,
++                ReleaseUseItemQueued,
++                SwapOffhandQueued,
++                StartUseItemQueued,
++                MiningQueued,
++                StopMiningQueued,
++                LookAtBlockQueued,
++                Mining,
++                LeftClickMine,
++                AutoCrouchHold,
++            )>();
++        }
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/azalea-client/tests/simulation/respawn_like_vanilla.rs b/azalea-client/tests/simulation/respawn_like_vanilla.rs
+index dedf5f8..1ba5c7f 100644
+--- a/azalea-client/tests/simulation/respawn_like_vanilla.rs
++++ b/azalea-client/tests/simulation/respawn_like_vanilla.rs
+@@ -1,7 +1,17 @@
++use azalea_registry::DataRegistry;
+ use azalea_client::{
+-    respawn::{DeathScreen, PerformRespawnEvent, RespawnLog},
++    ClientMovementState, WalkDirection,
++    attack::AttackQueued,
++    block_actions::{BlockActionRefusal, BlockActionResults, BreakBlockQueued, PlaceBlockQueued},
++    inventory::OpenScreen,
++    item_use::{SwapOffhandQueued, UseItemQueued},
++    respawn::{DeadAction, DeathScreen, PerformRespawnEvent, RespawnLog},
+     test_utils::prelude::*,
+ };
++use azalea_core::direction::Direction;
++use azalea_core::position::BlockPos;
++use azalea_entity::{Jumping, LookDirection, inventory::Inventory, metadata::Health};
++use azalea_protocol::packets::game::{ClientboundSetHealth, s_interact::InteractionHand};
+ use azalea_chat::FormattedText;
+ use azalea_protocol::packets::{
+     ConnectionProtocol,
+@@ -71,7 +81,8 @@ fn immediate_respawn_sends_at_once_without_a_request() {
+     s.tick();
+     sent.clear();
+     kill(&mut s);
+-    assert_eq!(respawns(&sent), 1);
++    // the kill packet's handler, then the tick (see the repeat test below)
++    assert_eq!(respawns(&sent), 2);
+     let r = s.component::<RespawnLog>().last_respawn.clone().unwrap();
+     assert!(r.immediate);
+     assert_eq!(r.screen_ticks, 0);
+@@ -87,3 +98,135 @@ fn a_request_while_alive_is_refused_and_sends_nothing() {
+     assert_eq!(respawns(&sent), 0);
+     assert!(s.component::<RespawnLog>().last_refusal.is_some());
+ }
++
++fn names_sent(sent: &SentPackets) -> Vec<String> {
++    sent.list
++        .lock()
++        .iter()
++        .map(|p| format!("{p:?}").split(['(', ' ', '{']).next().unwrap().to_string())
++        .collect()
++}
++
++fn count(sent: &SentPackets, name: &str) -> usize {
++    names_sent(sent).iter().filter(|n| *n == name).count()
++}
++
++// Patch 22: `Minecraft#handleKeybinds` does not run with the death screen open.
++#[test]
++fn input_is_refused_and_sends_nothing_while_dead() {
++    let _lock = init();
++    let (mut s, sent) = setup();
++    kill(&mut s);
++    sent.clear();
++    let e = s.entity;
++    let eid = s.minecraft_entity_id();
++    let _ = eid;
++    {
++        let mut w = s.app.world_mut().entity_mut(e);
++        w.insert((
++            AttackQueued { target: e },
++            UseItemQueued { hand: InteractionHand::MainHand },
++            SwapOffhandQueued,
++            BreakBlockQueued { position: BlockPos::new(0, 60, 0) },
++            PlaceBlockQueued { position: BlockPos::new(0, 60, 0), direction: Direction::Up, auto_crouch: false },
++        ));
++        let mut mv = w.get_mut::<ClientMovementState>().unwrap();
++        mv.move_direction = WalkDirection::Forward;
++        mv.trying_to_sprint = true;
++        mv.trying_to_crouch = true;
++        **w.get_mut::<Jumping>().unwrap() = true;
++        let mut look = w.get_mut::<LookDirection>().unwrap();
++        *look = LookDirection::new(90., 10.);
++        w.get_mut::<Inventory>().unwrap().selected_hotbar_slot = 4;
++    }
++    s.tick();
++    let log = s.component::<RespawnLog>();
++    for action in [
++        DeadAction::Attack,
++        DeadAction::UseItem,
++        DeadAction::SwapOffhand,
++        DeadAction::BreakBlock,
++        DeadAction::PlaceBlock,
++        DeadAction::Walk,
++        DeadAction::Sprint,
++        DeadAction::Sneak,
++        DeadAction::Jump,
++        DeadAction::Look,
++        DeadAction::SelectSlot,
++    ] {
++        assert!(log.refused_while_dead.iter().any(|(a, _)| *a == action), "{action:?} not refused");
++    }
++    let results = s.component::<BlockActionResults>();
++    assert_eq!(results.last_place.unwrap().refusal, Some(BlockActionRefusal::Dead));
++    assert_eq!(results.last_break.unwrap().refusal, Some(BlockActionRefusal::Dead));
++    s.with_component(|inv: &Inventory| assert_eq!(inv.selected_hotbar_slot, 0));
++    s.with_component(|l: &LookDirection| assert_eq!(*l, LookDirection::default()));
++    for name in ["Swing", "Interact", "UseItem", "UseItemOn", "PlayerAction", "SetCarriedItem", "ContainerClick"] {
++        assert_eq!(count(&sent, name), 0, "{name} went out while dead: {:?}", names_sent(&sent));
++    }
++    assert_eq!(count(&sent, "PlayerCommand"), 0, "no sprint start: {:?}", names_sent(&sent));
++}
++
++// `Minecraft#tick` -> `setScreen(null)` -> `LocalPlayer#respawn` runs every tick while dead with no
++// screen; the kill packet's handler sent the first.
++#[test]
++fn immediate_respawn_repeats_every_tick_until_the_respawn() {
++    let _lock = init();
++    let (mut s, sent) = setup();
++    s.receive_packet(ClientboundGameEvent { event: EventType::ImmediateRespawn, param: 1.0 });
++    s.tick();
++    sent.clear();
++    kill(&mut s);
++    assert_eq!(respawns(&sent), 2, "the packet handler, then the tick");
++    for _ in 0..3 {
++        s.tick();
++    }
++    assert_eq!(respawns(&sent), 5);
++    assert_eq!(s.component::<RespawnLog>().last_respawn.unwrap().sends, 5);
++}
++
++// 0 health with no kill packet: only `Minecraft#tick` notices, so the first send is in the tick.
++#[test]
++fn zero_health_with_immediate_respawn_sends_from_the_tick() {
++    let _lock = init();
++    let (mut s, sent) = setup();
++    s.receive_packet(ClientboundGameEvent { event: EventType::ImmediateRespawn, param: 1.0 });
++    s.tick();
++    sent.clear();
++    s.receive_packet(ClientboundSetHealth { health: 0., food: 20, saturation: 5. });
++    s.tick();
++    assert!(s.has_component::<DeathScreen>());
++    assert_eq!(respawns(&sent), 1);
++    s.tick();
++    assert_eq!(respawns(&sent), 2);
++}
++
++// `AbstractContainerScreen#tick` closes a screen of a dead player, and sends the close.
++#[test]
++fn zero_health_closes_the_open_screen_with_a_packet() {
++    let _lock = init();
++    let (mut s, sent) = setup();
++    let e = s.entity;
++    s.app.world_mut().entity_mut(e).insert(OpenScreen::default());
++    sent.clear();
++    s.receive_packet(ClientboundSetHealth { health: 0., food: 20, saturation: 5. });
++    s.tick();
++    assert!(s.has_component::<DeathScreen>());
++    assert!(!s.has_component::<OpenScreen>());
++    assert_eq!(count(&sent, "ContainerClose"), 1, "{:?}", names_sent(&sent));
++    let _ = Health(0.);
++}
++
++// `ClientPacketListener#handleRespawn` makes a new player for every respawn packet.
++#[test]
++fn a_dimension_respawn_starts_a_new_inventory() {
++    let _lock = init();
++    let (mut s, _sent) = setup();
++    s.with_component_mut(|inv: &mut Inventory| inv.selected_hotbar_slot = 5);
++    s.receive_packet(make_basic_respawn_packet(
++        azalea_registry::data::DimensionKind::new_raw(0),
++        azalea_registry::identifier::Identifier::new("minecraft:overworld"),
++    ));
++    s.tick();
++    s.with_component(|inv: &Inventory| assert_eq!(inv.selected_hotbar_slot, 0));
++}
+diff --git a/azalea/src/pathfinder/mod.rs b/azalea/src/pathfinder/mod.rs
+index 5f4a80c..ad3dc46 100644
+--- a/azalea/src/pathfinder/mod.rs
++++ b/azalea/src/pathfinder/mod.rs
+@@ -94,10 +94,14 @@ impl Plugin for PathfinderPlugin {
+                     goto_listener,
+                     handle_tasks,
+                     stop_pathfinding_on_world_change,
++                    stop_pathfinding_while_dead,
+                     path_found_listener,
+                     handle_stop_pathfinding_event,
+                 )
+                     .chain()
++                    // They share `RespawnLog` with the goto refusal; their writes are separate fields.
++                    .ambiguous_with(azalea_client::respawn::perform_respawn)
++                    .ambiguous_with(azalea_client::packet::death_event_on_0_health)
+                     .before(MoveEventsSystems)
+                     .before(InventorySystems)
+                     .in_set(PathfinderSystems),
+@@ -312,12 +316,18 @@ pub fn goto_listener(
+         &Inventory,
+         Option<&CustomPathfinderState>,
+     )>,
++    mut dead: Query<&mut azalea_client::respawn::RespawnLog, With<azalea_client::respawn::DeathScreen>>,
+     worlds: Res<Worlds>,
+ ) {
+     let _bt = azalea_client::bench_metrics::Timer::new(azalea_client::bench_metrics::Kind::PfGotoListener);
+     let thread_pool = AsyncComputeTaskPool::get();
+ 
+     for event in events.read() {
++        // Patch 22: a dead client has no keys to walk with.
++        if let Ok(mut log) = dead.get_mut(event.entity) {
++            log.refuse(azalea_client::respawn::DeadAction::Goto);
++            continue;
++        }
+         let Ok((
+             mut pathfinder,
+             executing_path,
+@@ -846,6 +856,20 @@ pub fn handle_stop_pathfinding_event(
+     }
+ }
+ 
++/// Stops a goal, a search or a path at once while the death screen is open (patch 22): a dead
++/// client has released every key, and its goal does not survive the death (F1 §4.4).
++// Spec: specs/F1-swarm-runtime.md §4.4
++pub fn stop_pathfinding_while_dead(
++    query: Query<(Entity, &Pathfinder, Has<ExecutingPath>), With<azalea_client::respawn::DeathScreen>>,
++    mut stop_pathfinding_events: MessageWriter<StopPathfindingEvent>,
++) {
++    for (entity, pathfinder, executing) in &query {
++        if executing || pathfinder.goal.is_some() || pathfinder.is_calculating {
++            stop_pathfinding_events.write(StopPathfindingEvent { entity, force: true });
++        }
++    }
++}
++
+ pub fn stop_pathfinding_on_world_change(
+     mut query: Query<(Entity, &mut ExecutingPath), Changed<WorldName>>,
+     mut stop_pathfinding_events: MessageWriter<StopPathfindingEvent>,

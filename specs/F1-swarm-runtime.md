@@ -87,7 +87,7 @@ offline → connecting → spawned → idle ⇄ on_job
 ```
 
 - Every transition is an event with a timestamp. `on_job` carries the job id.
-- On death the runtime reports the death position and inventory snapshot (for recovery by B2/C3), then respawns.
+- On death the runtime reports the death position and inventory snapshot (for recovery by B2/C3), then respawns. The report is the `Died` host event of the tick that first sees the death; every reflex and skill sees `life()` dead (then respawn pending) from that tick until the respawn. The running skill decides through `Skill::on_death(view, death) -> AfterDeath`, called once at the death tick: `End` (the default) ends it with `failed("died")` that tick; `Keep` keeps it, stepped each tick while dead (its commands are refused) and, as the same instance, after the respawn. A job does not survive a disconnect. A dead bot sends only what a death screen sends (patch 22): every other action is refused on the client with a reason.
 - On disconnect mid-job, the job returns `failed(disconnected)` unless it is `checkpoint: resumable`, in which case it resumes from its checkpoint (ARCHITECTURE §3.8, §3.14).
 
 ### 4.5 Bot agent runtime (reflex host, skill executor, fallback)

@@ -55,6 +55,11 @@ pub trait BotCommands {
     /// Click `slot` of the open window (`None` = outside it, for dropping the carried stack).
     /// Read the result from `BotView::last_click`.
     fn click_slot(&mut self, slot: Option<u16>, click: Click);
+    // Spec: specs/F1-swarm-runtime.md §4.4 (respawn like the death screen's button)
+    /// Ask to respawn. Held until the death screen's button is active (20 ticks after it opened),
+    /// then sent. Refused with a reason, sending nothing, when not dead or in hardcore
+    /// (`BotView::respawn_refusal`).
+    fn respawn(&mut self);
 }
 
 /// One command as data; the fake records these and adapters may queue them.
@@ -81,4 +86,5 @@ pub enum Command {
     OpenContainer { pos: BlockPos, face: Option<Face> },
     CloseWindow,
     ClickSlot { slot: Option<u16>, click: Click },
+    Respawn,
 }

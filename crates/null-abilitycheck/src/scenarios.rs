@@ -38,6 +38,10 @@ pub struct Ctx {
     pub ops: Sender<Op>,
     pub reports: Receiver<Report>,
     pub log: PathBuf,
+    /// The host's bot state changes (A12 times deaths with them).
+    pub events: Receiver<mc_adapter::HostEvent>,
+    /// What the bot's death probe reflex saw (A12).
+    pub probe: crate::skill_respawn::SharedProbe,
 }
 
 /// Entity-selector bounds for a test area, so cleanup never touches another run's area.

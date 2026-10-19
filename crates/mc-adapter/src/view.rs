@@ -49,6 +49,12 @@ pub struct ViewParts<'a> {
     pub clicks: Option<&'a azalea::inventory::ClickResults>,
     /// The bot is holding the crouch key (the input the server is sent that tick).
     pub sneaking: bool,
+    /// The fork's record of deaths and respawns (patch 21).
+    pub respawn_log: Option<&'a azalea::respawn::RespawnLog>,
+    /// Present while the death screen is up (patch 21).
+    pub death_screen: Option<&'a azalea::respawn::DeathScreen>,
+    /// The client's own tick count (`TicksConnected`), to put the fork's ticks on the host clock.
+    pub client_tick: u64,
 }
 
 /// Other entities, for `BotView::entities`.
@@ -79,6 +85,7 @@ pub struct AzaleaView<'a, 'w, 's> {
     attackers: OnceCell<Vec<api::Attacker>>,
     shield_hits: OnceCell<Vec<api::ShieldHit>>,
     window: OnceCell<Option<api::Window>>,
+    death: OnceCell<Option<api::Death>>,
 }
 
 fn v3(v: azalea::Vec3) -> api::Vec3 {
@@ -88,6 +95,11 @@ fn v3(v: azalea::Vec3) -> api::Vec3 {
 const DAMAGE_TYPE: &str = "minecraft:damage_type";
 
 impl AzaleaView<'_, '_, '_> {
+    /// A fork tick (`TicksConnected`) on the host clock: both advance once per game tick.
+    fn host_tick(&self, client_tick: u64) -> u64 {
+        (self.p.tick + client_tick).saturating_sub(self.p.client_tick)
+    }
+
     fn stack(&self, s: &azalea::inventory::ItemStack) -> Option<api::ItemStack> {
         match s {
             azalea::inventory::ItemStack::Empty => None,
@@ -163,6 +175,7 @@ impl<'a, 'w, 's> AzaleaView<'a, 'w, 's> {
             attackers: OnceCell::new(),
             shield_hits: OnceCell::new(),
             window: OnceCell::new(),
+            death: OnceCell::new(),
         }
     }
 }
@@ -381,6 +394,62 @@ impl BotView for AzaleaView<'_, '_, '_> {
     }
     fn open_refusal(&self) -> Option<&'static str> {
         self.p.clicks?.open_refusal.map(|r| r.reason())
+    }
+    // Spec: specs/B2-survival-upkeep.md §4.7 (position and inventory at death)
+    fn last_death(&self) -> Option<&api::Death> {
+        self.death
+            .get_or_init(|| {
+                let d = self.p.respawn_log?.last_death.as_ref()?;
+                let slot = |i: usize| d.slots.get(i).and_then(|s| self.stack(s));
+                Some(api::Death {
+                    tick: self.host_tick(d.tick),
+                    position: v3(d.position),
+                    dimension: d.dimension.to_string(),
+                    message: d.message.clone(),
+                    // Player menu: 5-8 armour (head first), 9-35 main, 36-44 hotbar, 45 offhand.
+                    inventory: std::array::from_fn(|i| slot(if i < 9 { 36 + i } else { i })),
+                    armor: std::array::from_fn(|i| slot(5 + i)),
+                    offhand: slot(45),
+                })
+            })
+            .as_ref()
+    }
+    // Spec: specs/F1-swarm-runtime.md §4.4 (death count)
+    fn deaths(&self) -> u32 {
+        self.p.respawn_log.map_or(0, |l| l.deaths)
+    }
+    fn last_respawn(&self) -> Option<api::RespawnSent> {
+        let r = self.p.respawn_log?.last_respawn.as_ref()?;
+        Some(api::RespawnSent {
+            sent_tick: self.host_tick(r.sent_tick),
+            screen_ticks: r.screen_ticks,
+            immediate: r.immediate,
+            completed_tick: r.completed_tick.map(|t| self.host_tick(t)),
+            sends: r.sends,
+        })
+    }
+    // Spec: specs/F1-swarm-runtime.md §4.4 (dead, then respawn pending, every tick until the respawn)
+    fn life(&self) -> api::Life {
+        let Some(screen) = self.p.death_screen else { return api::Life::Alive };
+        match self.p.respawn_log.and_then(|l| l.last_respawn.as_ref()).filter(|_| screen.respawn_sent) {
+            Some(r) => api::Life::RespawnPending { since_tick: self.host_tick(r.sent_tick) },
+            None => api::Life::Dead { since_tick: self.host_tick(screen.opened_tick) },
+        }
+    }
+    // Spec: specs/F1-swarm-runtime.md §4.4 (nothing while dead)
+    fn refused_while_dead(&self) -> Vec<api::DeadRefusal> {
+        self.p.respawn_log.map_or_else(Vec::new, |l| {
+            l.refused_while_dead
+                .iter()
+                .map(|(a, n)| api::DeadRefusal { action: a.name().to_string(), reason: a.reason(), count: *n })
+                .collect()
+        })
+    }
+    fn sent_while_dead(&self) -> Vec<(String, u32)> {
+        self.p.respawn_log.map_or_else(Vec::new, |l| l.sent_while_dead.clone())
+    }
+    fn respawn_refusal(&self) -> Option<&'static str> {
+        self.p.respawn_log?.last_refusal.map(|r| r.reason())
     }
     fn nav_status(&self) -> api::NavStatus {
         if self.p.pathfinder.is_calculating || self.p.nav_pending {

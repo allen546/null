@@ -12,6 +12,6 @@ pub use commands::{BotCommands, Command};
 pub use reflex::{
     Brain, BotEvent, Group, Param, Reflex, ReflexSpec, Scope, Settings, Target, TickOutcome,
 };
-pub use skill::{Skill, SkillStatus};
+pub use skill::{AfterDeath, Skill, SkillStatus};
 pub use types::*;
 pub use view::BotView;

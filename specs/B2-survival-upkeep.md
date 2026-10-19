@@ -79,9 +79,10 @@ B2 keeps each bot alive and equipped: fed, healed, armoured, with working tools,
 
 ### 4.7 Death and item recovery
 
-- On death, F1 reports the position and an inventory snapshot. Items despawn after 5 minutes (6,000 gt) if their chunk stays loaded; the recovery job races that timer.
+- On death, F1 reports the position and an inventory snapshot at the death tick, not after the respawn; the running skill's `on_death` has already chosen `End` (it fails with "died") or `Keep` (F1 §4.4, AD-F1.2). Items despawn after 5 minutes (6,000 gt) if their chunk stays loaded; the recovery job races that timer.
 - Recovery job: travel to the drop, collect, return; or hand off to C3 to dispatch a nearer bot. The death site is marked dangerous in F2 with the cause.
 - Repeated deaths with the same cause in one region go to K5 as an exception (merged), not per bot.
+- What the swarm does after a death (go back to work, or escalate) is a working rule; recovery against a quarantine, and whether a death is a hard interrupt whatever the skill, are open: [AD-B2.1](DECISIONS.md#ad-b21-what-does-the-swarm-do-after-a-bots-death).
 
 ### 4.8 Status-effect hygiene
 
