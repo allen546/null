@@ -45,6 +45,8 @@ Null is a swarm of Minecraft bots (Rust, on a public Azalea fork) with an LLM co
 
 ## Subagents
 
+- Live runs are needed but slow: each runs strictly once (Allen, 2026-10-19). While working, the implementer runs only the rows it adds or changes. At the end, with the code final, it runs the full suite once on each server, keeps the logs, and pushes a fork patch only after that run passes; a failed row is fixed and only its module rerun, once. No repeat runs to double-check. The verifier reruns no suite: it checks the implementer's logs against the code and the server logs, and runs only what nobody ran yet (a negative control on the new rows, when the change needs one). The lead reads summaries and reruns nothing. Put this rule in every implementer and verifier brief.
+
 - Sonnet subagents implement; size each task by importance and lines of code, about 500–800 lines, so it ends well under an hour (about 2,000 lines plus a cold Azalea build took an hour). Budget first Azalea builds and world setup apart from code, and warm the build cache in the first task. Keep work the milestone doesn't need out of the task. Prefer deterministic setup (RCON) over searching. Give each task one done-when.
 - Don't verify finished subagent work yourself: hand it to a Haiku subagent, or Sonnet for live-server checks. The bar is correct in-game behaviour, not a line-by-line review.
 - If a subagent fails about twice or churns, stop it and solve the problem directly.

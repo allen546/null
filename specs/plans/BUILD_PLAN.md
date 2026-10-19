@@ -114,6 +114,7 @@ Server: seed 3, world spawn set to 416,70,352, about 38 oaks within 40 blocks, l
 
 ### S5: skills and belief for the goal
 
+- **Before S5 (Allen, 2026-10-19):** fork patch 23, tick catch-up like the vanilla client ([AD-F5.3](../DECISIONS.md#ad-f53-how-does-the-bot-catch-up-after-its-tick-loop-stalls)); then action ids and a mailbox per owner for action results ([AD-F5.4](../DECISIONS.md#ad-f54-how-do-skills-read-the-results-of-their-actions)), so `fell` never loses a break result.
 - **`null-belief`** (F2, minimal): a store keyed by fixed tiles (AD-F2.1), fed by observations (AD-F2.2's packet observer can come later). Each entry records the block, who saw it and when. Queries: `find_blocks(type, near, radius)` and `block(pos)`, with ages.
 - **`null-skills`** (decision crate): `fell(tree_type, quota)` (B4), built on `goto` (B1) and `break_block` with the right tool and break timing (B6). It also counts inventory (B3 minimal).
   - It fells only trees whose claim it holds.

@@ -94,6 +94,8 @@ HQ issues `transfer`; the sending operation's carriers deliver to the receiver's
 
 On a death (B2 §4.7), dispatch the nearest free bot within the despawn window (6,000 gt if the chunk stays loaded). Items recovered go back into the ledger; unrecovered items are recorded as lost.
 
+Open (2026-10-19, [AD-B2.1](DECISIONS.md#ad-b21-what-does-the-swarm-do-after-a-bots-death)): after a death caused by a player the drops lie inside an INTERRUPTS quarantine, where no new claim is allowed. Until decided, recovery never enters an active quarantine.
+
 ### 4.9 Reconciliation and loss
 
 - When a container is reopened and differs from the ledger, record the difference as shrinkage with location and time window, and pass unexplained losses to C8 (possible theft).

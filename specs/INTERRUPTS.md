@@ -205,6 +205,7 @@ Measure deaths beyond what reflexes absorb, commander wakes and tokens per run-h
 - Whether the batch review can run on a smaller model.
 - **Decided (Allen, 2026-10-15):** a convoy has right of way through a quarantine, and a quarantine blocks only new claims, never claims already held.
 - **Decided (Allen, 2026-10-15):** a trapped bot is rescued only when K7 prices its cargo and gear above the expected losses of the rescue; otherwise it is written off.
+- **Open (2026-10-19):** whether a bot's death is always a hard interrupt that escalates directly, whatever its skill, or the skill defines its own after-death behaviour (AD-F1.2's `on_death`); and how death drop recovery (C3 §4.8) meets a quarantine. Working rule and both sides: [AD-B2.1](DECISIONS.md#ad-b21-what-does-the-swarm-do-after-a-bots-death).
 
 ## 11. Note for the builder
 

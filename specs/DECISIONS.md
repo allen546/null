@@ -24,6 +24,10 @@ Context used throughout (Allen, 2026-10-13): local testing is per component, not
 | [AD-F5.2](#ad-f52-how-does-the-version-boundary-work-when-skills-are-bevy-plugins) version boundary | **decided:** no Bevy or Azalea in decision code; named mechanism crates import them directly; cargo-deny allowlist | (Allen, 2026-10-14; simulator spike and live join check passed) |
 | [AD-K1.1](#ad-k11-does-one-hq-cover-one-server-world-or-several) HQ scope | **decided:** one HQ per deployment, spanning servers | (Allen, 2026-10-13) |
 | [AD-K5.3](#ad-k53-interrupts-contain-and-price-or-classify-and-resolve) interrupts | **decided:** contain and price; escalate on cost; fix in cost-ranked batches ([INTERRUPTS.md](INTERRUPTS.md)) | (Allen, 2026-10-14) |
+| [AD-F1.2](#ad-f12-does-a-job-survive-its-bots-death) job and death | **decided:** the skill decides (`on_death`: `End` by default, or `Keep`); the death is seen at the death tick | (Allen, 2026-10-19) |
+| [AD-F5.3](#ad-f53-how-does-the-bot-catch-up-after-its-tick-loop-stalls) tick catch-up | **decided:** match the vanilla client (at most 10 ticks in one frame, drop the rest) | (Allen, 2026-10-19) |
+| [AD-F5.4](#ad-f54-how-do-skills-read-the-results-of-their-actions) action results | **decided:** action ids; a mailbox per owner, pruned by owner release and end, not by time; a leak guard | (Allen, 2026-10-19) |
+| [AD-B2.1](#ad-b21-what-does-the-swarm-do-after-a-bots-death) after a death | **working rule** (Allen, 2026-10-19): go back to work, or escalate; **open:** recovery against quarantine, and whether a death is a hard interrupt or the skill decides | a step 2 design, or Allen's call |
 
 ---
 
@@ -402,3 +406,61 @@ Spec: [K1](K1-hq.md). Raised by the spec audit (#4). Which server the swarm play
 **What would tip it.** Whether full-scale play means one faction on one SMP (with fewer bots there) or presence on several servers at once.
 
 **Lean.** One HQ per world, with a `server` field in every location key from day one so a cross-server HQ stays possible without re-keying, and the commander API fronting several HQs with one combined digest line per HQ.
+
+---
+
+## AD-F1.2 Does a job survive its bot's death?
+
+Spec: [F1](F1-swarm-runtime.md) §4.4. Raised by A12 (respawn), 2026-10-19.
+
+**Decided by Allen, 2026-10-19: the skill decides.** At the death tick the host calls the skill's `on_death` with the death record; it returns `End` (the default: the skill fails with "died") or `Keep` (the skill steps on through the death and after the respawn). Either way, all decision code sees the death at the death tick, so a layer above can start another skill (for example after unusual deaths). Skill priorities may come later.
+
+**Open follow-up:** whether a death should instead be a hard interrupt that escalates directly, whatever the skill, is in [AD-B2.1](#ad-b21-what-does-the-swarm-do-after-a-bots-death). The `on_death` hook is built for A12 now; that decision may narrow it.
+
+**For always ending the job.** After a death the bot is at its spawn point and has usually lost its items, so most jobs' preconditions are broken; the level above reassigns the work. One rule, no per-skill code.
+
+**For letting the skill decide.** Some jobs need nothing they lose: a farming task that harvests every crop can carry on after the respawn. Ending it wastes a reassignment round trip; the skill knows best what it needs.
+
+## AD-F5.3 How does the bot catch up after its tick loop stalls?
+
+Spec: [F5](F5-version-layer.md) §4.6. Raised by the Grim `Timer` alerts after client stalls (HANDOFF, known gaps), 2026-10-19.
+
+**Decided by Allen, 2026-10-19: match the vanilla client.** After a stall, run at most 10 missed ticks back to back in one frame and drop the rest (`Minecraft#runTick`). If even a vanilla client on a lossy network is flagged or kicked, that is the server's issue, not ours. Fork patch 23.
+
+**For dropping all missed ticks.** No burst is ever sent, so no `Timer` alert; fewer packets look like network lag.
+
+**For matching vanilla.** Null computes exactly what a vanilla client sends; a lagging vanilla client bursts the same way.
+
+## AD-F5.4 How do skills read the results of their actions?
+
+Spec: [B6](B6-placement-breaking.md) §4.6, [B3](B3-inventory-crafting.md) §4.1. Raised by the lost-result hang in `chain_of_30_breaks` (HANDOFF, "For S5 skills"), 2026-10-19.
+
+**Decided by Allen, 2026-10-19: action ids and a mailbox per owner.** Each command (break, place, click, open, respawn) returns an `ActionId`; `action(id)` reads its result. Whether to wait for the ack is the skill's choice per action. Pruning is tied to the owner (the skill or reflex that sent it), not to a clock, because a paused skill (preempted, or kept through a death) can read late:
+
+1. Pending results are never pruned and never cause a refusal; each ends within the "no ack" timeout, so their number is bounded by the send rate.
+2. The owner releases a finished result after reading it; all of an owner's results go when it ends; all results are cleared at a disconnect.
+3. The owner declares how many finished results it expects to hold (default 64); going over logs one warning and prunes nothing.
+4. A leak guard (for example 4,096 unreleased finished results) ends the owner with `Failed("result leak")`. A pruned or unknown id reads as "expired", never as pending.
+
+The history is a mailbox, not a log: a skill that wants totals keeps its own tally.
+
+**For one latest result per action kind, and skills that wait for each ack.** No API change. But it costs a round trip per action, and a skill that forgets the rule loses results silently.
+
+**For ids and a mailbox.** No skill can lose a result by mistake; skills that don't need the ack work at a person's pace. Costs a `BotCommands` signature change and a small buffer in the adapter.
+
+## AD-B2.1 What does the swarm do after a bot's death?
+
+Spec: [B2](B2-survival-upkeep.md) §4.7, [C3](C3-logistics.md) §4.8, [INTERRUPTS](INTERRUPTS.md). Raised by A12 (respawn), 2026-10-19. Matters for step 2 (survival core), not for SA or the skeleton.
+
+**Recorded by Allen, 2026-10-19, as the working rule: go back to work, or escalate.** Each level tries its own remedies first, then escalates with the remedies tried (ARCHITECTURE, escalations):
+1. The bot respawns, is re-equipped by a C3 supply job, and takes its next job (or carries on, if its skill returned `Keep`, AD-F1.2).
+2. The operation requeues the job, sends the nearest free bot for the drops when that is worth it and safe, and records unrecovered items as lost. Deaths with no drops (lava, void, keep-inventory) are recorded, not searched for; an unloaded chunk pauses the despawn timer.
+3. It escalates, merged and with remedies tried, when it can't remove the cause: the same cause kills again in one area, a player is the cause (C8 attribution starts at once), or spawn camping.
+4. One try per cause: a second death from the same cause means the remedy failed, so it escalates. Spawn camping is the exception: retrying is the harm, so the bot logs out with a backoff first (for example after two deaths within 30 s of a respawn), then escalates.
+
+**Not settled: this rule does not solve the conflicts below.** They stay open.
+- **Recovery against quarantine.** C3 §4.8 sends the nearest free bot to the drops, but a death caused by a player puts the drops inside the INTERRUPTS quarantine, where no new claim is allowed (INTERRUPTS §10). The killer often takes the drops or waits beside them. Lean: price recovery like any job (INTERRUPTS §2.3); never enter an active quarantine; recover only when the killer has not been seen near the drops for a set time and the items are worth the risk.
+- **Who decides after a death: the skill, or the interrupt path.** AD-F1.2 lets the skill choose `End` or `Keep`. Two directions Allen raised:
+  - **Deaths as hard interrupts.** A death always goes the interrupt path (contain, requeue, escalate) and escalates directly, whatever the skill is. For: one rule, no skill can hide a death or walk back into its cause. Against: a harmless death (a farmer killed by a stray mob) costs an escalation and a requeue it didn't need.
+  - **Skills define their own after-death behaviour.** `on_death` grows from `End`/`Keep` into the skill's own plan (for example: recover my drops, then carry on). For: the skill knows what it needs. Against: every skill author must get death handling right, and the interrupt rules can be bypassed.
+  A mix is possible: the death is always reported and contained as an interrupt, and the skill's `on_death` only says whether its job may resume after that.
