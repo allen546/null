@@ -16,6 +16,10 @@
 | 4.7 | Mob drops | Deterministic | Kill with B5 and collect |
 | 4.8 | Ownership check before breaking | Interface · authored input · person | Telling a player's build from natural terrain has no exact test, and the cost of a mistake is diplomatic |
 | 4.9 | Drops and spoil | Deterministic | Collect, count, hand to the ledger |
+| 4.10 | Gather core and policies | Deterministic | Reach, stands and break order are geometry; a policy only filters blocks |
+| 4.11 | Sight mode (no x-ray) | Deterministic | A block is known only after a clear ray from the eye reached it |
+| 4.12 | Mining methods (presets) | Measured | Patterns are geometry; yield per block dug is measured per method and height |
+| 4.13 | Underground hazards | Deterministic | Fluids, falling blocks and drops are game rules; the miner handles them itself |
 
 ## Architecture decisions
 
@@ -37,8 +41,9 @@ B4 turns the world into items: mining, tree felling, crop and animal farming, fi
 ## 3. Interfaces
 
 Skills:
-- `mine(target: ore type | volume, quota, method)`
-- `fell(tree_type, quota, replant: bool)`
+- `gather(policy, quota, claim, sight)`: the generic skill (§4.10). It finds blocks the policy accepts, plans stands and the break order, breaks, collects drops. It gathers and hunts for a block type; it does not dig to find blocks.
+- `mine(target: ore type | volume, quota, method, sight)`: ores and other underground targets (§4.12). A `method` (preset) digs to expose blocks; the targets it exposes go through the gather core.
+- `fell(tree_type, quota, replant: bool)`: `gather` with the tree policy (§4.3).
 - `harvest(farm_region, crop, replant: bool)`
 - `breed(animal, n)`, `cull(animal, keep: n)`
 - `fish(duration_gt)`
@@ -62,6 +67,8 @@ Each returns yield, tool wear, time, and changed cells (for F2's expected change
 ### 4.3 Tree felling
 
 Fell whole trees including high logs, leave or clear leaves per job, replant saplings when `replant`. Mega trees and huge fungi have their own patterns.
+
+*S5 form (Allen, 2026-10-19):* `fell` is the tree policy over `gather` (§4.10), not its own skill. Targets are logs of the type in natural trees inside the claim (§4.8). The policy may clear natural leaves (`persistent=false`) that block a log. A log out of reach is left and reported; nothing is placed to reach it. A target may be the floor of a stand and is then broken last (for example: stand on log 1 to reach log 8). Replant is not supported yet; 2×2 trunks, mangroves and huge fungi are refused.
 
 ### 4.4 Crop farming
 
@@ -101,13 +108,44 @@ Kill the target mob through B5's PvE skills, collect drops. Looting tools where 
 
 Collect every drop within reach, report items gathered and items left (inventory full), and the cells changed.
 
+### 4.10 Gather core and policies
+
+Decided by Allen, 2026-10-19. `gather` is one generic skill; what to take is a policy.
+- A policy only filters blocks: `target(pos)` (take it) and `may_clear(pos)` (break it because it is in the way). It holds no planning. Example policies: the tree policy (§4.3); "all stone in the claim" for bulk work.
+- The core plans stands and the break order by search, not lowest-first. Reach is to the nearest point the crosshair can hit, within the block interaction range, as strict as the client or stricter. A stand may stand on a target, which is then broken last. It never places blocks.
+- One break at a time. Each break's result is read from the action mailbox (B6 §4.6); anything but a confirmed break ends the job. No retry.
+- Planning is spread over ticks with a counted work budget, so a step never stalls the tick loop and the same world gives the same plan.
+
+### 4.11 Sight mode (no x-ray)
+
+Decided by Allen, 2026-10-19. On servers with anti-x-ray (Paper's engine modes, Orebfuscator), hidden chunk data is fake, and a path straight to hidden ores gets a player banned. Rule: in sight mode, no decision depends on a block the bot could not have seen.
+- A block is known by sight when a ray from the bot's eye reached one of its faces with nothing in the way, within render range. Only exposed blocks (a face on a transparent cell) can qualify; this is the rule anti-x-ray uses, so the data for them is real.
+- Light is not needed: players routinely use ore-highlighting shader packs.
+- A sighting is cached in F2 (`how = seen_sight`, F2 §4.1) and stays valid until the cell changes. Re-check only after the bot moves or the chunk changes, nearest first, within the tick work budget. A block exposed by the bot's own digging counts once the server sends it.
+- Visibility is per bot by default: a bot targets only what it saw itself. A swarm-wide option lets bots target each other's sightings.
+- `mine` uses sight mode by default. Surface and bulk work (logs, dirt, sand, quarries) can turn it off: those targets are exposed anyway, or chosen by volume, not by hidden content. Choosing where to put a quarry from hidden ore counts is still x-ray.
+
+### 4.12 Mining methods (presets)
+
+Decided by Allen, 2026-10-19: `mine` takes a method. A method is an excavation pattern: it yields the next segment of cells to dig (a few at a time, within the gather core's target cap) and the core breaks them. Target ores visible on the walls within reach go through the target policy and vein following (§4.2). Presets are named methods with parameters, stored as data, for example:
+- `fishbone { y, spacing: 6, branch_len, section: 1x2 }`: a main tunnel with side branches; spacing 6 leaves 5 solid blocks between branches.
+- `quarry { box, top_down }`: everything in the box (sight mode off).
+- `tunnel { dir, y, section, length (or unbounded) }`: a straight tunnel.
+- Later: a staircase down to a height, and cave following (walk caves, take exposed ores).
+
+Several bots on one method claim their own branches or segments, spaced so tunnels do not break into each other (§6). Yield per block dug is measured per method and height (§4.1).
+
+### 4.13 Underground hazards
+
+Decided by Allen, 2026-10-19: mining handles underground hazards itself and does not escalate them. Before each break the miner checks the cell it opens and that cell's neighbours: lava or water that would flow in, falling blocks (sand, gravel) above, and a drop or cave below. It handles them as a player does, including placing a block from its inventory to seal a fluid or to cover a hole. This is the first exception to "gather never places": the placed blocks are the bot's own and are reported as changed cells. Every hazard rule has a live row on both test servers.
+
 ## 5. Failure handling
 
 | failure | response |
 |---|---|
 | Tool breaks | Swap (B2); if none, `blocked(no_tool)` |
 | Inventory full | Return to drop-off or call a carrier (C3) |
-| Lava or water breaks into a tunnel | B2/B1 escape; mark hazard; re-plan the tunnel |
+| Lava or water breaks into a tunnel | Seal it (§4.13); if that fails, B2/B1 escape, mark the hazard, re-plan the tunnel |
 | Ore already gone (someone else mined it) | Update F2; `failed(target_gone)` |
 
 ## 6. Scale and performance

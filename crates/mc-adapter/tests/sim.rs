@@ -627,3 +627,93 @@ fn a_break_the_client_refuses_finishes_with_its_reason_and_two_breaks_keep_both_
     let (a, b) = (last(0).block().cloned().unwrap(), last(1).block().cloned().unwrap());
     assert_ne!(a.pos, b.pos, "each id keeps its own block");
 }
+
+// ---- finish bounds the fork does not give (B6 §4.6) ----
+
+/// A `Fork` with no results and nothing queued: the fork never answered.
+fn silent_fork(now: u64) -> mc_adapter::actions::Fork<'static> {
+    mc_adapter::actions::Fork {
+        now,
+        client_tick: 0,
+        blocks: None,
+        entity: None,
+        clicks: None,
+        respawn: None,
+        queued: [false; 4],
+    }
+}
+
+#[test]
+fn a_command_the_fork_never_answers_finishes_not_started_after_20_ticks() {
+    use mc_adapter::actions::{ADOPT_TICKS, Kind, Target, Tracker};
+    use null_bot_api::{ActionId, BlockOutcome, Owner};
+    let mut t = Tracker::default();
+    let id = ActionId::fresh();
+    t.open(id, Owner::Skill);
+    t.begin(id, Kind::Place, Target::Block(null_bot_api::BlockPos::new(1, 64, 1)), None, 0, true);
+    // Queued in the fork: not dropped, so pending until the bound.
+    t.refresh(&fork_with_queue(ADOPT_TICKS));
+    assert!(t.mailbox.state(id).is_pending(), "{:?}", t.mailbox.state(id));
+    t.refresh(&fork_with_queue(ADOPT_TICKS + 1));
+    let s = t.mailbox.state(id);
+    let b = s.block().unwrap_or_else(|| panic!("{s:?}"));
+    assert_eq!(b.outcome, BlockOutcome::Refused);
+    assert_eq!(b.reason, Some("not started"));
+}
+
+fn fork_with_queue(now: u64) -> mc_adapter::actions::Fork<'static> {
+    mc_adapter::actions::Fork { queued: [true; 4], ..silent_fork(now) }
+}
+
+#[test]
+fn a_respawn_with_no_respawn_packet_finishes_no_answer_after_600_ticks() {
+    use mc_adapter::actions::{Kind, RESPAWN_TICKS, Target, Tracker};
+    use null_bot_api::{ActionId, Owner};
+    let mut t = Tracker::default();
+    let id = ActionId::fresh();
+    t.open(id, Owner::Skill);
+    t.begin(id, Kind::Respawn, Target::None, None, 0, false);
+    t.refresh(&silent_fork(RESPAWN_TICKS));
+    assert!(t.mailbox.state(id).is_pending(), "inside the bound");
+    t.refresh(&silent_fork(RESPAWN_TICKS + 1));
+    let s = t.mailbox.state(id);
+    let r = s.respawn().unwrap_or_else(|| panic!("{s:?}"));
+    assert_eq!(r.refused, Some("no answer"));
+    assert!(r.completed_tick.is_none());
+}
+
+#[test]
+fn a_break_that_never_finishes_is_cancelled_too_long_after_6000_ticks() {
+    use null_bot_api::{ActionId, BlockOutcome};
+    let _lock = init();
+    let id: Arc<Mutex<Option<ActionId>>> = Default::default();
+    let last: Arc<Mutex<Option<null_bot_api::ActionState>>> = Default::default();
+    let (i2, l2) = (id.clone(), last.clone());
+    let target = null_bot_api::BlockPos::new(2, 64, 4);
+    let skill = Script {
+        n: 0,
+        f: move |n, v: &dyn BotView, c: &mut dyn BotCommands| {
+            let mut idg = i2.lock().unwrap();
+            if n == 5 {
+                c.look_at_block(target, None);
+            } else if n == 12 {
+                *idg = Some(c.break_block(target));
+            }
+            if let Some(i) = *idg {
+                *l2.lock().unwrap() = Some(v.action(i));
+            }
+            SkillStatus::Running
+        },
+    };
+    let mut rig = rig_with(Box::new(skill), Brain::new());
+    // Bedrock can never be mined: the finishing packet is never sent.
+    rig.sim.receive_packet(ClientboundBlockUpdate { pos: BlockPos::new(2, 64, 4), block_state: BlockKind::Bedrock.into() });
+    for _ in 0..(mc_adapter::actions::BREAK_MAX_TICKS + 200) {
+        rig.sim.tick();
+    }
+    let s = last.lock().unwrap().clone().expect("the break was issued");
+    let b = s.block().unwrap_or_else(|| panic!("{s:?}"));
+    assert!(s.is_finished(), "{s:?}");
+    assert_eq!(b.outcome, BlockOutcome::Cancelled, "{b:?}");
+    assert_eq!(b.reason, Some("too long"));
+}

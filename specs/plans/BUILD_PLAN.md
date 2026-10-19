@@ -20,11 +20,11 @@ The goal: all four levels (HQ, one operation, one squad, two bots) run in one pr
 | S2 | Message types and transport | `null-proto`, `null-bus` | S1 | not started |
 | S3 | Control spine on simulated bots | `null-hq`, `null-op`, `null-squad`, `null-cli`, `null-simbot` | S2 | not started |
 | S4 | Adapter, host and login | `mc-adapter`, `null-node`, `skeleton-server/` | S1 | done 2026-10-16, verified live |
-| SA | Ability check: basic abilities proven live, fixed in the fork where needed ([ABILITY_CHECK.md](ABILITY_CHECK.md)) | `null-abilitycheck`, `mc-adapter`, fork | S4 | in progress: A1–A9 and the block shape families pass on vanilla and Paper + Grim (2026-10-18); A10–A12 open ([HANDOFF.md](../../HANDOFF.md)) |
-| S5 | Skills and belief for the goal | `null-skills`, `null-belief` | S4, SA | not started |
+| SA | Ability check: basic abilities proven live, fixed in the fork where needed ([ABILITY_CHECK.md](ABILITY_CHECK.md)) | `null-abilitycheck`, `mc-adapter`, fork | S4 | closed 2026-10-19: A1–A12, A10E, A4C, AT and the shape families pass on both servers (358/358 each, verified) |
+| S5 | Skills and belief for the goal | `null-skills`, `null-belief` | S4, SA | in progress: mailbox and `null-belief` done; `gather` pure code done, live phase open (below) |
 | S6 | Skeleton live | wiring only | S3, S5 | not started |
 
-S3 and S4 can run in parallel. **First target (Allen, 2026-10-16): S4, a swarm that logs in and moves around.** It is done, and so is the combat track's M2 with the swarm duel test. **Next (Allen, 2026-10-17): SA, the ability check, before S5 and S2.** S5 needs S4 and SA, not S2: its claims can be held locally until S3's squad hands them out in S6. S2 and S3 feed S6 only.
+S3 and S4 can run in parallel. **First target (Allen, 2026-10-16): S4, a swarm that logs in and moves around.** It is done, and so is the combat track's M2 with the swarm duel test. **Next (Allen, 2026-10-17): SA, the ability check, before S5 and S2.** SA closed 2026-10-19; S5 is under way. S5 needs S4 and SA, not S2: its claims can be held locally until S3's squad hands them out in S6. S2 and S3 feed S6 only.
 
 ### S2: message types and transport
 
@@ -114,18 +114,32 @@ Server: seed 3, world spawn set to 416,70,352, about 38 oaks within 40 blocks, l
 
 ### S5: skills and belief for the goal
 
-- **Before S5 (Allen, 2026-10-19):** fork patch 23, tick catch-up like the vanilla client ([AD-F5.3](../DECISIONS.md#ad-f53-how-does-the-bot-catch-up-after-its-tick-loop-stalls)), done 2026-10-19; then action ids and a mailbox per owner for action results ([AD-F5.4](../DECISIONS.md#ad-f54-how-do-skills-read-the-results-of-their-actions)), so `fell` never loses a break result. **Mailbox done 2026-10-19:** `ActionId` from every result-bearing command, `BotView::action(id)`, `release` and `expect_results`, leak guard; `last_*` removed (B6 §4.6). Full suite 360/360 on vanilla; on Paper + Grim 357/360 (three rows drew Grim Timer/Simulation alerts from machine load, judged by the verifier; A4S and A6 rerun once, 148/148, zero alerts), with the new A13 rows. Independent verifier: negative control (old one-record behaviour) failed the A13 chain row as expected.
-- **`null-belief`** (F2, minimal): a store keyed by fixed tiles (AD-F2.1), fed by observations (AD-F2.2's packet observer can come later). Each entry records the block, who saw it and when. Queries: `find_blocks(type, near, radius)` and `block(pos)`, with ages.
-  - Status (2026-10-19): `crates/null-belief` exists and its 13 unit tests pass. It has `Belief::observe`, `observe_batch`, `observe_scan` and `observe_view` (closure or `&dyn BotView`), `block(pos, now)`, `find_blocks(kind, near, radius, now)` and `changes_since(tick)`. Newest tick wins, an older observation never overwrites, a changed block keeps the previous block and the change tick, and unknown cells return `None`. No dimension key, persistence, event log or node merge yet.
-- **`null-skills`** (decision crate): `fell(tree_type, quota)` (B4), built on `goto` (B1) and `break_block` with the right tool and break timing (B6). It also counts inventory (B3 minimal).
-  - It fells only trees whose claim it holds.
-  - It collects drops.
-  - It returns yield and changed cells.
-  - It never breaks a block that isn't natural (B4 §4.8 ownership rule: break only what is clearly natural).
-- Done when:
-  - unit tests run on `FakeView`;
-  - live, one bot fells a claimed tree completely and picks up the logs;
-  - belief shows the tree gone, with the bot as observer.
+Done when:
+- unit tests run on `FakeView`;
+- live, one bot fells a claimed tree completely and picks up the logs;
+- belief shows the tree gone, with the bot as observer.
+
+**Redesign (Allen, 2026-10-19):** `fell` is the tree policy over a generic `gather` skill (B4 §4.10). A policy only filters blocks: `target` and `may_clear`. `gather` takes blocks of a type and never digs to find them; `mine` (later) digs by a method. Allen's choices for the tree policy: skip and report a log out of reach (never place to reach it), break only natural leaves that block a log, no replant yet. Commit each step after its verifier passes.
+
+| part | status |
+|---|---|
+| Fork patch 23, tick catch-up like vanilla ([AD-F5.3](../DECISIONS.md#ad-f53-how-does-the-bot-catch-up-after-its-tick-loop-stalls)) | done 2026-10-19 |
+| Action mailbox ([AD-F5.4](../DECISIONS.md#ad-f54-how-do-skills-read-the-results-of-their-actions)), B6 §4.6 | done and verified 2026-10-19, commit `ec8f492`. Full suite 360/360 on vanilla; on Paper + Grim 357/360 (three Grim Timer/Simulation alerts from machine load, judged by the verifier; A4S and A6 rerun once, 148/148, zero alerts). Negative control failed the A13 chain row as expected. Finish bounds "too long", "no answer" and "not started" got sim tests in patch 25's task. |
+| Fork patch 25: settle every in-flight sequenced action by the server's cumulative ack, so no break, place or block open ends `Superseded` (instamine chains send one break per tick) | in progress 2026-10-19; see HANDOFF |
+| `null-belief` (F2 minimal) | done and verified 2026-10-19, commit `ec8f492`: 512×512 tiles; `observe`, `observe_batch`, `observe_scan`, `observe_view`, `block(pos, now)`, `find_blocks(kind, near, radius, now)`, `changes_since`; newest tick wins, unknown is never air; 13 tests. Not yet: dimension key, `how` (F2 §4.1, needed for sight mode), persistence, event log, node merge. |
+| `null-skills` pure code: `gather`, `TreePolicy`, `fell(...)` constructor | done 2026-10-19, **uncommitted, not yet verified**: `gather.rs`, `reach.rs`, `policy.rs`; 14 tests on `FakeView`. Break order by layered search; reach to the nearest crosshair point (fork's `aim_at_block`, 4.5 − 0.05); a stand may be on a target broken last (8-log trunk reached; 9th log left Unreachable); planning sliced by a counted work budget (≈1 ms per step in release on a fast test view). |
+| `gather` live phase | open, next |
+
+**`gather` live phase: to do.**
+1. A Haiku verifier on the pure `null-skills` code, then commit it.
+2. Adapter: implement `BotView::block_property(pos, name)` from the block state (`persistent` reads "true"/"false").
+3. Measure the step time on the live bot; lower `STEP_UNITS` if a step goes over about 2 ms (the real `block_at` may cost more than the test view).
+4. Check live: `look_at_block` on a log behind natural leaves, `is_solid` for logs and leaves, item entities listed as `minecraft:item` and picked up at `goto` tolerance 0.8, and the pathfinder's one-block step onto log 1 (untested).
+5. Live rows (new module, its own area): an oak with an axe; an oak by hand; a birch (expect felled or "unreachable" per the trunk read back first); a hut inside the claim (planks and logs; persistent leaves) left intact and reported; a tree outside and one across the claim edge left and reported; a quota that stops after a tree; a tall trunk built by RCON (leaves `persistent=false,distance=1`) with its top log left Unreachable. Readback by RCON: log cells air, the inventory log count, the hut intact; belief shows air with the bot as observer.
+6. The full suite once on each server, nothing else running on the machine; a verifier with a negative control; commit.
+7. Known small gaps: `FakeView::inventory()` caches on first read; item entities carry no stack info, so yield is the inventory change.
+
+**After S5, not in it (Allen, 2026-10-19):** `mine` with methods (fishbone, quarry, tunnel; B4 §4.12), sight mode for anti-x-ray servers (B4 §4.11, F2 `seen_sight`), and underground hazards handled by the miner itself, placing to seal fluids (B4 §4.13).
 
 ### S6: skeleton live
 

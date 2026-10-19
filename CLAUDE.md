@@ -5,7 +5,7 @@ Null is a swarm of Minecraft bots (Rust, on a public Azalea fork) with an LLM co
 ## Where to start
 
 - [OPEN.md](OPEN.md): decisions waiting, next actions, where things are.
-- [HANDOFF.md](HANDOFF.md): the current milestone (now SA, the ability check), how to run it, open items.
+- [HANDOFF.md](HANDOFF.md): the current milestone (now S5, skills and belief), how to run the ability check, open items. SA's record and per-ability gaps: `specs/plans/ABILITY_CHECK.md`.
 - [specs/INDEX.md](specs/INDEX.md) for more context. Don't load `specs/logs/` (about 600k tokens of old builder logs).
 - Plans: `specs/plans/ABILITY_CHECK.md`, `BUILD_PLAN.md`, `COMBAT_SCAFFOLD.md`. Fork ledger: `specs/reference/AZALEA_PATCHES.md`.
 

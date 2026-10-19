@@ -63,11 +63,12 @@ No bot sees the world; each sees a few chunks through a laggy connection, and wh
 ```
 Observation {
   observer: bot_id, node, at_gt (server game time), at_wall,
-  how: seen_chunk_data | block_update | opened_container | entity_spawn | entity_move | interaction | inferred,
+  how: seen_chunk_data | seen_sight | block_update | opened_container | entity_spawn | entity_move | interaction | inferred,
   dimension, payload: block states | container slots | entity snapshot | sighting
 }
 ```
 
+- `seen_sight` (Allen, 2026-10-19): a ray from the observer's eye reached the block with nothing in the way (B4 §4.11). It is the only provenance sight mode trusts on servers with anti-x-ray; `seen_chunk_data` for a block no ray reached may be fake there. A sighting stays valid until the cell changes.
 - Observations stay on the node and in the owning operation's shard. Nothing per-block crosses to HQ (§3.7).
 - Bots in one node share Azalea's world storage; F2 adds the timestamps and provenance Azalea doesn't keep.
 - Azalea discards server game time (`ClientboundSetTime`), light data, block entities and container progress data. F2 records them itself from packet observers (`ReceiveGamePacketEvent`), including the game-time clock behind `at_gt` (Azalea reality check, 2026-10-13).

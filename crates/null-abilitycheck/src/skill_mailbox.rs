@@ -1,6 +1,6 @@
 //! Bot-side ops for A13 (the result mailbox, AD-F5.4). `RemoteSkill::step` calls `step` for
 //! `Op::Mail`; everything goes through `BotView` / `BotCommands` only.
-//! Both ops send the next command without waiting for the last one's ack and read every id at the
+//! The ops send the next command without waiting for the last one's ack and read every id at the
 //! end, which the old one-record-per-kind readback could not do.
 // Spec: specs/B6-placement-breaking.md §4.6 (the result mailbox)
 
@@ -25,6 +25,10 @@ pub enum MailOp {
     /// Break `brk`, and the tick after its finishing packet place on the `face` of `on`, which
     /// the crosshair falls on once `brk` is gone. Then release both ids and read them once more.
     BreakThenPlace { brk: BlockPos, on: BlockPos, face: Face, aim: Vec3 },
+    /// Look at `aim`, place on the `face` of `first`, and in the very next tick place on the
+    /// `face` of `second` (the block the first placement made, which the crosshair now falls on),
+    /// with no wait for the first ack. Then read both ids.
+    TwoPlaces { first: BlockPos, face1: Face, second: BlockPos, face2: Face, aim: Vec3 },
 }
 
 #[derive(Default)]
@@ -39,6 +43,9 @@ pub struct MailState {
     follower_sent_while_prev_pending: Vec<bool>,
     brk: Option<(ActionId, u64)>,
     place: Option<(ActionId, u64)>,
+    place2: Option<(ActionId, u64)>,
+    /// `TwoPlaces`: the first placement's result was still pending when the second went out.
+    second_sent_while_first_pending: Option<bool>,
     released_at: Option<u64>,
     /// The states when both finished, before the release.
     before_release: Option<(ActionState, ActionState)>,
@@ -55,6 +62,9 @@ pub struct MailInfo {
     pub followers_pending: Option<(usize, usize)>,
     /// `BreakThenPlace`: both ids read `Expired` the tick after `release`.
     pub expired_after_release: Option<bool>,
+    /// `TwoPlaces`: the second placement's command tick and state, and whether the first one's
+    /// result was still pending when the second went out.
+    pub second_place: Option<(u64, ActionState, bool)>,
 }
 
 /// The finishing packet of the break behind `id` has gone out (its partial record says so), or the
@@ -135,6 +145,7 @@ pub fn step(op: &MailOp, age: u64, v: &dyn BotView, c: &mut dyn BotCommands, st:
                             place: Some((st.place.unwrap().1, sp)),
                             expired_after_release: Some(expired),
                             followers_pending: None,
+                            second_place: None,
                         }));
                     }
                     _ => {}
@@ -147,8 +158,42 @@ pub fn step(op: &MailOp, age: u64, v: &dyn BotView, c: &mut dyn BotCommands, st:
                     place: state(st.place),
                     expired_after_release: None,
                     followers_pending: None,
+                    second_place: None,
                 })
             })
+        }
+        MailOp::TwoPlaces { first, face1, second, face2, aim } => {
+            let now = v.tick();
+            if age == 0 {
+                look_at(v, c, *aim);
+            } else if age == LOOK_TICKS {
+                st.place = Some((c.place_block(*first, *face1, false), now));
+            } else if age == LOOK_TICKS + 1 {
+                let pending = st.place.is_some_and(|(i, _)| v.action(i).is_pending());
+                st.second_sent_while_first_pending = Some(pending);
+                st.place2 = Some((c.place_block(*second, *face2, false), now));
+            }
+            if let (Some((a, ta)), Some((b, tb))) = (st.place, st.place2) {
+                if v.action(a).is_finished() && v.action(b).is_finished() || age > MAX_TICKS {
+                    let (sa, sb) = (v.action(a), v.action(b));
+                    c.release(a);
+                    c.release(b);
+                    return Some(Info::Mail(MailInfo {
+                        breaks: Vec::new(),
+                        place: Some((ta, sa)),
+                        followers_pending: None,
+                        expired_after_release: None,
+                        second_place: Some((tb, sb, st.second_sent_while_first_pending.unwrap_or(false))),
+                    }));
+                }
+            }
+            (age > MAX_TICKS).then(|| Info::Mail(MailInfo {
+                breaks: Vec::new(),
+                place: None,
+                followers_pending: None,
+                expired_after_release: None,
+                second_place: None,
+            }))
         }
     }
 }
@@ -165,5 +210,6 @@ fn finish_chain(v: &dyn BotView, c: &mut dyn BotCommands, st: &MailState) -> Inf
         place: None,
         expired_after_release: None,
         followers_pending: Some((f.iter().filter(|p| **p).count(), f.len())),
+        second_place: None,
     })
 }

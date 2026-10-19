@@ -1,6 +1,8 @@
 //! The adapter's side of the result mailbox (AD-F5.4): ties each command's `ActionId` to the
-//! fork's result for it. The fork keeps one record per kind, a new action replaces the last, so
-//! this copies the record into the mailbox every tick and keeps the copy when the fork moves on.
+//! fork's result for it. The fork keeps every in-flight placement, break and block use by id and
+//! settles them by the server's cumulative ack (fork patch 25), so this reads each result by id.
+//! Entity uses and clicks have no sequence number: the fork keeps one record of each, and this
+//! copies it every tick and keeps the copy when a newer action takes the record.
 //! No game logic: the fork judges; this maps and bounds.
 // Spec: specs/B6-placement-breaking.md §4.6 (the result mailbox)
 
@@ -74,15 +76,25 @@ impl Fork<'_> {
             _ => false,
         }
     }
-    /// The id of the fork's current result of `kind` (0: none yet).
-    fn current_id(&self, kind: Kind) -> u32 {
+    /// The ids of the fork's results of `kind` above `after`, oldest first.
+    fn ids_after(&self, kind: Kind, after: u32) -> Vec<u32> {
         match kind {
-            Kind::Break => self.blocks.and_then(|b| b.last_break).map_or(0, |r| r.id),
-            Kind::Place => self.blocks.and_then(|b| b.last_place).map_or(0, |r| r.id),
-            Kind::UseBlock => self.blocks.and_then(|b| b.last_use).map_or(0, |r| r.id),
-            Kind::UseEntity => self.entity.and_then(|e| e.last_use).map_or(0, |r| r.id),
-            _ => 0,
+            Kind::Break | Kind::Place => self
+                .blocks
+                .map(|b| b.blocks_after(kind == Kind::Break, after).iter().map(|r| r.id).collect())
+                .unwrap_or_default(),
+            Kind::UseBlock => {
+                self.blocks.map(|b| b.uses_after(after).iter().map(|r| r.id).collect()).unwrap_or_default()
+            }
+            Kind::UseEntity => {
+                self.entity.and_then(|e| e.last_use).filter(|r| r.id > after).map(|r| vec![r.id]).unwrap_or_default()
+            }
+            _ => Vec::new(),
         }
+    }
+    /// The highest id of `kind` now (0: none yet).
+    fn current_id(&self, kind: Kind) -> u32 {
+        self.ids_after(kind, 0).last().copied().unwrap_or(0)
     }
     /// A fork tick on the host clock (both advance once per game tick).
     fn host_tick(&self, client: u64) -> u64 {
@@ -415,17 +427,18 @@ impl Tracker {
     /// Hands each new fork result to the oldest command of its kind that has none.
     fn adopt(&mut self, f: &Fork) {
         for kind in [Kind::Break, Kind::Place, Kind::UseBlock, Kind::UseEntity] {
-            let cur = f.current_id(kind);
             let seen = match kind {
                 Kind::Break => &mut self.seen.brk,
                 Kind::Place => &mut self.seen.place,
                 Kind::UseBlock => &mut self.seen.use_block,
                 _ => &mut self.seen.use_entity,
             };
-            if cur != 0 && cur != *seen {
-                *seen = cur;
+            // Several results of a kind can appear between two refreshes (a catch-up of ticks):
+            // the oldest command gets the oldest result.
+            for id in f.ids_after(kind, *seen) {
+                *seen = id;
                 if let Some(t) = self.tracks.iter_mut().find(|t| t.kind == kind && t.fork_id.is_none()) {
-                    t.fork_id = Some(cur);
+                    t.fork_id = Some(id);
                     t.adopted_tick = f.now.max(1);
                 }
             }
@@ -464,11 +477,7 @@ impl Tracker {
         let age = f.now.saturating_sub(t.issued);
         match t.kind {
             Kind::Break | Kind::Place => {
-                let (bk, cur) = if t.kind == Kind::Break {
-                    (BlockActionKind::Break, f.blocks.and_then(|b| b.last_break))
-                } else {
-                    (BlockActionKind::Place, f.blocks.and_then(|b| b.last_place))
-                };
+                let bk = if t.kind == Kind::Break { BlockActionKind::Break } else { BlockActionKind::Place };
                 let target = block_of(t.target);
                 let Some(fid) = t.fork_id else {
                     // Dropped by the fork: nothing is queued any more, and no result came.
@@ -481,7 +490,7 @@ impl Tracker {
                     }
                     return Step::Keep(None);
                 };
-                match cur.filter(|r| r.id == fid) {
+                match f.blocks.and_then(|b| b.block_result(fid)) {
                     Some(r) => {
                         let mut a = block_record(bk, t.issued, target, Some(&r));
                         t.sent = r.seq.is_some();
@@ -501,7 +510,8 @@ impl Tracker {
                         }
                         Step::Finish(ActionRecord::Block(a))
                     }
-                    // The fork's record moved on to a newer action before this one settled.
+                    // The fork no longer holds the result (its history is bounded, or the component
+                    // was reset): the outcome is unknown. Not reached while a reader polls each tick.
                     None => {
                         let mut a = match &t.last {
                             Some(ActionRecord::Block(a)) => *a,
@@ -531,7 +541,7 @@ impl Tracker {
                     return Step::Keep(None);
                 };
                 let o = if t.kind == Kind::UseBlock {
-                    f.blocks.and_then(|b| b.last_use).filter(|r| r.id == fid).map(|r| open_from_block(block_of(t.target), Some(&r)))
+                    f.blocks.and_then(|b| b.use_result(fid)).map(|r| open_from_block(block_of(t.target), Some(&r)))
                 } else {
                     f.entity.and_then(|e| e.last_use).filter(|r| r.id == fid).map(|r| open_from_entity(entity_of(t.target), Some(&r)))
                 };
