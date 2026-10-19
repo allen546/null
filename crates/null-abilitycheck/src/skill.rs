@@ -49,6 +49,8 @@ pub enum Op {
     /// Look at the block, then send `break_block` every tick until the result settles.
     BreakSpam(BlockPos),
     Sneak(bool),
+    /// Test hook (AT): hold the ECS for this many ms inside a tick, then wait for the catch-up.
+    Stall(u64),
     /// Break these blocks one after another, as fast as the bot may (held-button mining).
     BreakChain(Vec<BlockPos>),
     /// Item use, attack and attacker ops (A5-A8), in `skill_items`.
@@ -329,6 +331,14 @@ impl Skill for RemoteSkill {
                     }
                     None => None,
                 }
+            }
+            Op::Stall(ms) => {
+                // Sleeping inside `step` holds the ECS write lock, which stalls the run loop
+                // exactly as a long frame would. Then 12 more ticks for the catch-up to finish.
+                if age == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(*ms));
+                }
+                (age >= 12).then(|| Info::Snapshot(snapshot(v)))
             }
             Op::Sneak(on) => {
                 if age == 0 {
