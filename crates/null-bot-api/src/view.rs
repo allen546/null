@@ -1,3 +1,4 @@
+use crate::action::{ActionId, ActionState};
 use crate::types::*;
 
 /// Per-tick reads. The host owns the clock, so `tick` never depends on the game library.
@@ -34,6 +35,12 @@ pub trait BotView {
     // Spec: specs/B6-placement-breaking.md §4.6 (read back the block the server left)
     /// Namespaced block name at `pos` ("minecraft:oak_log"); None when the chunk is not loaded.
     fn block_at(&self, pos: BlockPos) -> Option<String>;
+    // Spec: specs/B4-gathering.md §4.8 (natural check: leaves' `persistent` property)
+    /// One block-state property of the block at `pos` as text (`name` "persistent" -> "false").
+    /// None when the block lacks it, is unknown or is not loaded.
+    fn block_property(&self, _pos: BlockPos, _name: &str) -> Option<String> {
+        None
+    }
     // Spec: specs/B6-placement-breaking.md §4.2 (crouch handling)
     /// The bot is crouching (the crouch input it sends).
     fn sneaking(&self) -> bool {
@@ -45,26 +52,15 @@ pub trait BotView {
     fn block_uses_click(&self, _pos: BlockPos) -> bool {
         false
     }
-    // Spec: specs/B6-placement-breaking.md §4.4, §4.6 (latest break and placement results)
-    /// The latest break (B6 §4.4) and the latest placement (B6 §4.6), until replaced by a newer one.
-    fn last_break(&self) -> Option<BlockAction>;
-    fn last_place(&self) -> Option<BlockAction>;
+    // Spec: specs/B6-placement-breaking.md §4.6 (the result mailbox)
+    /// The state of a command's result: pending (with the partial record), finished, or expired
+    /// (released, pruned or never issued; never reads as pending). The same id reads the same
+    /// until it finishes; a finished result stays until its owner releases it (B6 §4.6).
+    fn action(&self, id: ActionId) -> ActionState;
 
-    // Spec: specs/B3-inventory-crafting.md §4.1 (the open window and the latest click)
+    // Spec: specs/B3-inventory-crafting.md §4.1 (the open window)
     /// The open window, if any.
     fn window(&self) -> Option<&Window> {
-        None
-    }
-    fn last_click(&self) -> Option<ClickOutcome> {
-        None
-    }
-    // Spec: specs/B3-inventory-crafting.md §4.7 (the latest container open)
-    /// The latest `open_container` and what came of it.
-    fn last_open(&self) -> Option<OpenResult> {
-        None
-    }
-    /// Why the latest `open_inventory` was refused, until the next one succeeds.
-    fn open_refusal(&self) -> Option<&'static str> {
         None
     }
 
@@ -72,20 +68,13 @@ pub trait BotView {
     fn life(&self) -> Life {
         Life::Alive
     }
-    /// The latest death and how many there were (B2 §4.7). Kept across respawns.
+    /// The latest death and how many there were (B2 §4.7), with the respawn that ended it. Kept
+    /// across respawns.
     fn last_death(&self) -> Option<&Death> {
         None
     }
     fn deaths(&self) -> u32 {
         0
-    }
-    /// The latest respawn request that went out.
-    fn last_respawn(&self) -> Option<RespawnSent> {
-        None
-    }
-    /// Why the latest `respawn` was refused (nothing was sent).
-    fn respawn_refusal(&self) -> Option<&'static str> {
-        None
     }
     // Spec: specs/F1-swarm-runtime.md §4.4 (nothing while dead)
     /// What the fork refused since the latest death began (the death screen has no keys or mouse).

@@ -38,16 +38,16 @@ pub struct ViewParts<'a> {
     pub executing: Option<&'a ExecutingPath>,
     /// A goto was issued in the last tick or two and Azalea has not picked it up yet.
     pub nav_pending: bool,
-    pub blocks: Option<&'a crate::blocks::BlockActions>,
-    pub entity_results: Option<&'a azalea::entity_actions::EntityUseResults>,
-    pub results: Option<&'a azalea::block_actions::BlockActionResults>,
+    /// The result mailbox (AD-F5.4).
+    pub mailbox: &'a null_bot_api::Mailbox,
+    /// Ids handed out in this step; they enter the mailbox after it and read as pending until then.
+    pub issued: &'a std::cell::RefCell<Vec<(null_bot_api::ActionId, null_bot_api::Owner)>>,
     pub attackers: Option<&'a azalea::attackers::RecentAttackers>,
     pub tags: Option<&'a azalea::tags::ServerTags>,
     /// A window is open (the fork's `OpenScreen`).
     pub screen_open: bool,
     /// The open container's menu kind.
     pub screen_kind: Option<azalea::registry::builtin::MenuKind>,
-    pub clicks: Option<&'a azalea::inventory::ClickResults>,
     /// The bot is holding the crouch key (the input the server is sent that tick).
     pub sneaking: bool,
     /// The fork's record of deaths and respawns (patch 21).
@@ -111,6 +111,17 @@ impl AzaleaView<'_, '_, '_> {
                     .get_component::<azalea::inventory::components::BlocksAttacks>()
                     .map(|b| self.blocks_attacks(&b)),
             }),
+        }
+    }
+
+    fn respawn_sent(&self, r: &azalea::respawn::RespawnRecord) -> api::RespawnSent {
+        api::RespawnSent {
+            sent_tick: self.host_tick(r.sent_tick),
+            screen_ticks: r.screen_ticks,
+            immediate: r.immediate,
+            completed_tick: r.completed_tick.map(|t| self.host_tick(t)),
+            sends: r.sends,
+            refused: None,
         }
     }
 
@@ -349,13 +360,14 @@ impl BotView for AzaleaView<'_, '_, '_> {
             .get_block_state(azalea::BlockPos::new(pos.x, pos.y, pos.z))
             .is_some_and(azalea::block::state_uses_click)
     }
-    // Spec: specs/B6-placement-breaking.md §4.4 (break timing and result)
-    fn last_break(&self) -> Option<api::BlockAction> {
-        crate::blocks::translate(api::BlockActionKind::Break, self.p.blocks?.last_break, self.p.results)
-    }
-    // Spec: specs/B6-placement-breaking.md §4.6 (acknowledgement and readback)
-    fn last_place(&self) -> Option<api::BlockAction> {
-        crate::blocks::translate(api::BlockActionKind::Place, self.p.blocks?.last_place, self.p.results)
+    // Spec: specs/B6-placement-breaking.md §4.6 (the result mailbox)
+    fn action(&self, id: api::ActionId) -> api::ActionState {
+        match self.p.mailbox.state(id) {
+            api::ActionState::Expired if self.p.issued.borrow().iter().any(|(i, _)| *i == id) => {
+                api::ActionState::Pending(None)
+            }
+            s => s,
+        }
     }
     // Spec: specs/B3-inventory-crafting.md §4.1 (the open window, in its own numbering)
     fn window(&self) -> Option<&api::Window> {
@@ -377,25 +389,6 @@ impl BotView for AzaleaView<'_, '_, '_> {
             })
             .as_ref()
     }
-    // Spec: specs/B3-inventory-crafting.md §4.1 (what the server said after our click)
-    fn last_click(&self) -> Option<api::ClickOutcome> {
-        let c = self.p.clicks?.last.as_ref()?;
-        let slot = |s: i16| u16::try_from(s).ok();
-        Some(api::ClickOutcome {
-            slot: slot(c.slot_num),
-            refused: c.refusal.map(|r| r.reason()),
-            ticks: c.ticks,
-            corrected: c.corrected_slots.iter().map(|&s| slot(s)).collect(),
-            full_resends: c.full_resends,
-        })
-    }
-    // Spec: specs/B3-inventory-crafting.md §4.7 (the latest container open)
-    fn last_open(&self) -> Option<api::OpenResult> {
-        crate::blocks::translate_open(self.p.blocks?, self.p.results, self.p.entity_results)
-    }
-    fn open_refusal(&self) -> Option<&'static str> {
-        self.p.clicks?.open_refusal.map(|r| r.reason())
-    }
     // Spec: specs/B2-survival-upkeep.md §4.7 (position and inventory at death)
     fn last_death(&self) -> Option<&api::Death> {
         self.death
@@ -411,6 +404,14 @@ impl BotView for AzaleaView<'_, '_, '_> {
                     inventory: std::array::from_fn(|i| slot(if i < 9 { 36 + i } else { i })),
                     armor: std::array::from_fn(|i| slot(5 + i)),
                     offhand: slot(45),
+                    // The request that ended this death: a later death's record is not its.
+                    respawn: self
+                        .p
+                        .respawn_log?
+                        .last_respawn
+                        .as_ref()
+                        .filter(|r| r.sent_tick >= d.tick)
+                        .map(|r| self.respawn_sent(r)),
                 })
             })
             .as_ref()
@@ -418,16 +419,6 @@ impl BotView for AzaleaView<'_, '_, '_> {
     // Spec: specs/F1-swarm-runtime.md §4.4 (death count)
     fn deaths(&self) -> u32 {
         self.p.respawn_log.map_or(0, |l| l.deaths)
-    }
-    fn last_respawn(&self) -> Option<api::RespawnSent> {
-        let r = self.p.respawn_log?.last_respawn.as_ref()?;
-        Some(api::RespawnSent {
-            sent_tick: self.host_tick(r.sent_tick),
-            screen_ticks: r.screen_ticks,
-            immediate: r.immediate,
-            completed_tick: r.completed_tick.map(|t| self.host_tick(t)),
-            sends: r.sends,
-        })
     }
     // Spec: specs/F1-swarm-runtime.md §4.4 (dead, then respawn pending, every tick until the respawn)
     fn life(&self) -> api::Life {
@@ -448,9 +439,6 @@ impl BotView for AzaleaView<'_, '_, '_> {
     }
     fn sent_while_dead(&self) -> Vec<(String, u32)> {
         self.p.respawn_log.map_or_else(Vec::new, |l| l.sent_while_dead.clone())
-    }
-    fn respawn_refusal(&self) -> Option<&'static str> {
-        self.p.respawn_log?.last_refusal.map(|r| r.reason())
     }
     fn nav_status(&self) -> api::NavStatus {
         if self.p.pathfinder.is_calculating || self.p.nav_pending {

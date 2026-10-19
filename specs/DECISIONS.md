@@ -444,6 +444,8 @@ Spec: [B6](B6-placement-breaking.md) §4.6, [B3](B3-inventory-crafting.md) §4.1
 
 The history is a mailbox, not a log: a skill that wants totals keeps its own tally.
 
+Built 2026-10-19 (B6 §4.6): names `ActionId`, `BotView::action`, `BotCommands::release` and `expect_results`; each kind's finish bound is in the B6 table. A reflex that hits the leak guard is turned off at bot scope (it cannot end).
+
 **For one latest result per action kind, and skills that wait for each ack.** No API change. But it costs a round trip per action, and a skill that forgets the rule loses results silently.
 
 **For ids and a mailbox.** No skill can lose a result by mistake; skills that don't need the ack work at a person's pace. Costs a `BotCommands` signature change and a small buffer in the adapter.

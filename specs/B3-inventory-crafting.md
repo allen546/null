@@ -51,6 +51,7 @@ Every container skill returns what the container held when opened, which updates
 
 - Per-role hotbar layout (tool, weapon, food, blocks, bucket) and a keep-list B2 depends on.
 - When full, drop or store the lowest-value non-keep items, per a role-specific priority, rather than refusing pickup of job items.
+- `open_inventory`, `open_container`, `open_entity` and `click_slot` return an `ActionId`; the outcome (opened, refused with a reason, no screen, the server's corrections to a click) is read with `BotView::action(id)` and released when read. Release and pruning rules, and each kind's finish bound: [B6](B6-placement-breaking.md) §4.6 (AD-F5.4).
 
 ### 4.2 Crafting
 

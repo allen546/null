@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 
 use null_bot_api::{
-    BotCommands, BotView, Click, DeadRefusal, Death, EntityId, Face, Group, Hand, Life, Reflex,
+    ActionId, BotCommands, BotView, Click, DeadRefusal, Death, EntityId, Face, Group, Hand, Life, Reflex,
     ReflexSpec, RespawnSent, SkillStatus,
 };
 
@@ -34,12 +34,19 @@ pub struct LifeInfo {
 }
 
 // Spec: specs/F1-swarm-runtime.md §4.4 (the bot's record of its deaths and respawns)
-pub fn step(op: &LifeOp, age: u64, v: &dyn BotView, c: &mut dyn BotCommands) -> Option<Info> {
+pub fn step(
+    op: &LifeOp,
+    age: u64,
+    v: &dyn BotView,
+    c: &mut dyn BotCommands,
+    l: &mut crate::skill_inventory::Latest,
+) -> Option<Info> {
     let wait = match op {
         LifeOp::Status => 0,
         LifeOp::Respawn => {
             if age == 0 {
-                c.respawn();
+                let id = c.respawn();
+                crate::skill_inventory::Latest::set(&mut l.respawn, id, c);
             }
             3
         }
@@ -49,8 +56,10 @@ pub fn step(op: &LifeOp, age: u64, v: &dyn BotView, c: &mut dyn BotCommands) -> 
             life: v.life(),
             deaths: v.deaths(),
             last_death: v.last_death().cloned(),
-            last_respawn: v.last_respawn(),
-            refusal: v.respawn_refusal(),
+            // The respawn that ended the latest death, whoever asked (a command's own result is
+            // `refusal`).
+            last_respawn: v.last_death().and_then(|d| d.respawn.clone()),
+            refusal: l.respawn.and_then(|id| v.action(id).respawn().and_then(|r| r.refused)),
             window: v.window().map(|w| (w.id, w.kind)),
             sneaking: v.sneaking(),
             using_item: v.using_item().is_some(),
@@ -77,6 +86,9 @@ pub struct ProbeData {
     pub sent: Vec<(String, u32)>,
     pub open_refusal: Option<&'static str>,
     pub click_refused: Option<&'static str>,
+    /// The ids of the probe's own `open_inventory` and `click_slot`, read each dead tick.
+    pub open_id: Option<ActionId>,
+    pub click_id: Option<ActionId>,
     /// The probe stays quiet (so a kept skill is stepped while dead instead).
     pub passive: bool,
 }
@@ -146,8 +158,8 @@ impl Reflex for DeathProbe {
             c.cancel_break();
             c.place_block(b, Face::Up, false);
             c.open_container(b, None);
-            c.open_inventory();
-            c.click_slot(Some(36), Click::Left);
+            d.open_id = Some(c.open_inventory());
+            d.click_id = Some(c.click_slot(Some(36), Click::Left));
             c.close_window();
             c.goto(null_bot_api::BlockPos { x: b.x + 10, y: b.y, z: b.z }, 0.0);
             d.fired = Some(n);
@@ -159,8 +171,8 @@ impl Reflex for DeathProbe {
         }
         d.refused = v.refused_while_dead();
         d.sent = v.sent_while_dead();
-        d.open_refusal = v.open_refusal();
-        d.click_refused = v.last_click().and_then(|c| c.refused);
+        d.open_refusal = d.open_id.and_then(|id| v.action(id).open().and_then(|o| o.refused));
+        d.click_refused = d.click_id.and_then(|id| v.action(id).click().and_then(|c| c.refused));
     }
 }
 

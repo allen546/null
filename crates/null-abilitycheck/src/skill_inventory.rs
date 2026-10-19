@@ -2,8 +2,8 @@
 //! everything goes through `BotView` / `BotCommands` only.
 
 use null_bot_api::{
-    BlockPos, BotCommands, BotView, Click, ClickOutcome, EntityId, Face, ItemStack, OpenOutcome, OpenResult,
-    Vec3, Window,
+    ActionId, BlockPos, BotCommands, BotView, Click, ClickOutcome, EntityId, Face, ItemStack, OpenOutcome,
+    OpenResult, Vec3, Window,
 };
 
 use crate::skill::Info;
@@ -11,6 +11,25 @@ use crate::skill::Info;
 /// Ticks to wait after a click or a close: the server answers on its next tick, and any slot it
 /// corrects comes back within a few.
 const SETTLE_TICKS: u64 = 8;
+
+/// The ids of the latest click, container open and inventory open (AD-F5.4). The skill keeps the
+/// latest of each kind so a status op can report it; issuing a new one releases the old.
+#[derive(Default)]
+pub struct Latest {
+    pub click: Option<ActionId>,
+    pub open: Option<ActionId>,
+    pub open_inv: Option<ActionId>,
+    pub respawn: Option<ActionId>,
+}
+
+impl Latest {
+    /// Remembers `new` in `slot` and releases what was there.
+    pub fn set(slot: &mut Option<ActionId>, new: ActionId, c: &mut dyn BotCommands) {
+        if let Some(old) = slot.replace(new) {
+            c.release(old);
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum InvOp {
@@ -53,12 +72,13 @@ pub struct InvInfo {
     pub offhand: Option<ItemStack>,
 }
 
-fn info(v: &dyn BotView) -> InvInfo {
+fn info(v: &dyn BotView, l: &Latest) -> InvInfo {
+    let state = |id: Option<ActionId>| id.map(|i| v.action(i));
     InvInfo {
         window: v.window().cloned(),
-        click: v.last_click(),
-        open: v.last_open(),
-        open_refusal: v.open_refusal(),
+        click: state(l.click).and_then(|s| s.click().cloned()),
+        open: state(l.open).and_then(|s| s.open().cloned()),
+        open_refusal: state(l.open_inv).and_then(|s| s.open().and_then(|o| o.refused)),
         seen: None,
         sneaking: v.sneaking(),
         inventory: v.inventory().to_vec(),
@@ -67,11 +87,12 @@ fn info(v: &dyn BotView) -> InvInfo {
 }
 
 // Spec: specs/B3-inventory-crafting.md §4.1 (open, click and close as a vanilla client does)
-pub fn step(op: &InvOp, age: u64, v: &dyn BotView, c: &mut dyn BotCommands) -> Option<Info> {
+pub fn step(op: &InvOp, age: u64, v: &dyn BotView, c: &mut dyn BotCommands, l: &mut Latest) -> Option<Info> {
     let wait = match op {
         InvOp::Open => {
             if age == 0 {
-                c.open_inventory();
+                let id = c.open_inventory();
+                Latest::set(&mut l.open_inv, id, c);
             }
             2
         }
@@ -79,40 +100,46 @@ pub fn step(op: &InvOp, age: u64, v: &dyn BotView, c: &mut dyn BotCommands) -> O
             // The look needs two ticks to land before the click.
             match age {
                 0 => c.look_at_block(*pos, *face),
-                2 => c.open_container(*pos, *face),
+                2 => {
+                    let id = c.open_container(*pos, *face);
+                    Latest::set(&mut l.open, id, c);
+                }
                 _ => {}
             }
             if age < 3 {
                 return None;
             }
-            let settled = v.last_open().is_some_and(|o| o.outcome != OpenOutcome::Pending);
+            let settled = l.open.is_some_and(|id| v.action(id).open().is_some_and(|o| o.outcome != OpenOutcome::Pending));
             // Contents arrive with the open; clicks wait a tick after it.
-            return (age >= 80 || (settled && age >= 8)).then(|| Info::Inv(info(v)));
+            return (age >= 80 || (settled && age >= 8)).then(|| Info::Inv(info(v, l)));
         }
         // Spec: specs/B3-inventory-crafting.md §4.7 (entity containers)
         InvOp::WaitEntity(kind) => {
             let seen = nearest(v, kind);
-            return (seen.is_some() || age >= 100).then(|| Info::Inv(InvInfo { seen, ..info(v) }));
+            return (seen.is_some() || age >= 100).then(|| Info::Inv(InvInfo { seen, ..info(v, l) }));
         }
         // Spec: specs/B3-inventory-crafting.md §4.7 (aim at an entity, right-click it, read the answer)
         InvOp::OpenEntity { kind, auto_crouch, aim } => {
             let seen = nearest(v, kind);
             let Some((id, _)) = seen else {
-                return (age >= 20).then(|| Info::Inv(info(v)));
+                return (age >= 20).then(|| Info::Inv(info(v, l)));
             };
             // The look needs two ticks to land before the click.
             match (age, aim) {
                 (0, Aim::Entity) => c.look_at_entity(id),
                 (0, Aim::Look(yaw, pitch)) => c.look(*yaw, *pitch),
-                (2, _) => c.open_entity(id, *auto_crouch),
+                (2, _) => {
+                    let oid = c.open_entity(id, *auto_crouch);
+                    Latest::set(&mut l.open, oid, c);
+                }
                 _ => {}
             }
             if age < 3 {
                 return None;
             }
-            let settled = v.last_open().is_some_and(|o| o.outcome != OpenOutcome::Pending);
+            let settled = l.open.is_some_and(|id| v.action(id).open().is_some_and(|o| o.outcome != OpenOutcome::Pending));
             // A crouching open stands up again; contents arrive with the open.
-            return (age >= 80 || (settled && age >= 12)).then(|| Info::Inv(InvInfo { seen, ..info(v) }));
+            return (age >= 80 || (settled && age >= 12)).then(|| Info::Inv(InvInfo { seen, ..info(v, l) }));
         }
         InvOp::Close => {
             if age == 0 {
@@ -122,13 +149,14 @@ pub fn step(op: &InvOp, age: u64, v: &dyn BotView, c: &mut dyn BotCommands) -> O
         }
         InvOp::Click(slot, click) => {
             if age == 0 {
-                c.click_slot(*slot, *click);
+                let id = c.click_slot(*slot, *click);
+                Latest::set(&mut l.click, id, c);
             }
             SETTLE_TICKS
         }
         InvOp::Status => 0,
     };
-    (age >= wait).then(|| Info::Inv(info(v)))
+    (age >= wait).then(|| Info::Inv(info(v, l)))
 }
 
 /// The nearest entity of `kind` the bot sees, with its position.

@@ -58,6 +58,10 @@ pub enum BlockOutcome {
     Refused,
     /// `cancel_break` ended it.
     Cancelled,
+    /// A newer action of the same kind replaced the fork's record before the server answered, so
+    /// the outcome is unknown (read `BotView::block_at`). Only when the skill sends the next
+    /// action before this one is acknowledged (B6 §4.6).
+    Superseded,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -274,6 +278,8 @@ pub struct OpenResult {
 pub enum OpenTarget {
     Block(BlockPos),
     Entity(EntityId),
+    /// The player's own inventory (`open_inventory`).
+    Inventory,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -285,6 +291,9 @@ pub enum OpenOutcome {
     /// Sent and acknowledged, but no screen came (a chest with a solid block on top).
     NoScreen,
     Refused,
+    /// A newer open replaced the fork's record before the server answered; the outcome is unknown
+    /// (read `BotView::window`).
+    Superseded,
 }
 
 /// What came of the latest click (B3 §4.1).
@@ -302,6 +311,9 @@ pub struct ClickOutcome {
     pub corrected: Vec<Option<u16>>,
     /// Times the server resent the whole window after the click.
     pub full_resends: u32,
+    /// A later click came before this one settled, so `corrected` and `full_resends` hold only
+    /// what arrived before it (the fork attributes later updates to the later click).
+    pub superseded: bool,
 }
 
 impl ClickOutcome {
@@ -426,9 +438,12 @@ pub struct Death {
     pub inventory: [Option<ItemStack>; 36],
     pub armor: [Option<ItemStack>; 4],
     pub offhand: Option<ItemStack>,
+    /// The respawn that ended this death, once its request went out (whoever asked: a skill, a
+    /// reflex or the host). A command's own result is `BotView::action`.
+    pub respawn: Option<RespawnSent>,
 }
 
-/// The latest respawn request that went out.
+/// A respawn request: what went out, or why nothing did.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RespawnSent {
     /// Host tick the packet went out.
@@ -441,6 +456,10 @@ pub struct RespawnSent {
     /// Respawn packets sent for this death: one with the death screen; with immediate respawn
     /// one from the kill packet and one per tick until the answer, as a vanilla client does.
     pub sends: u32,
+    /// Why the client refused the request (nothing was sent: "not dead", hardcore), or "no answer"
+    /// (sent, but the server's respawn packet did not come in time). The other fields are 0/false
+    /// for a refusal.
+    pub refused: Option<&'static str>,
 }
 
 // Spec: specs/F1-swarm-runtime.md §4.4 (a dead bot sends nothing a death screen cannot)

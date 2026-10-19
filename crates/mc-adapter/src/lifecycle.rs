@@ -23,7 +23,7 @@ use azalea::{
 use azalea::ecs::prelude::*;
 use null_bot_api::SkillStatus;
 
-use crate::host::{BotBrain, BotDied, SKILL_DIED, SkillEnded};
+use crate::host::{BotBrain, BotDied, ReflexDisabled, SKILL_DIED, SkillEnded};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BotState {
@@ -91,6 +91,8 @@ pub enum HostEvent {
     /// The first host tick that saw the death, with the record (position, dimension, message,
     /// inventory snapshot). A running skill ends the same tick with `Failed("died")`.
     Died { bot: String, tick: u64, death: Option<null_bot_api::Death> },
+    /// The leak guard turned a reflex off at bot scope: it held 4,096 unreleased results (AD-F5.4).
+    ReflexDisabled { bot: String, reflex: &'static str, tick: u64 },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -231,6 +233,7 @@ fn lifecycle(
     mut deaths: MessageReader<DeathEvent>,
     mut ended: MessageReader<SkillEnded>,
     mut died: MessageReader<BotDied>,
+    mut reflex_off: MessageReader<ReflexDisabled>,
     retry: Query<(&Account, &ConnectOpts)>,
     mut join: MessageWriter<StartJoinServerEvent>,
     mut respawn: MessageWriter<PerformRespawnEvent>,
@@ -253,8 +256,8 @@ fn lifecycle(
         let mut brain = (lc.factory)(&name);
         // A skill that chose `Keep` at the death (F1 §4.4) is still in the old brain: it takes the
         // factory's place, as the same instance.
-        if let Some(kept) = old_brains.get_mut(e).ok().and_then(|mut b| b.skill.take()) {
-            brain.skill = Some(kept);
+        if let Ok(mut old) = old_brains.get_mut(e) {
+            brain.inherit_skill(&mut old);
         }
         let job = brain.skill.as_ref().map(|s| s.id().to_string());
         // Fresh brain on every spawn: a job does not survive a disconnect, nor a death unless its
@@ -282,6 +285,12 @@ fn lifecycle(
     for ev in died.read() {
         if let Some(r) = lc.bots.get(&ev.entity) {
             let _ = lc.tx.send(HostEvent::Died { bot: r.name.clone(), tick: ev.tick, death: ev.death.clone() });
+        }
+    }
+
+    for ev in reflex_off.read() {
+        if let Some(r) = lc.bots.get(&ev.entity) {
+            let _ = lc.tx.send(HostEvent::ReflexDisabled { bot: r.name.clone(), reflex: ev.reflex, tick: ev.tick });
         }
     }
 

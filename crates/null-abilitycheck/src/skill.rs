@@ -22,8 +22,8 @@ pub static TICK_FAST: AtomicU64 = AtomicU64::new(0);
 pub static REFUSAL_VIEW: Mutex<Option<String>> = Mutex::new(None);
 
 use null_bot_api::{
-    BlockAction, BlockOutcome, BlockPos, BotCommands, BotView, Face, ItemStack, Look, NavStatus, Skill,
-    SkillStatus, Vec3,
+    ActionId, ActionRecord, BlockAction, BlockOutcome, BlockPos, BotCommands, BotView, Face, ItemStack, Look,
+    NavStatus, Skill, SkillStatus, Vec3,
 };
 
 #[derive(Clone, Debug)]
@@ -57,6 +57,8 @@ pub enum Op {
     Items(crate::skill_items::ItemOp),
     /// Inventory window ops (A9), in `skill_inventory`.
     Inv(crate::skill_inventory::InvOp),
+    /// Result-mailbox ops (A13), in `skill_mailbox`.
+    Mail(crate::skill_mailbox::MailOp),
     /// Death and respawn ops (A12), in `skill_respawn`.
     Life(crate::skill_respawn::LifeOp),
 }
@@ -83,6 +85,7 @@ pub enum Info {
     Items(crate::skill_items::ItemsInfo),
     Inv(crate::skill_inventory::InvInfo),
     Life(crate::skill_respawn::LifeInfo),
+    Mail(crate::skill_mailbox::MailInfo),
     /// Per block of a chain: (block, ticks from start to finish, outcome).
     Chain(Vec<(BlockPos, Option<u64>, BlockOutcome)>),
 }
@@ -98,15 +101,18 @@ pub struct RemoteSkill {
     cur: Option<Run>,
     items: crate::skill_items::ItemState,
     chain: Chain,
+    /// The ids of the latest click, open and respawn, so a status op can report them (A9, A12).
+    latest: crate::skill_inventory::Latest,
+    mail: crate::skill_mailbox::MailState,
     last_step: Option<Instant>,
     keep: crate::skill_respawn::KeepState,
 }
 
-/// Progress of a `BreakChain`: the block looked at (and when), and the breaks logged so far.
+/// Progress of a `BreakChain`: the block looked at (and when), and the id of every break sent.
 #[derive(Default)]
 struct Chain {
     looked: Option<(BlockPos, u64)>,
-    log: Vec<(BlockPos, Option<u64>, BlockOutcome)>,
+    started: Vec<(BlockPos, ActionId)>,
     /// First tick every block read as air.
     all_air: Option<u64>,
 }
@@ -118,11 +124,21 @@ struct Run {
     op: Op,
     t0: u64,
     offhand_before: Option<ItemStack>,
+    /// The ids the op's commands got (AD-F5.4); released when the op ends.
+    ids: Vec<ActionId>,
+}
+
+/// The finished break or placement behind the op's first id (B6 §4.6).
+fn block_result(v: &dyn BotView, ids: &[ActionId]) -> Option<BlockAction> {
+    match v.action(*ids.first()?).finished() {
+        Some(ActionRecord::Block(b)) => Some(*b),
+        _ => None,
+    }
 }
 
 impl RemoteSkill {
     pub fn new(ops: Arc<Mutex<Receiver<Op>>>, out: Sender<Report>) -> Self {
-        Self { ops, out, cur: None, items: Default::default(), chain: Chain::default(), last_step: None, keep: Default::default() }
+        Self { ops, out, cur: None, items: Default::default(), chain: Chain::default(), latest: Default::default(), mail: Default::default(), last_step: None, keep: Default::default() }
     }
 }
 
@@ -184,10 +200,11 @@ impl Skill for RemoteSkill {
         if self.cur.is_none()
             && let Ok(op) = self.ops.lock().unwrap().try_recv()
         {
-            self.cur = Some(Run { op, t0: now, offhand_before: v.offhand().cloned() });
+            self.cur = Some(Run { op, t0: now, offhand_before: v.offhand().cloned(), ids: Vec::new() });
         }
         let Some(run) = &self.cur else { return SkillStatus::Running };
         let age = now - run.t0;
+        let mut ids = run.ids.clone();
         let say = |info: Info| {
             let _ = self.out.send(Report { info });
         };
@@ -215,13 +232,11 @@ impl Skill for RemoteSkill {
                 if age == 0 {
                     look_at(v, c, pos.center());
                 } else if age == LOOK_TICKS {
-                    c.break_block(*pos);
+                    ids.push(c.break_block(*pos));
                     say(Info::Started);
                 }
-                match v.last_break() {
-                    Some(a) if age > LOOK_TICKS && a.start_tick >= run.t0 && a.outcome != BlockOutcome::Pending => {
-                        Some(Info::Action(a))
-                    }
+                match block_result(v, &ids) {
+                    Some(a) => Some(Info::Action(a)),
                     _ => (age > 600).then_some(Info::Timeout),
                 }
             }
@@ -229,14 +244,12 @@ impl Skill for RemoteSkill {
                 if age == 0 {
                     look_at(v, c, pos.center());
                 } else if age == LOOK_TICKS {
-                    c.break_block(*pos);
+                    ids.push(c.break_block(*pos));
                 } else if age == LOOK_TICKS + after {
                     c.cancel_break();
                 }
-                match v.last_break() {
-                    Some(a) if age > LOOK_TICKS + after && a.start_tick >= run.t0 && a.outcome != BlockOutcome::Pending => {
-                        Some(Info::Action(a))
-                    }
+                match block_result(v, &ids) {
+                    Some(a) if age > LOOK_TICKS + after => Some(Info::Action(a)),
                     _ => (age > 200).then_some(Info::Timeout),
                 }
             }
@@ -246,13 +259,11 @@ impl Skill for RemoteSkill {
                     let k = pos.center();
                     look_at(v, c, Vec3::new(k.x + dx as f64 * 0.5 + aim.x, k.y + dy as f64 * 0.5 + aim.y, k.z + dz as f64 * 0.5 + aim.z));
                 } else if age == LOOK_TICKS {
-                    c.place_block(*pos, *face, false);
+                    ids.push(c.place_block(*pos, *face, false));
                     say(Info::Started);
                 }
-                match v.last_place() {
-                    Some(a) if age > LOOK_TICKS && a.start_tick >= run.t0 && a.outcome != BlockOutcome::Pending => {
-                        Some(Info::Action(a))
-                    }
+                match block_result(v, &ids) {
+                    Some(a) => Some(Info::Action(a)),
                     _ => (age > 200).then_some(Info::Timeout),
                 }
             }
@@ -261,13 +272,11 @@ impl Skill for RemoteSkill {
                     c.look_at_block(*pos, Some(*face));
                 } else if age == LOOK_TICKS {
                     let auto = matches!(run.op, Op::PlaceAimCrouch { auto_crouch: true, .. });
-                    c.place_block(*pos, *face, auto);
+                    ids.push(c.place_block(*pos, *face, auto));
                     say(Info::Started);
                 }
-                match v.last_place() {
-                    Some(a) if age > LOOK_TICKS && a.start_tick >= run.t0 && a.outcome != BlockOutcome::Pending => {
-                        Some(Info::Action(a))
-                    }
+                match block_result(v, &ids) {
+                    Some(a) => Some(Info::Action(a)),
                     _ => (age > 200).then_some(Info::Timeout),
                 }
             }
@@ -278,15 +287,14 @@ impl Skill for RemoteSkill {
                     // spamming stops when the block is gone: a break of air is a new break
                     || (age > LOOK_TICKS && matches!(run.op, Op::BreakSpam(_)) && v.block_at(*pos).as_deref() != Some("minecraft:air"))
                 {
-                    c.break_block(*pos);
+                    // Repeated commands on one block name the same action (B6 §4.6).
+                    ids.push(c.break_block(*pos));
                     if age == LOOK_TICKS {
                         say(Info::Started);
                     }
                 }
-                match v.last_break() {
-                    Some(a) if age > LOOK_TICKS && a.start_tick >= run.t0 && a.outcome != BlockOutcome::Pending => {
-                        Some(Info::Action(a))
-                    }
+                match block_result(v, &ids) {
+                    Some(a) => Some(Info::Action(a)),
                     _ => (age > 600).then_some(Info::Timeout),
                 }
             }
@@ -295,20 +303,23 @@ impl Skill for RemoteSkill {
                 if age == 0 {
                     *ch = Chain::default();
                 }
-                if let Some(a) = v.last_break()
-                    && a.start_tick >= run.t0
-                    && a.outcome != BlockOutcome::Pending
-                    && !ch.log.iter().any(|(p, _, _)| *p == a.pos)
-                {
-                    ch.log.push((a.pos, a.finish_tick.map(|f| f - a.start_tick), a.outcome));
-                }
-                // The adapter keeps one break record; a new break command replaces it. So the next
-                // break waits until the last one's result (the server's ack) is in, or it is lost.
-                let unanswered = v.last_break().is_some_and(|a| a.start_tick >= run.t0 && a.outcome == BlockOutcome::Pending);
+                // The next break starts as soon as the last block reads as air (the client's own
+                // prediction at the finishing packet), without waiting for its ack: the mailbox
+                // keeps every result by id (AD-F5.4), read all at the end.
                 let next = list.iter().copied().find(|p| v.block_at(*p).as_deref() != Some("minecraft:air"));
                 if next.is_none() && ch.all_air.is_none() {
                     ch.all_air = Some(now);
                 }
+                let results = |ch: &Chain| -> Vec<(BlockPos, Option<u64>, BlockOutcome)> {
+                    ch.started
+                        .iter()
+                        .map(|(p, id)| match v.action(*id).record() {
+                            Some(ActionRecord::Block(a)) => (a.pos, a.finish_tick.map(|f| f - a.start_tick), a.outcome),
+                            _ => (*p, None, BlockOutcome::Pending),
+                        })
+                        .collect()
+                };
+                let all_finished = |ch: &Chain| ch.started.iter().all(|(_, id)| v.action(*id).is_finished());
                 match next {
                     // Look at the next block as soon as the last one is gone; the fork holds the
                     // start until vanilla's destroy delay has passed.
@@ -318,16 +329,19 @@ impl Skill for RemoteSkill {
                         None
                     }
                     Some(p) => {
-                        let started_p = v.last_break().is_some_and(|a| a.start_tick >= run.t0 && a.pos == p);
-                        if ch.looked.is_some_and(|(_, t)| now >= t + LOOK_TICKS) && (!unanswered || started_p) {
-                            c.break_block(p);
+                        // One command per block; a new one only after the last for it finished
+                        // and the block is still there.
+                        let last = ch.started.iter().rev().find(|(q, _)| *q == p).map(|(_, id)| *id);
+                        let idle = last.is_none_or(|id| v.action(id).is_finished());
+                        if ch.looked.is_some_and(|(_, t)| now >= t + LOOK_TICKS) && idle {
+                            ch.started.push((p, c.break_block(p)));
                         }
-                        (age > CHAIN_TICKS).then(|| Info::Chain(ch.log.clone()))
+                        (age > CHAIN_TICKS).then(|| Info::Chain(results(ch)))
                     }
-                    // All air: done when every break is logged; a missing result fails the row
+                    // All air: done when every id has finished; a missing result fails the row
                     // with the log after 40 ticks rather than hanging.
-                    None if ch.log.len() >= list.len() || ch.all_air.is_some_and(|t| now > t + 40) || age > CHAIN_TICKS => {
-                        Some(Info::Chain(ch.log.clone()))
+                    None if all_finished(ch) || ch.all_air.is_some_and(|t| now > t + 40) || age > CHAIN_TICKS => {
+                        Some(Info::Chain(results(ch)))
                     }
                     None => None,
                 }
@@ -347,8 +361,9 @@ impl Skill for RemoteSkill {
                 (age >= 3).then(|| Info::Snapshot(snapshot(v)))
             }
             Op::Items(io) => crate::skill_items::step(io, age, &mut self.items, v, c, &say),
-            Op::Inv(io) => crate::skill_inventory::step(io, age, v, c),
-            Op::Life(io) => crate::skill_respawn::step(io, age, v, c),
+            Op::Inv(io) => crate::skill_inventory::step(io, age, v, c, &mut self.latest),
+            Op::Mail(io) => crate::skill_mailbox::step(io, age, v, c, &mut self.mail),
+            Op::Life(io) => crate::skill_respawn::step(io, age, v, c, &mut self.latest),
             Op::Goto(pos) => {
                 if age == 0 {
                     c.goto(*pos, 0.0);
@@ -374,8 +389,18 @@ impl Skill for RemoteSkill {
             ));
         }
         if let Some(info) = done {
+            for id in &ids {
+                c.release(*id);
+            }
+            if matches!(run.op, Op::BreakChain(_)) {
+                for (_, id) in &self.chain.started {
+                    c.release(*id);
+                }
+            }
             say(info);
             self.cur = None;
+        } else if let Some(run) = self.cur.as_mut() {
+            run.ids = ids;
         }
         SkillStatus::Running
     }

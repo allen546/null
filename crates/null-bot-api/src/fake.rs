@@ -28,8 +28,11 @@ pub struct FakeView {
     pub floor_y: i32,
     /// Block names by position; anything else reads as air above the floor and stone below.
     pub blocks: Vec<(BlockPos, String)>,
-    pub last_break: Option<BlockAction>,
-    pub last_place: Option<BlockAction>,
+    /// Block-state properties by (position, property name); read by `block_property`.
+    pub properties: Vec<(BlockPos, String, String)>,
+    /// Results by id, set by the test (`set_pending`, `finish`, `expire`). An id nobody set reads
+    /// as pending, like a command just issued.
+    pub results: std::collections::HashMap<ActionId, ActionState>,
     pub nav_status: NavStatus,
     inventory_cache: std::cell::OnceCell<[Option<ItemStack>; 36]>,
 }
@@ -59,8 +62,8 @@ impl Default for FakeView {
             solid: Vec::new(),
             floor_y: 64,
             blocks: Vec::new(),
-            last_break: None,
-            last_place: None,
+            properties: Vec::new(),
+            results: Default::default(),
             nav_status: NavStatus::Idle,
             inventory_cache: Default::default(),
         }
@@ -76,6 +79,26 @@ impl FakeView {
     /// A hit by `entity` that the bot learned of at the current tick, newest last.
     pub fn hit_by(&mut self, entity: u32) {
         self.attackers.push(Attacker { entity: EntityId(entity), tick: self.tick });
+    }
+}
+
+impl FakeView {
+    // Spec: specs/B6-placement-breaking.md §4.6 (unit-testing skills against the mailbox)
+    /// Makes `id` read as pending with a partial record (a break in progress).
+    pub fn set_pending(&mut self, id: ActionId, partial: Option<ActionRecord>) {
+        self.results.insert(id, ActionState::Pending(partial));
+    }
+
+    // Spec: specs/B6-placement-breaking.md §4.6 (unit-testing skills against the mailbox)
+    /// Makes `id` read as finished with `record`.
+    pub fn finish(&mut self, id: ActionId, record: ActionRecord) {
+        self.results.insert(id, ActionState::Finished(record));
+    }
+
+    // Spec: specs/B6-placement-breaking.md §4.6 (unit-testing skills against the mailbox)
+    /// Makes `id` read as expired (released or pruned).
+    pub fn expire(&mut self, id: ActionId) {
+        self.results.insert(id, ActionState::Expired);
     }
 }
 
@@ -152,11 +175,13 @@ impl BotView for FakeView {
         }
         Some(if pos.y < self.floor_y { "minecraft:stone" } else { "minecraft:air" }.to_string())
     }
-    fn last_break(&self) -> Option<BlockAction> {
-        self.last_break
+    // Spec: specs/B4-gathering.md §4.8 (natural check: leaves' `persistent` property)
+    fn block_property(&self, pos: BlockPos, name: &str) -> Option<String> {
+        self.properties.iter().rev().find(|(p, n, _)| *p == pos && n == name).map(|(_, _, v)| v.clone())
     }
-    fn last_place(&self) -> Option<BlockAction> {
-        self.last_place
+    // Spec: specs/B6-placement-breaking.md §4.6 (the result mailbox)
+    fn action(&self, id: ActionId) -> ActionState {
+        self.results.get(&id).cloned().unwrap_or(ActionState::Pending(None))
     }
 }
 
@@ -165,6 +190,13 @@ impl BotView for FakeView {
 pub struct FakeCommands {
     pub tick: u64,
     pub log: Vec<(u64, Command)>,
+    /// Every id handed out, with the command that got it, oldest first.
+    pub issued: Vec<(ActionId, Command)>,
+    /// Ids released, and the last `expect_results` count.
+    pub released: Vec<ActionId>,
+    pub expected: Option<usize>,
+    /// The owner the host last set (None in a unit test that calls a skill directly).
+    pub owner: Option<Owner>,
 }
 
 impl FakeCommands {
@@ -180,9 +212,29 @@ impl FakeCommands {
     fn push(&mut self, c: Command) {
         self.log.push((self.tick, c));
     }
+    /// Records a command that has a result and hands out its id.
+    fn push_id(&mut self, c: Command) -> ActionId {
+        self.push(c);
+        let id = ActionId::fresh();
+        self.issued.push((id, c));
+        id
+    }
+    /// The id the latest result-bearing command got.
+    pub fn last_id(&self) -> Option<ActionId> {
+        self.issued.last().map(|(i, _)| *i)
+    }
 }
 
 impl BotCommands for FakeCommands {
+    fn set_owner(&mut self, owner: Owner) {
+        self.owner = Some(owner);
+    }
+    fn release(&mut self, id: ActionId) {
+        self.released.push(id);
+    }
+    fn expect_results(&mut self, n: usize) {
+        self.expected = Some(n);
+    }
     fn walk(&mut self, forward: i8, strafe: i8) {
         self.push(Command::Walk { forward: forward.clamp(-1, 1), strafe: strafe.clamp(-1, 1) });
     }
@@ -216,14 +268,14 @@ impl BotCommands for FakeCommands {
     fn stop(&mut self) {
         self.push(Command::Stop);
     }
-    fn break_block(&mut self, pos: BlockPos) {
-        self.push(Command::BreakBlock(pos));
+    fn break_block(&mut self, pos: BlockPos) -> ActionId {
+        self.push_id(Command::BreakBlock(pos))
     }
     fn cancel_break(&mut self) {
         self.push(Command::CancelBreak);
     }
-    fn place_block(&mut self, pos: BlockPos, face: Face, auto_crouch: bool) {
-        self.push(Command::PlaceBlock { pos, face, auto_crouch });
+    fn place_block(&mut self, pos: BlockPos, face: Face, auto_crouch: bool) -> ActionId {
+        self.push_id(Command::PlaceBlock { pos, face, auto_crouch })
     }
     fn look_at_block(&mut self, pos: BlockPos, face: Option<Face>) {
         self.push(Command::LookAtBlock { pos, face });
@@ -234,26 +286,26 @@ impl BotCommands for FakeCommands {
     fn stop_nav(&mut self) {
         self.push(Command::StopNav);
     }
-    fn open_inventory(&mut self) {
-        self.push(Command::OpenInventory);
+    fn open_inventory(&mut self) -> ActionId {
+        self.push_id(Command::OpenInventory)
     }
-    fn open_container(&mut self, pos: BlockPos, face: Option<Face>) {
-        self.push(Command::OpenContainer { pos, face });
+    fn open_container(&mut self, pos: BlockPos, face: Option<Face>) -> ActionId {
+        self.push_id(Command::OpenContainer { pos, face })
     }
     fn look_at_entity(&mut self, target: EntityId) {
         self.push(Command::LookAtEntity(target));
     }
-    fn open_entity(&mut self, target: EntityId, auto_crouch: bool) {
-        self.push(Command::OpenEntity { target, auto_crouch });
+    fn open_entity(&mut self, target: EntityId, auto_crouch: bool) -> ActionId {
+        self.push_id(Command::OpenEntity { target, auto_crouch })
     }
     fn close_window(&mut self) {
         self.push(Command::CloseWindow);
     }
-    fn click_slot(&mut self, slot: Option<u16>, click: Click) {
-        self.push(Command::ClickSlot { slot, click });
+    fn click_slot(&mut self, slot: Option<u16>, click: Click) -> ActionId {
+        self.push_id(Command::ClickSlot { slot, click })
     }
-    fn respawn(&mut self) {
-        self.push(Command::Respawn);
+    fn respawn(&mut self) -> ActionId {
+        self.push_id(Command::Respawn)
     }
 }
 
@@ -331,6 +383,31 @@ mod tests {
         assert_eq!(v.block_at(BlockPos::new(0, 64, 0)).as_deref(), Some("minecraft:oak_log"));
         assert_eq!(v.block_at(BlockPos::new(0, 65, 0)).as_deref(), Some("minecraft:air"));
         assert_eq!(v.block_at(BlockPos::new(0, 10, 0)).as_deref(), Some("minecraft:stone"));
+    }
+
+    #[test]
+    fn ids_are_handed_out_and_results_set_by_the_test() {
+        let mut c = FakeCommands::default();
+        let a = c.break_block(BlockPos::new(1, 64, 2));
+        let b = c.break_block(BlockPos::new(2, 64, 2));
+        assert_ne!(a, b);
+        assert_eq!(c.last_id(), Some(b));
+        c.release(a);
+        assert_eq!(c.released, vec![a]);
+        let mut v = FakeView::default();
+        assert!(v.action(a).is_pending(), "a fresh id reads pending");
+        v.finish(a, ActionRecord::Block(BlockAction {
+            kind: BlockActionKind::Break,
+            pos: BlockPos::new(1, 64, 2),
+            outcome: BlockOutcome::Done,
+            start_tick: 0,
+            finish_tick: Some(4),
+            ack_tick: Some(5),
+            reason: None,
+        }));
+        assert_eq!(v.action(a).block().map(|x| x.outcome), Some(BlockOutcome::Done));
+        v.expire(b);
+        assert!(v.action(b).is_expired());
     }
 
     #[test]

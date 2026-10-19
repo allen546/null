@@ -91,17 +91,17 @@ impl Skill for Replay {
                 Command::Stop => c.stop(),
                 Command::Goto { target, tolerance } => c.goto(target, tolerance),
                 Command::StopNav => c.stop_nav(),
-                Command::BreakBlock(p) => c.break_block(p),
+                Command::BreakBlock(p) => { c.break_block(p); },
                 Command::CancelBreak => c.cancel_break(),
-                Command::PlaceBlock { pos, face, auto_crouch } => c.place_block(pos, face, auto_crouch),
+                Command::PlaceBlock { pos, face, auto_crouch } => { c.place_block(pos, face, auto_crouch); },
                 Command::LookAtBlock { pos, face } => c.look_at_block(pos, face),
-                Command::OpenInventory => c.open_inventory(),
-                Command::OpenContainer { pos, face } => c.open_container(pos, face),
+                Command::OpenInventory => { c.open_inventory(); },
+                Command::OpenContainer { pos, face } => { c.open_container(pos, face); },
                 Command::LookAtEntity(e) => c.look_at_entity(e),
-                Command::OpenEntity { target, auto_crouch } => c.open_entity(target, auto_crouch),
+                Command::OpenEntity { target, auto_crouch } => { c.open_entity(target, auto_crouch); },
                 Command::CloseWindow => c.close_window(),
-                Command::ClickSlot { slot, click } => c.click_slot(slot, click),
-                Command::Respawn => c.respawn(),
+                Command::ClickSlot { slot, click } => { c.click_slot(slot, click); },
+                Command::Respawn => { c.respawn(); },
             }
         }
         SkillStatus::Running
@@ -438,4 +438,192 @@ fn a_dead_or_unloaded_bot_is_skipped() {
     for _ in 0..3 {
         sim.tick();
     }
+}
+
+// ---- the result mailbox (AD-F5.4, B6 §4.6) ----
+
+/// A skill written as a closure over its own step counter.
+struct Script<F: FnMut(u32, &dyn BotView, &mut dyn BotCommands) -> SkillStatus + Send + Sync> {
+    n: u32,
+    f: F,
+}
+
+impl<F: FnMut(u32, &dyn BotView, &mut dyn BotCommands) -> SkillStatus + Send + Sync> Skill for Script<F> {
+    fn id(&self) -> &str {
+        "script"
+    }
+    fn step(&mut self, v: &dyn BotView, c: &mut dyn BotCommands) -> SkillStatus {
+        self.n += 1;
+        (self.f)(self.n, v, c)
+    }
+}
+
+fn rig_with(skill: Box<dyn Skill>, brain: Brain) -> Rig {
+    let mut rig = Rig::new();
+    let e = rig.sim.entity;
+    rig.sim.app.world_mut().entity_mut(e).insert(BotBrain::new(brain, Some(skill)));
+    rig.sim.tick();
+    rig
+}
+
+#[test]
+fn a_command_id_reads_pending_at_once_then_finished_then_expired_after_release() {
+    use null_bot_api::{ActionId, ActionState, OpenOutcome};
+    let _lock = init();
+    let log: Arc<Mutex<Vec<(u32, ActionState)>>> = Default::default();
+    let (l, id): (_, Arc<Mutex<Option<ActionId>>>) = (log.clone(), Default::default());
+    let skill = Script {
+        n: 0,
+        f: move |n, v: &dyn BotView, c: &mut dyn BotCommands| {
+            let mut idg = id.lock().unwrap();
+            match (n, *idg) {
+                (1, _) => {
+                    let i = c.open_inventory();
+                    *idg = Some(i);
+                    l.lock().unwrap().push((n, v.action(i)));
+                }
+                (2..=3, Some(i)) => l.lock().unwrap().push((n, v.action(i))),
+                (4, Some(i)) => {
+                    c.release(i);
+                    l.lock().unwrap().push((n, v.action(i)));
+                }
+                (5, Some(i)) => l.lock().unwrap().push((n, v.action(i))),
+                _ => {}
+            }
+            SkillStatus::Running
+        },
+    };
+    let mut rig = rig_with(Box::new(skill), Brain::new());
+    for _ in 0..8 {
+        rig.sim.tick();
+    }
+    let log = log.lock().unwrap();
+    // The id the step just got reads pending in the same step, never expired.
+    assert!(log[0].1.is_pending(), "{:?}", log[0]);
+    let fin = log.iter().find(|(n, _)| *n == 3).unwrap();
+    assert!(
+        matches!(fin.1.open().map(|o| &o.outcome), Some(OpenOutcome::Opened { window_id: 0, .. })),
+        "open_inventory finishes as opened: {:?}",
+        fin.1
+    );
+    assert!(fin.1.is_finished());
+    // Released at step 4 (takes effect at the end of that tick); gone by step 5.
+    assert!(log.iter().find(|(n, _)| *n == 5).unwrap().1.is_expired());
+}
+
+#[test]
+fn a_skill_that_never_releases_ends_with_result_leak() {
+    // The leak guard logs a warning, which the default test setup turns into a panic.
+    let _lock = azalea::test_utils::tracing::init_with_level(tracing::Level::ERROR);
+    // Every step asks to open the inventory: the first opens it, the rest are refused at once, and
+    // each result finishes a tick later. Nothing is ever released.
+    let skill = Script {
+        n: 0,
+        f: |_, _: &dyn BotView, c: &mut dyn BotCommands| {
+            c.expect_results(usize::MAX); // no warning noise; the leak guard still holds
+            c.open_inventory();
+            SkillStatus::Running
+        },
+    };
+    let mut rig = rig_with(Box::new(skill), Brain::new());
+    let mut ended_at = None;
+    for t in 0..(null_bot_api::LEAK_LIMIT + 40) {
+        rig.sim.tick();
+        let has = rig.sim.app.world().get::<BotBrain>(rig.sim.entity).unwrap().has_skill();
+        if !has {
+            ended_at = Some(t);
+            break;
+        }
+    }
+    let t = ended_at.expect("the leak guard ended the skill");
+    assert!(t >= null_bot_api::LEAK_LIMIT - 5, "not before the limit: ended at tick {t}");
+}
+
+#[test]
+fn a_reflex_that_leaks_is_turned_off_at_bot_scope() {
+    use null_bot_api::{Group, Reflex, ReflexSpec, Scope, Target};
+    struct Leaky(ReflexSpec);
+    impl Reflex for Leaky {
+        fn spec(&self) -> &ReflexSpec {
+            &self.0
+        }
+        fn trigger(&mut self, _: &dyn BotView) -> bool {
+            true
+        }
+        fn act(&mut self, _: &dyn BotView, c: &mut dyn BotCommands) {
+            c.expect_results(usize::MAX);
+            c.open_inventory();
+        }
+    }
+    let _lock = azalea::test_utils::tracing::init_with_level(tracing::Level::ERROR);
+    let spec = ReflexSpec { id: "leaky", group: Group::Survival, priority: 1, default_on: true, params: vec![] };
+    let mut brain = Brain::new();
+    brain.register(Box::new(Leaky(spec.clone())));
+    let skill = Script { n: 0, f: |_, _: &dyn BotView, _: &mut dyn BotCommands| SkillStatus::Running };
+    let mut rig = rig_with(Box::new(skill), brain);
+    let mut off_at = None;
+    for t in 0..(null_bot_api::LEAK_LIMIT + 40) {
+        rig.sim.tick();
+        let bb = rig.sim.app.world().get::<BotBrain>(rig.sim.entity).unwrap();
+        if !bb.brain.is_enabled(&spec) {
+            off_at = Some(t);
+            break;
+        }
+    }
+    let t = off_at.expect("the leak guard turned the reflex off");
+    assert!(t >= null_bot_api::LEAK_LIMIT - 5, "not before the limit: off at tick {t}");
+    // Bot scope: the setting is the one a job cannot undo.
+    let mut b = Brain::new();
+    b.set(Scope::Bot, Target::Reflex("leaky".into()), false);
+    assert!(!b.is_enabled(&spec));
+    // The skill is unaffected.
+    assert!(rig.sim.app.world().get::<BotBrain>(rig.sim.entity).unwrap().has_skill());
+}
+
+#[test]
+fn a_break_the_client_refuses_finishes_with_its_reason_and_two_breaks_keep_both_results() {
+    use null_bot_api::{ActionId, ActionState, BlockOutcome};
+    let _lock = init();
+    let log: Arc<Mutex<Vec<(u32, ActionId, ActionState)>>> = Default::default();
+    let (l, ids): (_, Arc<Mutex<Vec<ActionId>>>) = (log.clone(), Default::default());
+    // Two breaks of blocks the bot is not looking at, a tick apart: the crosshair check refuses both.
+    // The second command must not take the first one's result.
+    let skill = Script {
+        n: 0,
+        f: move |n, v: &dyn BotView, c: &mut dyn BotCommands| {
+            let mut ids = ids.lock().unwrap();
+            if n == 1 {
+                ids.push(c.break_block(null_bot_api::BlockPos::new(2, 64, 5)));
+            } else if n == 8 {
+                ids.push(c.break_block(null_bot_api::BlockPos::new(3, 64, 5)));
+            }
+            if n >= 2 {
+                for id in ids.iter() {
+                    l.lock().unwrap().push((n, *id, v.action(*id)));
+                }
+            }
+            SkillStatus::Running
+        },
+    };
+    let mut rig = rig_with(Box::new(skill), Brain::new());
+    for _ in 0..30 {
+        rig.sim.tick();
+    }
+    let log = log.lock().unwrap();
+    let last = |k: usize| {
+        let id = log.iter().map(|(_, i, _)| *i).collect::<Vec<_>>();
+        let mut uniq = id.clone();
+        uniq.dedup();
+        let want = uniq[k];
+        log.iter().rev().find(|(_, i, _)| *i == want).map(|(_, _, s)| s.clone()).unwrap()
+    };
+    for k in 0..2 {
+        let s = last(k);
+        let b = s.block().unwrap_or_else(|| panic!("break {k}: {s:?}"));
+        assert!(s.is_finished(), "break {k}: {s:?}");
+        assert_eq!(b.outcome, BlockOutcome::Refused, "break {k}");
+        assert!(b.reason.is_some(), "a refusal says why: {b:?}");
+    }
+    let (a, b) = (last(0).block().cloned().unwrap(), last(1).block().cloned().unwrap());
+    assert_ne!(a.pos, b.pos, "each id keeps its own block");
 }

@@ -166,6 +166,10 @@ fn log_events(rx: mpsc::Receiver<HostEvent>, mut out: Box<dyn Write + Send>, exi
                 }));
                 json!({ "wall_ms": wall_ms, "event": "died", "bot": bot, "tick": tick, "death": at })
             }
+            HostEvent::ReflexDisabled { bot, reflex, tick } => {
+                json!({ "wall_ms": wall_ms, "event": "reflex_disabled", "bot": bot, "reflex": reflex,
+                        "why": "result leak", "tick": tick })
+            }
         };
         let _ = writeln!(out, "{line}");
         let _ = out.flush();

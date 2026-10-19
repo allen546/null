@@ -84,6 +84,39 @@ After a break, collect item entities within a radius before moving on. In surviv
 - Wait for the server's block-change acknowledgement (sequence number) before any action that depends on the placed block.
 - Read back the resulting state from the client's chunk data; mismatch → `failed(state_mismatch, got)`.
 
+**The result mailbox (AD-F5.4, built 2026-10-19).** Every command that has a result returns an `ActionId`: `break_block`, `place_block`, `open_inventory`, `open_container`, `open_entity`, `click_slot`, `respawn`. Ids come from one counter for the whole process and are never reused, so an id from before a reconnect never matches a new one. A skill reads the result with `BotView::action(id)` as often as it likes:
+
+- `Pending(Option<record>)`: not finished. The record is the partial one (a break in progress shows `finish_tick` once the finishing packet is out). The id a step has just got reads pending in that same step.
+- `Finished(record)`: the final record. A client-side refusal (nothing sent) is a finished result like any other; its reason is in the record (`BlockAction.reason`, `OpenResult.refused`, `ClickOutcome.refused`, `RespawnSent.refused`). There is no separate refusal query.
+- `Expired`: released, pruned, or never issued. It never reads as pending.
+
+One enum, `ActionRecord`, covers the record types: `Block(BlockAction)` for breaks and places, `Open(OpenResult)` (target `Block`, `Entity` or `Inventory`), `Click(ClickOutcome)`, `Respawn(RespawnSent)`. Whether to wait for an ack is the skill's choice for each action: it may send the next break as soon as the finishing packet of the last one has gone out and read every id later.
+
+*Owner and pruning.* The owner of a command is the skill instance or the reflex that sent it; `Brain::tick` stamps the owner (`BotCommands::set_owner`), the host keeps one mailbox per bot (`null_bot_api::Mailbox`, pure and unit-tested). Nothing is pruned by time.
+- Pending results are never pruned and never cause a refusal. Each kind finishes within a bounded time (table below), so their number is bounded by the send rate.
+- The owner releases a finished result after reading it: `BotCommands::release(id)`, which takes effect at the end of the tick. Releasing a pending result drops it when it finishes. A stranger's `release` is ignored.
+- All of a skill's results go when the skill ends (`Done`, `Failed`, replaced by `BotBrain::set_skill`, or `AfterDeath::End`). A skill that returns `AfterDeath::Keep` keeps its results (and its pending tracks) across the death; the reflexes' results do not cross it.
+- All results are cleared at a disconnect (the brain is removed).
+- The owner may declare how many finished results it expects to hold at once: `BotCommands::expect_results(n)`, default 64. Going over logs one warning per owner (tracing `warn`) and prunes nothing.
+- Leak guard: 4,096 unreleased finished results end a skill with `Failed("result leak")` (`SKILL_LEAK`). A reflex cannot end, so the host turns it off at bot scope (`Scope::Bot`, `Target::Reflex(id)`), drops its results and emits `ReflexDisabled` (as `HostEvent::ReflexDisabled`).
+- The history is a mailbox, not a log: a skill that wants totals keeps its own tally.
+
+*Finish bounds.* The fork keeps one record per kind and settles only the newest, so the adapter copies each record into the mailbox every tick (`mc-adapter/src/actions.rs`) and bounds what the fork does not.
+
+| Kind | Finishes when | Bound |
+|---|---|---|
+| break | the fork settles it: acknowledged (`Done` or `Refused`), refused at once by a client check, or `Cancelled` (`cancel_break`, or mining ended without a finishing packet) | the fork's ack timeout, 60 ticks after the finishing packet (`Refused`, "no ack"); no finishing packet within 6,000 ticks (5 minutes, past the longest vanilla hand-break) and the host cancels it (`Cancelled`, "too long") |
+| place | acknowledged or refused, as for a break | 60 ticks after the click (the fork's ack timeout) |
+| `open_container`, `open_entity` | the server opens a window (`Opened`), the ack comes with no window (`NoScreen`, 4 ticks of grace after the ack), or a client check refuses | the fork's 60-tick ack timeout, then judged on the ack alone |
+| `open_inventory` | local, no server round trip: `Opened` or `Refused` in the tick after the command | 1 tick |
+| `click_slot` | refused at once by a client check, or 8 ticks after the click (the server's corrections come within a few; the ability check waits the same) | 8 ticks |
+| `respawn` | refused at once (not dead, hardcore), or the server's respawn packet arrives (`completed_tick`) | 600 ticks without the packet: finished with `refused: Some("no answer")` |
+| any command whose fork result never appears (the fork dropped it) | `Refused`, reason "not started" | 20 ticks after the command |
+
+*Limits of one record per kind.* Repeated `break_block` commands for the block already being broken, and repeated `respawn` commands for one death, name the same action: their ids finish together with the same record. A newer command of the same kind that replaces a queued one before it starts finishes the older as `Refused`/`Cancelled` ("replaced ... before it started"; nothing was sent). When a newer action of the same kind replaces the fork's record after the packet was sent and before the server answered, the older finishes as `BlockOutcome::Superseded`, `OpenOutcome::Superseded` or `ClickOutcome.superseded`: the outcome is unknown, read `block_at` or `window`. This needs an action sent in the tick right after another of its kind before the first is acknowledged: two places, opens or clicks, or two instant breaks (an instamine sets no destroy delay, as in vanilla, so a chain sends one break per tick). A fork patch that settles every in-flight action by sequence (the server's ack is cumulative) removes this case; it is the next step (2026-10-19). A click record holds the corrections seen until the next click.
+
+*Tests.* Unit: `null-bot-api/src/action.rs` (one test per rule: release, skill end, kept skill, disconnect, expected count warning once, leak guard, expired and pending ids), `fake.rs` (`FakeView::finish`, `set_pending`, `expire` for skill tests), `reflex.rs` (owner stamping); simulator: `mc-adapter/tests/sim.rs` (id pending at once, finished, expired after release; skill leak ends the skill; reflex leak turns the reflex off). Live: A13 (`scenarios_mailbox.rs`): 16 breaks sent without waiting for an ack, all read by id at the end; a place sent right after a break.
+
 ### 4.7 Packet replay executor
 
 For certified builder steps (ONLINE_BUILDER §0 S3):

@@ -1,6 +1,6 @@
 //! Reflex registry entries and per-bot arbitration (CONVENTIONS §4, F1 §4.5).
 
-use crate::{BotCommands, BotView, Skill, SkillStatus};
+use crate::{BotCommands, BotView, Owner, Skill, SkillStatus};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Group {
@@ -158,10 +158,13 @@ impl Brain {
             }
         }
         if let Some(w) = winner {
-            self.reflexes[w].act(view, cmds);
             let id = self.reflexes[w].spec().id;
+            // Spec: specs/B6-placement-breaking.md §4.6 (every command is stamped with its owner)
+            cmds.set_owner(Owner::Reflex(id));
+            self.reflexes[w].act(view, cmds);
             return TickOutcome { reflex: Some(id), skill: None, events };
         }
+        cmds.set_owner(Owner::Skill);
         let skill = skill.map(|s| s.step(view, cmds));
         TickOutcome { reflex: None, skill, events }
     }
@@ -208,6 +211,17 @@ mod tests {
         let mut c = FakeCommands::default();
         let o = b.tick(&v, &mut c, Some(&mut S));
         (o, c)
+    }
+
+    #[test]
+    fn commands_are_stamped_with_the_stepping_owner() {
+        use crate::Owner;
+        let mut b = Brain::new();
+        b.register(r("flee", Group::Survival, 5, true, false));
+        assert_eq!(run(&mut b).1.owner, Some(Owner::Skill));
+        let mut b = Brain::new();
+        b.register(r("flee", Group::Survival, 5, true, true));
+        assert_eq!(run(&mut b).1.owner, Some(Owner::Reflex("flee")));
     }
 
     #[test]

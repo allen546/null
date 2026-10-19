@@ -2076,6 +2076,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "null-belief"
+version = "0.1.0"
+dependencies = [
+ "null-bot-api",
+]
+
+[[package]]
 name = "null-bot-api"
 version = "0.1.0"
 
@@ -2103,6 +2110,14 @@ dependencies = [
  "null-skills-demo",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "null-skills"
+version = "0.1.0"
+dependencies = [
+ "null-belief",
+ "null-bot-api",
 ]
 
 [[package]]
