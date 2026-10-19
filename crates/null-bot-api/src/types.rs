@@ -257,7 +257,7 @@ impl Window {
     }
 }
 
-/// What came of the latest `open_container` (B3 §4.7).
+/// What came of the latest `open_container` or `open_entity` (B3 §4.7).
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpenResult {
     pub target: OpenTarget,
@@ -268,10 +268,12 @@ pub struct OpenResult {
     pub ticks: u32,
 }
 
-/// What was right-clicked to open a window. Entity containers (minecart, boat) join later.
+/// What was right-clicked to open a window: a block, or an entity container (chest minecart,
+/// hopper minecart, chest boat; B3 §4.7).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum OpenTarget {
     Block(BlockPos),
+    Entity(EntityId),
 }
 
 #[derive(Clone, Debug, PartialEq)]

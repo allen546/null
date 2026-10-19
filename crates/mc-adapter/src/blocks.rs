@@ -8,7 +8,10 @@ use azalea::{
     core::direction::Direction,
 };
 use azalea::block_actions::{UseBlockOutcome, UseBlockResult};
-use null_bot_api::{OpenOutcome, OpenResult, BlockAction, BlockActionKind, BlockOutcome, BlockPos, Face};
+use azalea::entity_actions::{EntityUseResults, UseEntityOutcome, UseEntityResult};
+use null_bot_api::{
+    BlockAction, BlockActionKind, BlockOutcome, BlockPos, EntityId, Face, OpenOutcome, OpenResult,
+};
 
 /// A command we issued, kept so a result left over from an earlier action is not mistaken for it.
 #[derive(Clone, Copy)]
@@ -39,12 +42,29 @@ pub fn same_break_pending(issued: Option<Issued>, pos: BlockPos, cur: Option<&Bl
     }
 }
 
+/// An entity open we issued (the entity twin of [`Issued`]).
+#[derive(Clone, Copy)]
+pub struct EntityIssued {
+    pub target: EntityId,
+    /// The id of the fork's entity result at the time of the command; ours has a different one.
+    prev_id: u32,
+}
+
+impl EntityIssued {
+    pub fn new(target: EntityId, prev_id: Option<u32>) -> Self {
+        Self { target, prev_id: prev_id.unwrap_or(0) }
+    }
+}
+
 /// The host's record of the last break and place commands.
 #[derive(Default)]
 pub struct BlockActions {
     pub last_break: Option<Issued>,
     pub last_place: Option<Issued>,
     pub last_open: Option<Issued>,
+    pub last_open_entity: Option<EntityIssued>,
+    /// Which of the two open commands came last (`BotView::last_open` reports that one).
+    pub open_is_entity: bool,
 }
 
 // Spec: specs/B6-placement-breaking.md §4.2 (click face as the fork's Direction)
@@ -110,9 +130,29 @@ pub fn translate(
 }
 
 // Spec: specs/B3-inventory-crafting.md §4.7 (the latest container open, as the api's OpenResult)
-/// The api's view of our latest `open_container`; Pending until the fork opens its result.
-pub fn translate_open(issued: Option<Issued>, results: Option<&BlockActionResults>) -> Option<OpenResult> {
-    let i = issued?;
+/// The api's view of our latest `open_container` or `open_entity`; Pending until the fork opens its
+/// result.
+pub fn translate_open(
+    actions: &BlockActions,
+    results: Option<&BlockActionResults>,
+    entity_results: Option<&EntityUseResults>,
+) -> Option<OpenResult> {
+    if actions.open_is_entity {
+        let i = actions.last_open_entity?;
+        let mut o = OpenResult { target: null_bot_api::OpenTarget::Entity(i.target), outcome: OpenOutcome::Pending, refused: None, ticks: 0 };
+        if let Some(r) = entity_results.and_then(|r| r.last_use).filter(|r: &UseEntityResult| r.id != i.prev_id) {
+            o.outcome = match r.outcome {
+                UseEntityOutcome::Pending => OpenOutcome::Pending,
+                UseEntityOutcome::Opened { window_id, menu } => OpenOutcome::Opened { window_id, kind: menu.to_str() },
+                UseEntityOutcome::NoScreen => OpenOutcome::NoScreen,
+                UseEntityOutcome::Refused => OpenOutcome::Refused,
+            };
+            o.refused = r.refusal.map(|w| w.as_str());
+            o.ticks = r.elapsed_ticks;
+        }
+        return Some(o);
+    }
+    let i = actions.last_open?;
     let mut o = OpenResult { target: null_bot_api::OpenTarget::Block(i.target), outcome: OpenOutcome::Pending, refused: None, ticks: 0 };
     if let Some(r) = results.and_then(|r| r.last_use).filter(|r: &UseBlockResult| r.id != i.prev_id) {
         o.outcome = match r.outcome {

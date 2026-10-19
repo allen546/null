@@ -84,6 +84,8 @@ Pack by item type, label (an item name is ours, not player text, but still store
 4. Re-read and report what actually moved.
 5. Close.
 
+Storage on entities (chest minecart, hopper minecart, chest boat) opens by a right-click on the entity: the bot aims at a point of its hitbox that the crosshair reaches (blocks in the way count), and the fork checks reach to the hitbox before it sends INTERACT_AT (hit point relative to the entity) and INTERACT, as `MultiPlayerGameMode#interactAt` and `#interact` do. A chest boat opens only for a crouching player; a standing click would ride it, which Null never sends, so the command refuses or crouches first (`auto_crouch`). The result is read like a block's (`BotView::last_open`, target `OpenTarget::Entity`).
+
 ### 4.8 Exact container contents
 
 - `fill_exact` places specific items in specific slots with exact counts, for machines that read signal strength from contents (ONLINE_BUILDER §2: contents go in with the block's own placement, not after).

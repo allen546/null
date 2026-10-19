@@ -49,6 +49,20 @@ pub trait BotCommands {
     /// sending nothing, when out of reach, crouching with an item in hand, or a screen is open.
     /// Read the result from `BotView::last_open`.
     fn open_container(&mut self, pos: BlockPos, face: Option<Face>);
+    // Spec: specs/B3-inventory-crafting.md §4.7 (aim at a point of an entity's hitbox)
+    /// Turn to a point of the entity's real hitbox where the crosshair hits it (blocks in the way
+    /// and the entity reach included). Leave two ticks before the click; if no such point is
+    /// reachable the look does not change and the click is refused.
+    fn look_at_entity(&mut self, target: EntityId);
+    // Spec: specs/B3-inventory-crafting.md §4.7 (open a container on an entity by right-clicking it)
+    /// Right-click a chest minecart, hopper minecart or chest boat with the main hand, as a
+    /// vanilla client does. Look at it first (`look_at_entity`, two ticks). Refused with a reason,
+    /// sending nothing, when out of reach (measured to the hitbox), behind a block, not under the
+    /// crosshair, or a screen is open. A chest boat opens only for a crouching player (a standing
+    /// click would ride it, which Null does not do): standing, it is refused unless `auto_crouch`
+    /// is set; then the bot crouches, clicks one tick later and stands again. Read the result from
+    /// `BotView::last_open`.
+    fn open_entity(&mut self, target: EntityId, auto_crouch: bool);
     // Spec: specs/B3-inventory-crafting.md §4.1 (close the open window)
     fn close_window(&mut self);
     // Spec: specs/B3-inventory-crafting.md §4.1 (click a slot of the open window)
@@ -84,6 +98,8 @@ pub enum Command {
     StopNav,
     OpenInventory,
     OpenContainer { pos: BlockPos, face: Option<Face> },
+    LookAtEntity(EntityId),
+    OpenEntity { target: EntityId, auto_crouch: bool },
     CloseWindow,
     ClickSlot { slot: Option<u16>, click: Click },
     Respawn,

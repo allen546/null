@@ -97,6 +97,8 @@ impl Skill for Replay {
                 Command::LookAtBlock { pos, face } => c.look_at_block(pos, face),
                 Command::OpenInventory => c.open_inventory(),
                 Command::OpenContainer { pos, face } => c.open_container(pos, face),
+                Command::LookAtEntity(e) => c.look_at_entity(e),
+                Command::OpenEntity { target, auto_crouch } => c.open_entity(target, auto_crouch),
                 Command::CloseWindow => c.close_window(),
                 Command::ClickSlot { slot, click } => c.click_slot(slot, click),
                 Command::Respawn => c.respawn(),

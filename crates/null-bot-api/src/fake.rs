@@ -240,6 +240,12 @@ impl BotCommands for FakeCommands {
     fn open_container(&mut self, pos: BlockPos, face: Option<Face>) {
         self.push(Command::OpenContainer { pos, face });
     }
+    fn look_at_entity(&mut self, target: EntityId) {
+        self.push(Command::LookAtEntity(target));
+    }
+    fn open_entity(&mut self, target: EntityId, auto_crouch: bool) {
+        self.push(Command::OpenEntity { target, auto_crouch });
+    }
     fn close_window(&mut self) {
         self.push(Command::CloseWindow);
     }

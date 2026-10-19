@@ -26,6 +26,10 @@ use azalea::{
         BlockActionResults, BreakBlockQueued, LookAtBlockQueued, PlaceBlockQueued, StopMiningQueued, UseBlockQueued,
         handle_break_block_queued, handle_look_at_block_queued,
     },
+    entity_actions::{
+        EntityUseResults, LookAtEntityQueued, UseEntityQueued, handle_look_at_entity_queued,
+        handle_use_entity_queued,
+    },
     mining::MiningSystems,
     respawn::{DeathScreen, PerformRespawnEvent, RespawnLog},
     tick_counter::TicksConnected,
@@ -43,7 +47,7 @@ use azalea::ecs::prelude::*;
 use azalea::entity::indexing::EntityIdIndex;
 use null_bot_api::{AfterDeath, Brain, BotView, Command, Hand, Skill, SkillStatus};
 
-use crate::blocks::{self, BlockActions, Issued};
+use crate::blocks::{self, BlockActions, EntityIssued, Issued};
 use crate::view::{AzaleaView, OthersQuery, ViewParts};
 
 /// A bot's decision state: reflexes, the active skill and the commands it just issued.
@@ -120,6 +124,8 @@ impl Plugin for HostPlugin {
                 .before(MiningSystems)
                 .before(handle_break_block_queued)
                 .before(handle_look_at_block_queued)
+                .before(handle_look_at_entity_queued)
+                .before(handle_use_entity_queued)
                 .before(ensure_has_sent_carried_item)
                 .before(handle_start_use_item_queued)
                 .before(handle_use_item_queued)
@@ -128,6 +134,7 @@ impl Plugin for HostPlugin {
                 // A dead bot's commands are refused by the fork's guards, which run after us.
                 .before(azalea::respawn::refuse_input_while_dead)
                 .before(azalea::block_actions::refuse_block_actions_while_dead)
+                .before(azalea::entity_actions::refuse_entity_actions_while_dead)
                 // The view reads the fork's tick count and death record, so they settle first.
                 .after(azalea::tick_counter::increment_counter)
                 .after(azalea::respawn::tick_death_screen),
@@ -202,6 +209,14 @@ impl null_bot_api::BotCommands for CommandBuffer {
     fn open_container(&mut self, pos: null_bot_api::BlockPos, face: Option<null_bot_api::Face>) {
         self.0.push(Command::OpenContainer { pos, face });
     }
+    // Spec: specs/B3-inventory-crafting.md §4.7 (aim at a point of an entity's hitbox)
+    fn look_at_entity(&mut self, target: null_bot_api::EntityId) {
+        self.0.push(Command::LookAtEntity(target));
+    }
+    // Spec: specs/B3-inventory-crafting.md §4.7 (open a container on an entity by right-clicking it)
+    fn open_entity(&mut self, target: null_bot_api::EntityId, auto_crouch: bool) {
+        self.0.push(Command::OpenEntity { target, auto_crouch });
+    }
     fn close_window(&mut self) {
         self.0.push(Command::CloseWindow);
     }
@@ -244,6 +259,7 @@ fn decide(
                 Option<&RespawnLog>,
                 Option<&TicksConnected>,
                 Option<&DeathScreen>,
+                Option<&EntityUseResults>,
             ),
         ),
         (With<LocalEntity>, With<HasClientLoaded>),
@@ -254,7 +270,7 @@ fn decide(
 ) {
     tick.0 += 1;
     let now = tick.0;
-    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, results, attackers, tags, screen, clicks, movement, respawn_log, connected, death_screen)) in
+    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, results, attackers, tags, screen, clicks, movement, respawn_log, connected, death_screen, entity_results)) in
         &mut bots
     {
         let nav_pending = flags.and_then(|f| f.nav_requested).is_some_and(|t| now - t <= 2);
@@ -276,6 +292,7 @@ fn decide(
                 executing: exec,
                 nav_pending,
                 blocks: flags.map(|f| &f.blocks),
+                entity_results,
                 results,
                 attackers,
                 tags,
@@ -379,12 +396,13 @@ fn apply(
         &mut BlockStatePredictionHandler,
         &EntityIdIndex,
         &BlockActionResults,
+        &EntityUseResults,
     )>,
     mut goto: MessageWriter<GotoEvent>,
     mut stop_nav: MessageWriter<StopPathfindingEvent>,
     mut respawn: MessageWriter<PerformRespawnEvent>,
 ) {
-    for (entity, mut bb, mut flags, mut mv, mut look, mut jumping, mut inv, _pred, ids, results) in &mut bots
+    for (entity, mut bb, mut flags, mut mv, mut look, mut jumping, mut inv, _pred, ids, results, entity_results) in &mut bots
     {
         if flags.jump_pulse {
             **jumping = false;
@@ -480,6 +498,17 @@ fn apply(
                         direction: face.map(blocks::face_to_dir),
                     });
                     flags.blocks.last_open = Some(Issued::new_open(tick.0, pos, results.last_use.map(|r| r.id)));
+                    flags.blocks.open_is_entity = false;
+                }
+                // Spec: specs/B3-inventory-crafting.md §4.7 (aim at, then right-click, an entity)
+                Command::LookAtEntity(id) => {
+                    commands.entity(entity).insert(LookAtEntityQueued { entity_id: id.0 as i32 });
+                }
+                Command::OpenEntity { target, auto_crouch } => {
+                    commands.entity(entity).insert(UseEntityQueued { entity_id: target.0 as i32, auto_crouch });
+                    flags.blocks.last_open_entity =
+                        Some(EntityIssued::new(target, entity_results.last_use.map(|r| r.id)));
+                    flags.blocks.open_is_entity = true;
                 }
                 Command::CloseWindow => commands.trigger(CloseContainerEvent { entity, id: inv.id }),
                 Command::Respawn => {

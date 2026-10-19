@@ -18,9 +18,9 @@ const SPAWN: (f64, f64, f64) = (600.5, 200.0, 352.5);
 /// The container block (the bot stands two blocks south of it, facing north).
 const C: (i32, i32, i32) = (600, 200, 350);
 
-type Slots = Vec<(i64, String, i64)>;
+pub(crate) type Slots = Vec<(i64, String, i64)>;
 /// Where a container's items live for `data get`: ("block x y z" or "entity <bot>", "Items" or "EnderItems").
-type Src = (String, &'static str);
+pub(crate) type Src = (String, &'static str);
 
 fn blk(x: i32) -> Src {
     (format!("block {}", at(x)), "Items")
@@ -44,7 +44,7 @@ fn items_nbt(items: &[(u8, &str, u8)]) -> String {
 
 /// The block entity's items as (slot, item, count), read one field at a time (Paper cuts long
 /// replies short).
-fn server_container(cx: &mut Ctx, src: &Src) -> Slots {
+pub(crate) fn server_container(cx: &mut Ctx, src: &Src) -> Slots {
     let mut out = Vec::new();
     for k in 0..54 {
         let p = format!("data get {} {}[{k}]", src.0, src.1);
@@ -62,7 +62,7 @@ fn server_container(cx: &mut Ctx, src: &Src) -> Slots {
 }
 
 /// The bot's reading of the container's own slots (the window minus the 36 player slots).
-fn view_container(i: &InvInfo) -> Slots {
+pub(crate) fn view_container(i: &InvInfo) -> Slots {
     let Some(w) = &i.window else { return vec![] };
     let n = w.slots.len().saturating_sub(36);
     w.slots[..n]
@@ -73,11 +73,11 @@ fn view_container(i: &InvInfo) -> Slots {
 }
 
 /// The window slot that shows inventory slot `i` (0-8 hotbar, 9-35 main) in a container of `size`.
-fn iw(size: u16, i: u16) -> Option<u16> {
+pub(crate) fn iw(size: u16, i: u16) -> Option<u16> {
     Some(if i < 9 { size + 27 + i } else { size + i - 9 })
 }
 
-fn short_slots(s: &Slots) -> String {
+pub(crate) fn short_slots(s: &Slots) -> String {
     s.iter().map(|(k, i, c)| format!("{k}:{i}x{c}")).collect::<Vec<_>>().join(" ")
 }
 
@@ -135,7 +135,7 @@ fn take_and_put(cx: &mut Ctx, kind: &str, size: u16, src: &Src, want: &Slots, ev
     ok & inventory_agrees(cx, ev)
 }
 
-fn click(cx: &mut Ctx, slot: Option<u16>, c: Click, ev: &mut Vec<String>) -> bool {
+pub(crate) fn click(cx: &mut Ctx, slot: Option<u16>, c: Click, ev: &mut Vec<String>) -> bool {
     let i = inv(cx, InvOp::Click(slot, c));
     let clean = i.click.as_ref().is_some_and(|o| o.uncorrected() && o.slot == slot);
     ev.push(match &i.click {
@@ -165,14 +165,14 @@ fn open_expect(cx: &mut Ctx, kind: &str, size: usize, ev: &mut Vec<String>) -> (
     (opened && sized, i)
 }
 
-fn close(cx: &mut Ctx, ev: &mut Vec<String>) -> bool {
+pub(crate) fn close(cx: &mut Ctx, ev: &mut Vec<String>) -> bool {
     let c = inv(cx, InvOp::Close);
     ev.push("closed".into());
     c.window.is_none()
 }
 
 /// The bot's inventory view against the server's (slots 0-35 and the offhand).
-fn inventory_agrees(cx: &mut Ctx, ev: &mut Vec<String>) -> bool {
+pub(crate) fn inventory_agrees(cx: &mut Ctx, ev: &mut Vec<String>) -> bool {
     sleep(Duration::from_millis(200));
     let keep = |s: i64| s <= 35 || s == 40;
     let server: Slots = server_inventory(cx)
@@ -193,7 +193,7 @@ fn inventory_agrees(cx: &mut Ctx, ev: &mut Vec<String>) -> bool {
 }
 
 /// Server truth of the container(s) at `xs` (first block's slots first) against `want` and the bot.
-fn container_agrees(cx: &mut Ctx, xs: &[Src], want: &Slots, bot: &InvInfo, ev: &mut Vec<String>) -> bool {
+pub(crate) fn container_agrees(cx: &mut Ctx, xs: &[Src], want: &Slots, bot: &InvInfo, ev: &mut Vec<String>) -> bool {
     sleep(Duration::from_millis(200));
     let mut server = Slots::new();
     for (k, x) in xs.iter().enumerate() {
@@ -210,11 +210,11 @@ fn container_agrees(cx: &mut Ctx, xs: &[Src], want: &Slots, bot: &InvInfo, ev: &
     &server == want && view == server
 }
 
-fn s(v: &[(i64, &str, i64)]) -> Slots {
+pub(crate) fn s(v: &[(i64, &str, i64)]) -> Slots {
     v.iter().map(|&(a, b, c)| (a, b.to_string(), c)).collect()
 }
 
-fn status(cx: &mut Ctx) -> InvInfo {
+pub(crate) fn status(cx: &mut Ctx) -> InvInfo {
     inv(cx, InvOp::Status)
 }
 

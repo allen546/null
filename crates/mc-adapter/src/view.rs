@@ -39,6 +39,7 @@ pub struct ViewParts<'a> {
     /// A goto was issued in the last tick or two and Azalea has not picked it up yet.
     pub nav_pending: bool,
     pub blocks: Option<&'a crate::blocks::BlockActions>,
+    pub entity_results: Option<&'a azalea::entity_actions::EntityUseResults>,
     pub results: Option<&'a azalea::block_actions::BlockActionResults>,
     pub attackers: Option<&'a azalea::attackers::RecentAttackers>,
     pub tags: Option<&'a azalea::tags::ServerTags>,
@@ -390,7 +391,7 @@ impl BotView for AzaleaView<'_, '_, '_> {
     }
     // Spec: specs/B3-inventory-crafting.md §4.7 (the latest container open)
     fn last_open(&self) -> Option<api::OpenResult> {
-        crate::blocks::translate_open(self.p.blocks?.last_open, self.p.results)
+        crate::blocks::translate_open(self.p.blocks?, self.p.results, self.p.entity_results)
     }
     fn open_refusal(&self) -> Option<&'static str> {
         self.p.clicks?.open_refusal.map(|r| r.reason())
