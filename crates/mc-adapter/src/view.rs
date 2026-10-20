@@ -346,6 +346,10 @@ impl BotView for AzaleaView<'_, '_, '_> {
     fn block_at(&self, pos: api::BlockPos) -> Option<String> {
         crate::blocks::block_name(&self.p.world.shared.read(), pos)
     }
+    // Spec: specs/B4-gathering.md §4.8 (natural check: leaves' `persistent` property)
+    fn block_property(&self, pos: api::BlockPos, name: &str) -> Option<String> {
+        crate::blocks::block_property(&self.p.world.shared.read(), pos, name)
+    }
     // Spec: specs/B6-placement-breaking.md §4.2 (crouch handling)
     fn sneaking(&self) -> bool {
         self.p.sneaking

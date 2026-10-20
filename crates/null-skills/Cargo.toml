@@ -1,0 +1,9 @@
+[package]
+name = "null-skills"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+null-bot-api = { path = "../null-bot-api" }
+null-belief = { path = "../null-belief" }

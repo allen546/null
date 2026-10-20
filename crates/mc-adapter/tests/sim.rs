@@ -47,6 +47,8 @@ struct Seen {
     solid_at_feet: bool,
     using: Option<null_bot_api::UsingItem>,
     attackers: Vec<null_bot_api::Attacker>,
+    /// `block_property("persistent")` at the probe cells of `block_property_reads_leaves`.
+    persistent: Vec<Option<String>>,
 }
 
 /// Replays queued commands and records what the view showed that tick.
@@ -75,6 +77,7 @@ impl Skill for Replay {
             s.solid_at_feet = v.is_solid(p);
             s.using = v.using_item();
             s.attackers = v.recent_attackers().to_vec();
+            s.persistent = [(5, 64, 5), (6, 64, 5), (7, 64, 5), (200, 64, 200)].iter().map(|(x, y, z)| v.block_property(null_bot_api::BlockPos::new(*x, *y, *z), "persistent")).collect();
         }
         for cmd in std::mem::take(&mut *self.queue.lock().unwrap()) {
             match cmd {
@@ -208,6 +211,22 @@ fn view_reads_basics() {
     assert_eq!(s.nav.last(), Some(&NavStatus::Idle));
     assert!(s.health > 0.0 && s.food == 20);
     assert!(s.ticks.windows(2).all(|w| w[1] == w[0] + 1), "host clock counts every tick: {:?}", s.ticks);
+}
+
+// Spec: specs/B4-gathering.md §4.8 (natural check: leaves' `persistent` property through the view)
+#[test]
+fn block_property_reads_leaves_persistent_and_none_elsewhere() {
+    use azalea::block::{BlockTrait, blocks::OakLeaves, properties::OakLeavesDistance};
+    let _lock = init();
+    let mut rig = Rig::new();
+    let leaves = |persistent| OakLeaves { distance: OakLeavesDistance::_1, persistent, waterlogged: false }.as_block_state();
+    rig.sim.receive_packet(ClientboundBlockUpdate { pos: BlockPos::new(5, 64, 5), block_state: leaves(false) });
+    rig.sim.receive_packet(ClientboundBlockUpdate { pos: BlockPos::new(6, 64, 5), block_state: leaves(true) });
+    rig.sim.receive_packet(ClientboundBlockUpdate { pos: BlockPos::new(7, 64, 5), block_state: BlockKind::Stone.into() });
+    rig.sim.tick();
+    rig.sim.tick();
+    let got = rig.seen.lock().unwrap().persistent.clone();
+    assert_eq!(got, vec![Some("false".to_string()), Some("true".to_string()), None, None], "natural, placed, stone, unloaded chunk");
 }
 
 #[test]

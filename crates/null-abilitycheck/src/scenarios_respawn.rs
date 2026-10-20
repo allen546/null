@@ -144,6 +144,19 @@ fn dropped(cx: &mut Ctx, at: (f64, f64, f64), item: &str, n: u32) -> bool {
     .contains("passed")
 }
 
+/// Where the item entities of this kind are, anywhere in the world: tells a drop that flew off, one
+/// that merged and one that never spawned apart (once a stone stack was not found).
+fn find_anywhere(cx: &mut Ctx, at: (f64, f64, f64), item: &str) -> String {
+    let sel = format!("@e[type=minecraft:item,nbt={{Item:{{id:\"minecraft:{item}\"}}}},sort=nearest,limit=1]");
+    let n = last_int(&cx.r(&format!("execute if entity @e[type=minecraft:item,nbt={{Item:{{id:\"minecraft:{item}\"}}}}]"))).unwrap_or(0);
+    if n == 0 {
+        return format!("{item}: no item entity anywhere");
+    }
+    let near = |cx: &mut Ctx, path: &str| cx.r(&format!("execute positioned {} {} {} run data get entity {sel} {path}", at.0, at.1, at.2));
+    let (p, c) = (near(cx, "Pos"), near(cx, "Item.count"));
+    format!("{item}: {n} item entit(ies); nearest {} count {:?}", p.rsplit(": ").next().unwrap_or(&p), last_int(&c))
+}
+
 fn clear_items(cx: &mut Ctx) {
     cx.r("kill @e[type=minecraft:item,x=680,y=199,z=342,dx=21,dy=10,dz=21]");
 }
@@ -250,11 +263,13 @@ fn inventory_drops(cx: &mut Ctx) -> Outcome {
             && want("iron_axe", 1)
             && left.iter().all(|(_, n)| *n == 0)
             && drops.iter().all(|d| d.2);
+        let missing: Vec<String> = drops.iter().filter(|d| !d.2).map(|d| find_anywhere(cx, STAND, d.0)).collect();
         clear_items(cx);
         (
             ok,
             format!(
-                "death snapshot {snap:?} (want stone 5, golden_apple 3, iron_axe 1); after the respawn the server counts {left:?} in the bot's inventory (want all 0); item entities near the death spot with the same counts: {drops:?}"
+                "death snapshot {snap:?} (want stone 5, golden_apple 3, iron_axe 1); after the respawn the server counts {left:?} in the bot's inventory (want all 0); item entities near the death spot with the same counts: {drops:?}{}",
+                if missing.is_empty() { String::new() } else { format!("; missing drops: {}", missing.join(", ")) }
             ),
         )
     })

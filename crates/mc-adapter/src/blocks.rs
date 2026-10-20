@@ -27,3 +27,31 @@ pub fn block_name(w: &azalea::world::World, pos: BlockPos) -> Option<String> {
     let st = w.chunks.get_block_state(block_pos(pos))?;
     Some(BlockKind::from(st).to_str().to_string())
 }
+
+// Spec: specs/B4-gathering.md §4.8 (natural check: a block-state property as text)
+/// One property of a block state ("persistent" -> "false"); None when the block has no such property.
+pub fn state_property(st: azalea::block::BlockState, name: &str) -> Option<String> {
+    st.to_trait().get_property(name).map(str::to_string)
+}
+
+// Spec: specs/B4-gathering.md §4.8 (natural check: leaves' `persistent` property)
+/// A property of the block at `pos`; None when the chunk is not loaded or the block lacks it.
+pub fn block_property(w: &azalea::world::World, pos: BlockPos, name: &str) -> Option<String> {
+    state_property(w.chunks.get_block_state(block_pos(pos))?, name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use azalea::block::{BlockTrait, blocks::{OakLeaves, OakLog, Stone}, properties};
+
+    #[test]
+    fn leaves_persistent_reads_true_or_false_and_other_blocks_none() {
+        let leaves = |persistent| OakLeaves { distance: properties::OakLeavesDistance::_1, persistent, waterlogged: false }.as_block_state();
+        assert_eq!(state_property(leaves(true), "persistent").as_deref(), Some("true"));
+        assert_eq!(state_property(leaves(false), "persistent").as_deref(), Some("false"));
+        assert_eq!(state_property(leaves(false), "distance").as_deref(), Some("1"));
+        assert_eq!(state_property(Stone {}.as_block_state(), "persistent"), None);
+        assert_eq!(state_property(OakLog { axis: properties::Axis::Y }.as_block_state(), "persistent"), None);
+    }
+}

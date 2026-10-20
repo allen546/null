@@ -60,11 +60,14 @@ B1 moves one bot's body from where it is to where a job needs it, safely and in 
 - Movement goes through Azalea's physics, which ports vanilla. Inputs per tick are ones a vanilla client can produce: no speed beyond sprint-jump, no position jumps, rotations changed at rates a client produces.
 - Server corrections are counted per skill and movement type (F4); each one is a bug to fix.
 - Constants (step heights, jump timing, ice and soul sand speeds) come from F5.
+- Block movement effects (fork patch 26): the bot's own physics applies what a vanilla client applies for the blocks it is in or on: the stuck multiplier of a cobweb, sweet berry bush and powdered snow (set at the end of a tick, taken by the next move), the speed factor of soul sand and honey, the server's powdered-snow frost (an attribute update), and the climb out of powdered snow only with leather boots. Damage and freezing are the server's. Without them the server moves the bot slower than it predicts and Grim flags `Simulation`.
 - Known gaps in Azalea's physics: entity pushing and sprint swimming aren't implemented, using-item slowdown and passenger state are hard-coded off, and there's no world border or slow-falling gravity. Each shows up as server corrections; using-item slowdown is the first fork patch, because eating while moving otherwise looks wrong to a server (Azalea reality check, 2026-10-13).
 
 ### 4.3 Path costs: hazards, claims, keep-out, cargo
 
 Costs add: hazards from F2 (lava, fire, falls, powder snow, magma), unknown chunks, light level (dark areas cost more at night), cells claimed by other jobs (prohibitive unless the job holds the claim), `keep_out` annotations and interrupt quarantines (forbidden, INTERRUPTS §2.2), line of sight to cargo when the job carries the `avoid_cargo_los` constraint, and enemy sightings (a policy weight). Weights are policy values, set per operation.
+
+A cobweb is not passable for the planner and is never mined (its mining cost is infinite), and a diagonal move does not cut a corner next to a cobweb, sweet berry bush or powdered snow: they do not stop the bot, so its box would end up inside them. Soul sand and honey are not standable for the planner (their top is lower than a full block), so no path crosses them; if the bot is on one anyway the executor needs no change (it checks the cell, not the time).
 
 After an interrupt, `goto(last_safe)` takes the bot back along the path it came by, skipping cells that changed, to its last safe position (INTERRUPTS §2.2).
 

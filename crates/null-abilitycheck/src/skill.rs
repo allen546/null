@@ -61,6 +61,8 @@ pub enum Op {
     Mail(crate::skill_mailbox::MailOp),
     /// Death and respawn ops (A12), in `skill_respawn`.
     Life(crate::skill_respawn::LifeOp),
+    /// `gather` and the tree policy (A14), in `skill_gather`.
+    Gather(crate::skill_gather::GatherOp),
 }
 
 #[derive(Clone, Debug)]
@@ -86,6 +88,7 @@ pub enum Info {
     Inv(crate::skill_inventory::InvInfo),
     Life(crate::skill_respawn::LifeInfo),
     Mail(crate::skill_mailbox::MailInfo),
+    Gather(Box<crate::skill_gather::GatherInfo>),
     /// Per block of a chain: (block, ticks from start to finish, outcome).
     Chain(Vec<(BlockPos, Option<u64>, BlockOutcome)>),
 }
@@ -104,6 +107,7 @@ pub struct RemoteSkill {
     /// The ids of the latest click, open and respawn, so a status op can report them (A9, A12).
     latest: crate::skill_inventory::Latest,
     mail: crate::skill_mailbox::MailState,
+    gather: crate::skill_gather::GatherState,
     last_step: Option<Instant>,
     keep: crate::skill_respawn::KeepState,
 }
@@ -138,7 +142,7 @@ fn block_result(v: &dyn BotView, ids: &[ActionId]) -> Option<BlockAction> {
 
 impl RemoteSkill {
     pub fn new(ops: Arc<Mutex<Receiver<Op>>>, out: Sender<Report>) -> Self {
-        Self { ops, out, cur: None, items: Default::default(), chain: Chain::default(), latest: Default::default(), mail: Default::default(), last_step: None, keep: Default::default() }
+        Self { ops, out, cur: None, items: Default::default(), chain: Chain::default(), latest: Default::default(), mail: Default::default(), gather: Default::default(), last_step: None, keep: Default::default() }
     }
 }
 
@@ -364,6 +368,7 @@ impl Skill for RemoteSkill {
             Op::Inv(io) => crate::skill_inventory::step(io, age, v, c, &mut self.latest),
             Op::Mail(io) => crate::skill_mailbox::step(io, age, v, c, &mut self.mail),
             Op::Life(io) => crate::skill_respawn::step(io, age, v, c, &mut self.latest),
+            Op::Gather(io) => crate::skill_gather::step(io, age, v, c, &mut self.gather),
             Op::Goto(pos) => {
                 if age == 0 {
                     c.goto(*pos, 0.0);

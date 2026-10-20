@@ -4,12 +4,14 @@
 
 mod rcon;
 mod scenarios;
+mod scenarios_block_effects;
 mod scenarios_containers;
 mod scenarios_crafting;
 mod scenarios_crouch;
 mod scenarios_entity_containers;
 mod scenarios_inventory;
 mod scenarios_items;
+mod scenarios_gather;
 mod scenarios_mailbox;
 mod scenarios_respawn;
 mod scenarios_shapes;
@@ -17,6 +19,7 @@ mod scenarios_tick;
 mod skill;
 mod skill_inventory;
 mod skill_items;
+mod skill_gather;
 mod skill_mailbox;
 mod skill_respawn;
 
@@ -38,7 +41,7 @@ use scenarios::{Ctx, Outcome};
 use skill::RemoteSkill;
 
 const USAGE: &str = "usage: null-abilitycheck [--server 127.0.0.1:25567] [--account null_check] \
-[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|AT[,..]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH]";
+[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|AT[,..]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH]";
 
 struct Args {
     server: String,
@@ -153,7 +156,7 @@ fn main() {
     type Scenario = fn(&mut Ctx) -> Vec<Outcome>;
     let all: [(&str, Scenario); 4] = [("A1", scenarios::a1), ("A2", scenarios::a2), ("A3", scenarios::a3), ("A4", scenarios::a4)];
     let shapes: [(&str, Scenario); 3] = [("A4S", scenarios_shapes::a4s), ("A2S", scenarios_shapes::a2s), ("A4C", scenarios_crouch::a4c)];
-    let items: [(&str, Scenario); 11] = [
+    let items: [(&str, Scenario); 13] = [
         ("A5", scenarios_items::a5),
         ("A6", scenarios_items::a6),
         ("A7", scenarios_items::a7),
@@ -164,6 +167,8 @@ fn main() {
         ("A11", scenarios_crafting::a11),
         ("A12", scenarios_respawn::a12),
         ("A13", scenarios_mailbox::a13),
+        ("A14", scenarios_gather::a14),
+        ("A15", scenarios_block_effects::a15),
         ("AT", scenarios_tick::at),
     ];
     let mut aborted = false;

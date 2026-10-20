@@ -2069,9 +2069,11 @@ version = "0.1.0"
 dependencies = [
  "azalea",
  "mc-adapter",
+ "null-belief",
  "null-bot-api",
  "null-combat",
  "null-mechanics",
+ "null-skills",
  "tokio",
 ]
 

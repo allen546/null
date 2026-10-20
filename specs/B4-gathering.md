@@ -113,6 +113,7 @@ Collect every drop within reach, report items gathered and items left (inventory
 Decided by Allen, 2026-10-19. `gather` is one generic skill; what to take is a policy.
 - A policy only filters blocks: `target(pos)` (take it) and `may_clear(pos)` (break it because it is in the way). It holds no planning. Example policies: the tree policy (§4.3); "all stone in the claim" for bulk work.
 - The core plans stands and the break order by search, not lowest-first. Reach is to the nearest point the crosshair can hit, within the block interaction range, as strict as the client or stricter. A stand may stand on a target, which is then broken last. It never places blocks.
+- The core sees only its claim (Allen, 2026-10-20). It scans and reports only cells inside the claim. A tree wholly outside is not reported. A tree across the claim edge is reported and left whole, because felling only part of it is not allowed.
 - One break at a time. Each break's result is read from the action mailbox (B6 §4.6); anything but a confirmed break ends the job. No retry.
 - Planning is spread over ticks with a counted work budget, so a step never stalls the tick loop and the same world gives the same plan.
 

@@ -7,7 +7,9 @@ publish.workspace = true
 [dependencies]
 mc-adapter = { path = "../mc-adapter" }
 null-bot-api = { path = "../null-bot-api" }
+null-belief = { path = "../null-belief" }
 null-combat = { path = "../null-combat" }
 null-mechanics = { path = "../null-mechanics" }
+null-skills = { path = "../null-skills" }
 azalea = { workspace = true }
 tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "time"] }

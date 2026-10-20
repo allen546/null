@@ -2,6 +2,11 @@
 
 **Historical.** Moved from `OPEN.md` on 2026-10-19 so that OPEN stays a short start page. Each entry is a one-line record; the full reasoning is in `DECISIONS.md` and the specs each entry names. Paths are relative to the repo root unless they start with `specs/`.
 
+## Decided 2026-10-20
+
+- Long suites (the full ability check on each server) are run by Allen offline from commands the agents give; no agent runs them. CLAUDE.md "Subagents".
+- `gather` sees only its claim: a tree wholly outside is not reported; a tree across the edge is reported and left whole. B4 §4.10.
+
 ## Decided 2026-10-19
 
 - AD-F1.2: the skill decides at its bot's death (`on_death`: End or Keep). F1 §4.4.

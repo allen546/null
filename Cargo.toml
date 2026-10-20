@@ -10,5 +10,5 @@ publish = false
 # Our Azalea fork (specs/reference/AZALEA_PATCHES.md), pinned. To build against the local
 # clone while editing it, add a [patch] to ~/.cargo/config.toml (specs/reference/AZALEA_PATCHES.md).
 [workspace.dependencies]
-azalea = { git = "https://github.com/allen546/azalea", rev = "70a1295f3d3437f07d84f574e01f5379aa783426" }
-azalea-client = { git = "https://github.com/allen546/azalea", rev = "70a1295f3d3437f07d84f574e01f5379aa783426" }
+azalea = { git = "https://github.com/allen546/azalea", rev = "34d54a5af8518f4eb22c930d6872d2a564267021" }
+azalea-client = { git = "https://github.com/allen546/azalea", rev = "34d54a5af8518f4eb22c930d6872d2a564267021" }

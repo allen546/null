@@ -91,6 +91,11 @@ fn scene(cx: &mut Ctx, blocks: &[(i32, &str, &[(u8, &str, u8)])], give: &[(u16, 
     for (slot, item, count) in give {
         cx.r(&format!("item replace entity {n} container.{slot} with minecraft:{item} {count}"));
     }
+    // Wait until the bot sees each block: a fixed sleep lost the race to a stalled tick on Grim.
+    for (x, block, _) in blocks {
+        let id = block.split('[').next().unwrap_or_default();
+        cx.wait_block(pos(*x, C.1, C.2), Box::leak(format!("minecraft:{id}").into_boxed_str()));
+    }
     sleep(Duration::from_millis(500));
 }
 
@@ -161,7 +166,8 @@ fn open_expect(cx: &mut Ctx, kind: &str, size: usize, ev: &mut Vec<String>) -> (
     let w = i.window.clone();
     let opened = matches!(i.open.as_ref().map(|o| &o.outcome), Some(OpenOutcome::Opened { kind: k, window_id }) if *k == kind && Some(*window_id) == w.as_ref().map(|w| w.id));
     let sized = w.as_ref().is_some_and(|w| w.kind == Some(kind) && w.id != 0 && w.slots.len() == size + 36);
-    ev.push(format!("open {:?}, window {:?}/{} slots", i.open.as_ref().map(|o| &o.outcome), w.as_ref().and_then(|w| w.kind), w.as_ref().map_or(0, |w| w.slots.len())));
+    let why = i.open.as_ref().and_then(|o| o.refused).map(|r| format!(" ({r})")).unwrap_or_default();
+    ev.push(format!("open {:?}{why}, window {:?}/{} slots", i.open.as_ref().map(|o| &o.outcome), w.as_ref().and_then(|w| w.kind), w.as_ref().map_or(0, |w| w.slots.len())));
     (opened && sized, i)
 }
 
@@ -400,11 +406,12 @@ pub fn a10(cx: &mut Ctx) -> Vec<Outcome> {
     out.push(row(cx, "shulker_refuses_shulker_pickup", &[(C.0, "shulker_box[facing=up]", &[])], &[(9, "red_shulker_box", 1)], |cx, ev| {
         let (mut ok, _) = open_expect(cx, "minecraft:shulker_box", 27, ev);
         ok &= click(cx, iw(27, 9), Click::Left, ev);
-        ok &= click(cx, Some(3), Click::Left, ev);
+        // Grim's resync after the refused placement can land in this click or the next one.
+        ok &= click_resync_ok(cx, Some(3), Click::Left, ev);
         let carried = inv(cx, InvOp::Status).window.and_then(|w| w.carried);
         ev.push(format!("still carrying {}", short(&carried)));
         ok &= carried.is_some_and(|c| c.item == "minecraft:red_shulker_box");
-        ok &= click(cx, iw(27, 9), Click::Left, ev);
+        ok &= click_resync_ok(cx, iw(27, 9), Click::Left, ev);
         let i = status(cx);
         ok &= container_agrees(cx, &[blk(C.0)], &s(&[]), &i, ev);
         ok &= close(cx, ev);
