@@ -317,6 +317,7 @@ mod tests {
             finish_tick: Some(5),
             ack_tick: Some(6),
             reason: None,
+            evidence: None,
         })
     }
 

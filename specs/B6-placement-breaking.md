@@ -51,6 +51,7 @@ Skills:
 
 - Reach measured from the eye at the click's posture (standing 1.62, sneaking 1.27) to the click point, ≤ 4.5 by default (ONLINE_BUILDER §2b), configurable lower per server profile.
 - Vanilla refuses to place a block whose collision box intersects the bot; B6 checks this before clicking.
+- **Refusals carry their evidence (fork patch 28, Allen 2026-10-20).** A click the client refuses (place, break, block use) carries the eye, the pose's real eye height, the look, crouching, the client tick, what the crosshair ray hit (nothing, a block with face and point, or an entity) and whether the look changed after the ray was cast, as `ClickEvidence` on the action record. A refusal decided before any ray (dead, screen open, busy) has none. This explains an intermittent "crosshair does not hit it" at its next occurrence; it changes no decision.
 
 ### 4.2 Click choice and placement recipes
 
@@ -62,6 +63,7 @@ Skills:
   - **Temporary: the table is wide (Allen, 2026-10-18).** It works by class, so it also lists blocks that use the click only for some items or states: a fence (lead only), a cauldron (buckets and bottles), a campfire (food), an iron door (never by hand), redstone wire (dot or cross only). A standing click on these with a block in hand places in vanilla; the bot refuses it, or crouches first with `auto_crouch`. That is safe (no wrong packet) but costs extra crouches and refuses some clicks a player makes. Narrowing it to item and state conditions is roadmapped for step 6, builder integration (BUILD_PLAN), when placement volume makes the cost real.
   - Skills (policy): a placement sequence holds the crouch itself and passes `auto_crouch` off. It stays crouched while the next placements need it and are in reach, and stands up only before a longer walk (crouching walks at 30%), with a short delay so the crouch does not flicker between blocks. Only the skill sees the sequence, so the smoothing is not in the fork.
 - Placing a block or using a block is `UseOnCrosshair` or a face-specific `UseItemOn`; an item whose effect doesn't depend on the block (bucket, pearl, food, bow) is `UseItem`. Azalea never sends `UseItem` while a block is under the crosshair, so picking the wrong command silently does nothing (F5 §4.1, spike §6.3).
+- **The ray is cast once per game tick (fork patch 29).** Vanilla's `Minecraft#tick` calls `GameRenderer#pick` before the click handling, so every click is checked against the ray of its own tick. The fork does the same, after the look-at systems and before the click systems, in each `GameTick`; after a stall, each catch-up tick casts its own ray. A click right after a look turn therefore never sees a ray from before the turn (AT row `stall_250_ms_then_look_and_click_in_one_update_places_at_the_new_look`).
 - A recipe's face and hit point are produced by setting the look and letting Azalea's raycast make the hit, or by sending `ServerboundUseItemOn` with the recipe's values. Never Azalea's `force_block`, which invents a hit point (block centre, face up) (Azalea reality check, 2026-10-13).
 - Vanilla survival only: state comes from look, face, hit point and sneaking (tier C). No accurate-placement protocol.
 
@@ -71,7 +73,7 @@ Repeater delay, comparator mode, note pitch, door, trapdoor and gate state, item
 
 ### 4.4 Break timing
 
-- Break time from hardness, tool tier and type, Efficiency, Haste, Mining Fatigue, on-ground and underwater penalties, all from F5 data.
+- Break time from hardness, tool tier and type, Efficiency, Haste, Mining Fatigue, the server's block break speed and submerged mining speed (eyes in water: x0.2 by default, raised by Aqua Affinity through the attribute), and the on-ground penalty, all from F5 data and the server's attributes (B1 §4.2).
 - Hold the break for exactly the computed ticks plus a margin for latency; don't spam.
 - Choose the tool by policy (fastest, cheapest durability, silk touch or fortune when the drop matters).
 

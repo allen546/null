@@ -135,10 +135,13 @@ fn death_counts(info: &LifeInfo) -> std::collections::BTreeMap<String, u32> {
     m
 }
 
-/// Item entities of `item` with count `n` within 15 blocks of the death spot (the drops scatter).
+/// Item entities of `item` with count `n` within 48 blocks of the death spot. The server decides
+/// where a drop lands (a random throw, then a fall off the scene's edge; Wind Burst, explosions
+/// and water move drops too), so the row checks that the drops exist, not where.
+// Spec: specs/B2-survival-upkeep.md §4.7 (the drops are the server's)
 fn dropped(cx: &mut Ctx, at: (f64, f64, f64), item: &str, n: u32) -> bool {
     cx.r(&format!(
-        "execute positioned {} {} {} if entity @e[type=minecraft:item,distance=..15,nbt={{Item:{{id:\"minecraft:{item}\",count:{n}}}}}]",
+        "execute positioned {} {} {} if entity @e[type=minecraft:item,distance=..48,nbt={{Item:{{id:\"minecraft:{item}\",count:{n}}}}}]",
         at.0, at.1, at.2
     ))
     .contains("passed")
@@ -442,21 +445,13 @@ fn death_mid_action(cx: &mut Ctx) -> Outcome {
         let n = cx.name.clone();
         cx.call(Op::Sneak(true));
         // Eating: golden apples can be eaten at any food level.
-        cx.ops.send(Op::Items(ItemOp::Use(Hand::Main))).unwrap();
-        loop {
-            match cx.reports.recv_timeout(Duration::from_secs(30)) {
-                Ok(r) if matches!(r.info, Info::Started) => break,
-                Ok(_) => {}
-                Err(e) => return (false, format!("bot never started eating: {e}")),
-            }
+        let seq = cx.send(Op::Items(ItemOp::Use(Hand::Main)));
+        if let Err(e) = cx.recv(seq, Duration::from_secs(30)) {
+            return (false, format!("bot never started eating: {e}"));
         }
         // The op reports two ticks after the start; the use runs 32 ticks. Kill about 10 ticks in.
-        loop {
-            match cx.reports.recv_timeout(Duration::from_secs(30)) {
-                Ok(r) if matches!(r.info, Info::Items(_)) => break,
-                Ok(_) => {}
-                Err(e) => return (false, format!("bot never reported the first use: {e}")),
-            }
+        if let Err(e) = cx.finish_op(seq, Duration::from_secs(30)) {
+            return (false, format!("bot never reported the first use: {e}"));
         }
         sleep(Duration::from_millis(300));
         let lat = match kill(cx) {
@@ -472,21 +467,13 @@ fn death_mid_action(cx: &mut Ctx) -> Outcome {
         cx.r(&format!("effect clear {n} minecraft:hunger"));
         sleep(Duration::from_millis(500));
         let f0 = food(cx);
-        cx.ops.send(Op::Items(ItemOp::Use(Hand::Main))).unwrap();
-        loop {
-            match cx.reports.recv_timeout(Duration::from_secs(30)) {
-                Ok(r) if matches!(r.info, Info::Started) => break,
-                Ok(_) => {}
-                Err(e) => return (false, format!("bot never started the second use: {e}")),
-            }
+        let seq = cx.send(Op::Items(ItemOp::Use(Hand::Main)));
+        if let Err(e) = cx.recv(seq, Duration::from_secs(30)) {
+            return (false, format!("bot never started the second use: {e}"));
         }
         cx.poll(4.0, |cx| food(cx) > f0);
-        loop {
-            match cx.reports.recv_timeout(Duration::from_secs(30)) {
-                Ok(r) if matches!(r.info, Info::Items(_)) => break,
-                Ok(_) => {}
-                Err(e) => return (false, format!("bot never finished the second use: {e}")),
-            }
+        if let Err(e) = cx.finish_op(seq, Duration::from_secs(30)) {
+            return (false, format!("bot never finished the second use: {e}"));
         }
         sleep(Duration::from_millis(300));
         let (f1, apples1) = (food(cx), cx.count("golden_apple"));
@@ -614,7 +601,7 @@ fn skill_on_death_end(cx: &mut Ctx) -> Outcome {
     cx.run("A12", "skill_on_death_end", |cx| {
         cx.probe.lock().unwrap().reset(None, None);
         // A long walk is the running skill; the kill comes while it runs.
-        cx.ops.send(Op::Items(ItemOp::Walk(400))).unwrap();
+        cx.send(Op::Items(ItemOp::Walk(400)));
         sleep(Duration::from_millis(500));
         let before = bot_pos(cx);
         let e = kill_events(cx);

@@ -56,6 +56,13 @@ pub struct ViewParts<'a> {
     pub death_screen: Option<&'a azalea::respawn::DeathScreen>,
     /// The client's own tick count (`TicksConnected`), to put the fork's ticks on the host clock.
     pub client_tick: u64,
+    /// The server's attributes and effects for the bot (patch 27).
+    pub attributes: Option<&'a azalea::entity::Attributes>,
+    pub effects: Option<&'a azalea::entity::ActiveEffects>,
+    /// The fork's vehicle, block and border entries (patch 30), derived at the start of each tick.
+    pub contacts: Option<&'a azalea::entity::unmodelled::UnmodelledContacts>,
+    /// Set when the fork closed the connection for a `Movement` entry (patch 30).
+    pub disconnect: Option<(&'a azalea::unmodelled_disconnect::UnmodelledDisconnect, Option<&'a azalea::unmodelled_disconnect::PacketsAfterUnmodelledDisconnect>)>,
 }
 
 /// Other entities, for `BotView::entities`.
@@ -350,6 +357,25 @@ impl BotView for AzaleaView<'_, '_, '_> {
     fn block_property(&self, pos: api::BlockPos, name: &str) -> Option<String> {
         crate::blocks::block_property(&self.p.world.shared.read(), pos, name)
     }
+    // Spec: specs/F5-version-layer.md §4.6 (inputs the client does not model)
+    fn unmodelled_inputs(&self) -> Vec<api::UnmodelledInput> {
+        use azalea::entity::unmodelled::unmodelled_inputs;
+        let (Some(a), Some(e)) = (self.p.attributes, self.p.effects) else { return Vec::new() };
+        unmodelled_inputs(a, e)
+            .into_iter()
+            .chain(self.p.contacts.iter().flat_map(|c| c.0.iter().copied()))
+            .map(map_unmodelled)
+            .collect()
+    }
+    // Spec: specs/F5-version-layer.md §4.6 (the disconnect for a Movement entry)
+    fn unmodelled_disconnect(&self) -> Option<api::UnmodelledDisconnect> {
+        let (d, after) = self.p.disconnect?;
+        Some(api::UnmodelledDisconnect {
+            tick: d.tick,
+            inputs: d.inputs.iter().copied().map(map_unmodelled).collect(),
+            packets_after: after.map_or(0, |n| n.0),
+        })
+    }
     // Spec: specs/B6-placement-breaking.md §4.2 (crouch handling)
     fn sneaking(&self) -> bool {
         self.p.sneaking
@@ -454,5 +480,22 @@ impl BotView for AzaleaView<'_, '_, '_> {
         } else {
             api::NavStatus::Idle
         }
+    }
+}
+
+/// The fork's entry as the API type.
+// Spec: specs/F5-version-layer.md §4.6
+pub fn map_unmodelled(u: azalea::entity::unmodelled::UnmodelledInput) -> api::UnmodelledInput {
+    use azalea::entity::unmodelled::{UnmodelledInput as U, UnmodelledKind};
+    let kind = match u.kind() {
+        UnmodelledKind::Movement => api::UnmodelledKind::Movement,
+        UnmodelledKind::Action => api::UnmodelledKind::Action,
+    };
+    match u {
+        U::Attribute(attr, value) => api::UnmodelledInput::Attribute { id: attr.to_str().to_string(), value, kind },
+        U::Effect(effect, amplifier) => api::UnmodelledInput::Effect { id: effect.to_str().to_string(), amplifier, kind },
+        U::Passenger => api::UnmodelledInput::Passenger { kind },
+        U::Block(pos, block) => api::UnmodelledInput::Block { pos: api::BlockPos::new(pos.x, pos.y, pos.z), id: block.to_str().to_string(), kind },
+        U::WorldBorder => api::UnmodelledInput::WorldBorder { kind },
     }
 }

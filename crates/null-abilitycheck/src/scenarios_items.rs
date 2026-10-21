@@ -79,27 +79,22 @@ fn heal(cx: &mut Ctx) {
 
 /// Sends an op and waits for its `Started` (the command was just issued).
 fn start(cx: &mut Ctx, op: ItemOp) -> Result<(), String> {
-    cx.ops.send(Op::Items(op)).unwrap();
-    loop {
-        match cx.reports.recv_timeout(Duration::from_secs(30)) {
-            Ok(r) if matches!(r.info, Info::Started) => return Ok(()),
-            Ok(_) => {}
-            Err(e) => return Err(format!("bot never started the op: {e}")),
-        }
+    let seq = cx.send(Op::Items(op));
+    match cx.recv(seq, Duration::from_secs(30)) {
+        Ok(r) if matches!(r.info, Info::Started) => Ok(()),
+        Ok(r) => Err(format!("bot reported {:?} before the op started", r.info)),
+        Err(e) => Err(format!("bot never started the op: {e}")),
     }
 }
 
-/// The final report of an op that `start` began.
+/// The final report of the op that `start` began (the last one sent).
 fn finish(cx: &mut Ctx) -> ItemsInfo {
-    loop {
-        match cx.reports.recv_timeout(Duration::from_secs(30)) {
-            Ok(r) => match r.info {
-                Info::Started => {}
-                Info::Items(i) => return i,
-                i => panic!("expected an items report: {i:?}"),
-            },
-            Err(e) => panic!("bot did not answer: {e}"),
-        }
+    match cx.finish_op(cx.seq, Duration::from_secs(30)) {
+        Ok(r) => match r.info {
+            Info::Items(i) => i,
+            i => panic!("expected an items report: {i:?}"),
+        },
+        Err(e) => panic!("bot did not answer: {e}"),
     }
 }
 
@@ -519,7 +514,7 @@ pub fn a8(cx: &mut Ctx) -> Vec<Outcome> {
     scene(cx, &[(0, "iron_sword", 1)]);
     let online = cx.poll(20.0, |cx| cx.r(&format!("execute if entity {other}")).contains("passed"));
     if online.is_none() {
-        out.push(Outcome { id: "A8", name: "setup".into(), pass: false, evidence: format!("{other} never came online"), shown: false });
+        out.push(Outcome { id: "A8", name: "setup".into(), pass: false, evidence: format!("{other} never came online"), shown: false, secs: 0.0 });
         return out;
     }
     for c in [

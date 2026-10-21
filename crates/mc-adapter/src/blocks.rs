@@ -16,6 +16,18 @@ pub fn face_to_dir(f: Face) -> Direction {
     }
 }
 
+// Spec: specs/B6-placement-breaking.md §4.1 (refusal evidence: the face the ray hit)
+pub fn dir_to_face(d: Direction) -> Face {
+    match d {
+        Direction::Down => Face::Down,
+        Direction::Up => Face::Up,
+        Direction::North => Face::North,
+        Direction::South => Face::South,
+        Direction::West => Face::West,
+        Direction::East => Face::East,
+    }
+}
+
 // Spec: specs/B6-placement-breaking.md §4.2 (api block position as the fork's)
 pub fn block_pos(p: BlockPos) -> ABlockPos {
     ABlockPos::new(p.x, p.y, p.z)

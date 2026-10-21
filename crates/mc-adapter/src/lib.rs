@@ -9,7 +9,7 @@ pub mod view;
 
 use azalea::app::{PluginGroup, PluginGroupBuilder};
 
-pub use host::{BotBrain, BotDied, HostPlugin, HostTick, ReflexDisabled, SKILL_DIED, SKILL_LEAK};
+pub use host::{BotBrain, BotDied, HostPlugin, HostTick, ReflexDisabled, SKILL_DIED, SKILL_LEAK, SKILL_UNMODELLED};
 pub use lifecycle::{
     Backoff, BotState, BotStateChange, BrainFactory, HostEvent, KickClass, NodePlugin,
     classify_kick,

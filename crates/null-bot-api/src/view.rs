@@ -41,6 +41,20 @@ pub trait BotView {
     fn block_property(&self, _pos: BlockPos, _name: &str) -> Option<String> {
         None
     }
+    // Spec: specs/F5-version-layer.md §4.6 (inputs the client does not model)
+    /// Attributes and status effects the server has set that change what a vanilla client
+    /// computes for itself but that Null does not model yet, such as `scale` or levitation.
+    /// While this is not empty the host ends the running skill and sends nothing that moves or
+    /// breaks. Empty when the client's predictions hold.
+    fn unmodelled_inputs(&self) -> Vec<UnmodelledInput> {
+        Vec::new()
+    }
+    // Spec: specs/F5-version-layer.md §4.6 (the disconnect for a Movement entry)
+    /// Set when the fork closed the connection for a `Movement` entry (AD-F5.5). The host also
+    /// reports it as an event; the bot stays off.
+    fn unmodelled_disconnect(&self) -> Option<UnmodelledDisconnect> {
+        None
+    }
     // Spec: specs/B6-placement-breaking.md §4.2 (crouch handling)
     /// The bot is crouching (the crouch input it sends).
     fn sneaking(&self) -> bool {

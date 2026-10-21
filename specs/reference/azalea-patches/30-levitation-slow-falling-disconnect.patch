@@ -1,0 +1,1299 @@
+diff --git a/azalea-client/src/plugins/mod.rs b/azalea-client/src/plugins/mod.rs
+index 376f703..14144bf 100644
+--- a/azalea-client/src/plugins/mod.rs
++++ b/azalea-client/src/plugins/mod.rs
+@@ -30,6 +30,7 @@ pub mod task_pool;
+ pub mod tick_counter;
+ pub mod tick_clock;
+ pub mod tick_end;
++pub mod unmodelled_disconnect;
+ 
+ /// This plugin group will add all the default plugins necessary for Azalea to
+ /// work.
+@@ -65,6 +66,7 @@ impl PluginGroup for DefaultPlugins {
+             .add(brand::BrandPlugin)
+             .add(client_information::ClientInformationPlugin)
+             .add(tick_counter::TickCounterPlugin)
++            .add(unmodelled_disconnect::UnmodelledDisconnectPlugin)
+             .add(pong::PongPlugin)
+             .add(connection::ConnectionPlugin)
+             .add(login::LoginPlugin)
+diff --git a/azalea-client/src/plugins/packet/game/events.rs b/azalea-client/src/plugins/packet/game/events.rs
+index 1c4f550..df006c3 100644
+--- a/azalea-client/src/plugins/packet/game/events.rs
++++ b/azalea-client/src/plugins/packet/game/events.rs
+@@ -61,9 +61,17 @@ pub fn handle_outgoing_packets_observer(
+     trigger: On<SendGamePacketEvent>,
+     mut query: Query<(&mut RawConnection, Option<&InGameState>)>,
+     mut dead: Query<&mut RespawnLog, With<DeathScreen>>,
++    mut after_unmodelled: Query<&mut crate::unmodelled_disconnect::PacketsAfterUnmodelledDisconnect>,
+ ) {
+     let event = trigger.event();
+ 
++    // Patch 30: once the unmodelled-movement gate has closed the connection nothing is written;
++    // the attempt is counted so the ability check can require 0.
++    if let Ok(mut n) = after_unmodelled.get_mut(event.sent_by) {
++        n.0 += 1;
++        return;
++    }
++
+     if let Ok((mut raw_connection, in_game_state)) = query.get_mut(event.sent_by) {
+         if in_game_state.is_none() {
+             error!(
+diff --git a/azalea-client/src/plugins/packet/game/mod.rs b/azalea-client/src/plugins/packet/game/mod.rs
+index f589edd..05a7718 100644
+--- a/azalea-client/src/plugins/packet/game/mod.rs
++++ b/azalea-client/src/plugins/packet/game/mod.rs
+@@ -9,6 +9,7 @@ use azalea_core::{
+     position::{ChunkPos, Vec3},
+ };
+ use azalea_entity::{
++    unmodelled::{RidingVehicle, WorldBorderState},
+     Attributes, Dead, EntityBundle, EntityKindComponent, HasClientLoaded, LoadedBy, LocalEntity, LookDirection,
+     Physics, PlayerAbilities, Position,
+     effect_events::{AddEffectEvent, RemoveEffectsEvent},
+@@ -817,8 +818,48 @@ impl GamePacketHandler<'_> {
+         debug!("Got set entity link packet {p:?}");
+     }
+ 
++    // Null fork (patch 30), `ClientPacketListener#handleInitializeBorder`: the unmodelled-movement
++    // gate needs to know when the bot's box is at the border. A lerp time over 0 starts a lerp.
++    // Spec: specs/F5-version-layer.md §4.6 (the world border as a Movement entry)
+     pub fn initialize_border(&mut self, p: &ClientboundInitializeBorder) {
+         debug!("Got initialize border packet {p:?}");
++        self.update_border(|b, _now| {
++            *b = WorldBorderState {
++                center_x: p.new_center_x,
++                center_z: p.new_center_z,
++                from_size: if p.lerp_time > 0 { p.old_size } else { p.new_size },
++                to_size: p.new_size,
++                start_tick: _now,
++                lerp_ticks: p.lerp_time,
++            };
++        });
++    }
++
++    fn update_border(&mut self, f: impl FnOnce(&mut WorldBorderState, u64)) {
++        as_system::<(Commands, Query<(&TicksConnected, Option<&mut WorldBorderState>)>)>(
++            self.ecs,
++            |(mut commands, mut query)| {
++                let Ok((ticks, border)) = query.get_mut(self.player) else {
++                    return;
++                };
++                let now = ticks.0;
++                match border {
++                    Some(mut b) => f(&mut b, now),
++                    None => {
++                        let mut b = WorldBorderState {
++                            center_x: 0.0,
++                            center_z: 0.0,
++                            from_size: 5.9999968E7,
++                            to_size: 5.9999968E7,
++                            start_tick: now,
++                            lerp_ticks: 0,
++                        };
++                        f(&mut b, now);
++                        commands.entity(self.player).insert(b);
++                    }
++                }
++            },
++        );
+     }
+ 
+     pub fn set_time(&mut self, _p: &ClientboundSetTime) {
+@@ -1514,6 +1555,7 @@ impl GamePacketHandler<'_> {
+                     &GameProfileComponent,
+                     &ClientInformation,
+                     Option<&mut WorldName>,
++                    Option<&Attributes>,
+                 ),
+                 With<LocalEntity>,
+             >,
+@@ -1523,12 +1565,13 @@ impl GamePacketHandler<'_> {
+         )>(
+             self.ecs,
+             |(mut commands, mut query, mut events, mut worlds, mut loaded_by_query)| {
+-                let Ok((mut world_holder, game_profile, client_information, world_name)) =
++                let Ok((mut world_holder, game_profile, client_information, world_name, old_attributes)) =
+                     query.get_mut(self.player)
+                 else {
+                     warn!("Got respawn packet but player doesn't have the required components");
+                     return;
+                 };
++                let old_attributes = old_attributes.cloned();
+ 
+                 let new_world_name = WorldName(p.common.dimension.clone());
+ 
+@@ -1578,12 +1621,25 @@ impl GamePacketHandler<'_> {
+                 }
+ 
+                 // this resets a bunch of our components like physics and stuff
+-                let entity_bundle = EntityBundle::new(
++                #[allow(unused_mut)]
++                let mut entity_bundle = EntityBundle::new(
+                     game_profile.uuid,
+                     Vec3::ZERO,
+                     EntityKind::Player,
+                     new_world_name,
+                 );
++                // Null fork (patch 30), `ClientPacketListener#handleRespawn`: the new player
++                // takes the old attributes' base values always, and the modifiers too when the
++                // packet keeps bit 1 (`KEEP_ATTRIBUTE_MODIFIERS`). Effects start empty. The new
++                // player rides nothing.
++                if let Some(old) = old_attributes {
++                    if p.data_to_keep & 1 != 0 {
++                        entity_bundle.attributes.assign_all_values(&old);
++                    } else {
++                        entity_bundle.attributes.assign_base_values(&old);
++                    }
++                }
++                commands.entity(self.player).remove::<RidingVehicle>();
+                 // update the local gamemode and metadata things
+                 commands.entity(self.player).insert((
+                     LocalGameMode {
+@@ -1691,15 +1747,55 @@ impl GamePacketHandler<'_> {
+ 
+     pub fn select_advancements_tab(&mut self, _p: &ClientboundSelectAdvancementsTab) {}
+     pub fn set_action_bar_text(&mut self, _p: &ClientboundSetActionBarText) {}
+-    pub fn set_border_center(&mut self, _p: &ClientboundSetBorderCenter) {}
+-    pub fn set_border_lerp_size(&mut self, _p: &ClientboundSetBorderLerpSize) {}
+-    pub fn set_border_size(&mut self, _p: &ClientboundSetBorderSize) {}
++    // Null fork (patch 30): `handleSetBorderCenter`, `handleSetBorderLerpSize`, `handleSetBorderSize`.
++    // Spec: specs/F5-version-layer.md §4.6 (the world border as a Movement entry)
++    pub fn set_border_center(&mut self, p: &ClientboundSetBorderCenter) {
++        self.update_border(|b, _| {
++            b.center_x = p.new_center_x;
++            b.center_z = p.new_center_z;
++        });
++    }
++    pub fn set_border_lerp_size(&mut self, p: &ClientboundSetBorderLerpSize) {
++        self.update_border(|b, now| {
++            b.from_size = p.old_size;
++            b.to_size = p.new_size;
++            b.start_tick = now;
++            b.lerp_ticks = p.lerp_time;
++        });
++    }
++    pub fn set_border_size(&mut self, p: &ClientboundSetBorderSize) {
++        self.update_border(|b, now| {
++            b.from_size = p.size;
++            b.to_size = p.size;
++            b.start_tick = now;
++            b.lerp_ticks = 0;
++        });
++    }
+     pub fn set_border_warning_delay(&mut self, _p: &ClientboundSetBorderWarningDelay) {}
+     pub fn set_border_warning_distance(&mut self, _p: &ClientboundSetBorderWarningDistance) {}
+     pub fn set_camera(&mut self, _p: &ClientboundSetCamera) {}
+     pub fn set_display_objective(&mut self, _p: &ClientboundSetDisplayObjective) {}
+     pub fn set_objective(&mut self, _p: &ClientboundSetObjective) {}
+-    pub fn set_passengers(&mut self, _p: &ClientboundSetPassengers) {}
++    // Null fork (patch 30), `ClientPacketListener#handleSetEntityPassengers`: the bot is a
++    // passenger while a packet for its vehicle lists it. A passenger is moved by the vehicle,
++    // which the fork does not model (the unmodelled-movement gate disconnects the bot).
++    // Spec: specs/F5-version-layer.md §4.6 (a vehicle as a Movement entry)
++    pub fn set_passengers(&mut self, p: &ClientboundSetPassengers) {
++        debug!("Got set passengers packet {p:?}");
++        as_system::<(Commands, Query<(&MinecraftEntityId, Option<&RidingVehicle>)>)>(
++            self.ecs,
++            |(mut commands, query)| {
++                let Ok((me, riding)) = query.get(self.player) else {
++                    return;
++                };
++                if p.passengers.contains(me) {
++                    commands.entity(self.player).insert(RidingVehicle(p.vehicle));
++                } else if riding.is_some_and(|r| r.0 == p.vehicle) {
++                    commands.entity(self.player).remove::<RidingVehicle>();
++                }
++            },
++        );
++    }
+     pub fn set_player_team(&mut self, p: &ClientboundSetPlayerTeam) {
+         debug!("Got set player team packet {p:?}");
+     }
+diff --git a/azalea-client/src/plugins/unmodelled_disconnect.rs b/azalea-client/src/plugins/unmodelled_disconnect.rs
+new file mode 100644
+index 0000000..a894f44
+--- /dev/null
++++ b/azalea-client/src/plugins/unmodelled_disconnect.rs
+@@ -0,0 +1,159 @@
++//! The disconnect for an unmodelled input that moves the bot by itself (patch 30, AD-F5.5).
++//!
++//! A `Movement` entry (see [`azalea_entity::unmodelled`]) means a server-set input changes the
++//! bot's motion in a way the fork cannot predict, so the next position the bot sends would be
++//! wrong. A vanilla player can always quit, so the bot does: at the start of the first
++//! `GameTick` after the input arrives, before any system that computes or sends anything, it
++//! closes the connection and sends nothing more. The play-state vanilla client sends no quit
++//! packet either: `Connection#disconnect` only closes the channel.
++//!
++//! The gate acts only on a client that has [`DisconnectOnUnmodelledMovement`]; `mc-adapter`
++//! inserts it for every bot. What happens next (stay off, or rejoin) is decided above the fork.
++//! Spec: specs/F5-version-layer.md §4.6, specs/B1-movement.md §4.2.
++
++use azalea_core::tick::GameTick;
++use azalea_entity::{
++    ActiveEffects, Attributes, LocalEntity, Physics,
++    unmodelled::{
++        RidingVehicle, UnmodelledContacts, UnmodelledInput, UnmodelledKind, WorldBorderState,
++        unmodelled_inputs,
++    },
++};
++use azalea_physics::{PhysicsSystems, unmodelled_contacts::unmodelled_block_contacts};
++use bevy_app::{App, Plugin};
++use bevy_ecs::prelude::*;
++use tracing::info;
++
++use crate::{
++    connection::RawConnection, disconnect::{DisconnectEvent, RemoveOnDisconnectBundle}, local_player::WorldHolder,
++    mining::MiningSystems, tick_counter::TicksConnected,
++};
++
++/// Marks a client whose connection the gate may close.
++#[derive(Clone, Component, Copy, Debug, Default)]
++pub struct DisconnectOnUnmodelledMovement;
++
++/// Why and when the gate closed the connection. It stays on the entity after the disconnect, so
++/// the layer above can read it; whoever rejoins removes it first.
++#[derive(Clone, Component, Debug, PartialEq)]
++pub struct UnmodelledDisconnect {
++    /// The client's tick count (`TicksConnected`) when the gate closed the connection.
++    pub tick: u64,
++    /// The `Movement` entries that caused it.
++    pub inputs: Vec<UnmodelledInput>,
++}
++
++/// How many packets the client tried to send after the gate closed the connection. They are
++/// dropped, never written; the ability check requires 0, which shows that no system that
++/// computes a position or an action ran after the trigger.
++#[derive(Clone, Component, Copy, Debug, Default, PartialEq, Eq)]
++pub struct PacketsAfterUnmodelledDisconnect(pub u32);
++
++pub struct UnmodelledDisconnectPlugin;
++impl Plugin for UnmodelledDisconnectPlugin {
++    fn build(&self, app: &mut App) {
++        // Ordered before the counter (which every death-screen, click and look system follows), the
++        // physics, mining, movement and tick-end systems. The gate also removes the connection and
++        // world components at once, so any system it does not precede finds nothing to act on.
++        app.add_systems(
++            GameTick,
++            (derive_unmodelled_contacts, disconnect_on_unmodelled_movement)
++                .chain()
++                .before(crate::tick_counter::increment_counter)
++                .before(PhysicsSystems)
++                .before(MiningSystems)
++                .before(crate::movement::send_position)
++                .before(crate::tick_end::game_tick_packet)
++                .before(crate::loading::player_loaded_packet)
++                .before(crate::respawn::tick_death_screen),
++        );
++    }
++}
++
++/// Derive the vehicle, block and border entries of [`UnmodelledContacts`] from the state at the
++/// end of the last tick and the packets applied since.
++// Spec: specs/F5-version-layer.md §4.6
++#[allow(clippy::type_complexity)]
++pub fn derive_unmodelled_contacts(
++    mut commands: Commands,
++    mut query: Query<
++        (
++            Entity,
++            &Physics,
++            &WorldHolder,
++            &TicksConnected,
++            Option<&RidingVehicle>,
++            Option<&WorldBorderState>,
++            Option<&mut UnmodelledContacts>,
++        ),
++        With<LocalEntity>,
++    >,
++) {
++    for (entity, physics, world_holder, ticks, vehicle, border, contacts) in &mut query {
++        let mut list = Vec::new();
++        if vehicle.is_some() {
++            list.push(UnmodelledInput::Passenger);
++        }
++        if border.is_some_and(|b| b.touches(&physics.bounding_box, ticks.0)) {
++            list.push(UnmodelledInput::WorldBorder);
++        }
++        list.extend(unmodelled_block_contacts(&world_holder.shared.read(), &physics.bounding_box));
++        match contacts {
++            Some(mut c) => {
++                if c.0 != list {
++                    c.0 = list;
++                }
++            }
++            None => {
++                commands.entity(entity).insert(UnmodelledContacts(list));
++            }
++        }
++    }
++}
++
++/// Close the connection of a client with [`DisconnectOnUnmodelledMovement`] when a `Movement`
++/// entry is in force, and record [`UnmodelledDisconnect`].
++// Spec: specs/F5-version-layer.md §4.6
++#[allow(clippy::type_complexity)]
++pub fn disconnect_on_unmodelled_movement(
++    mut commands: Commands,
++    mut query: Query<
++        (
++            Entity,
++            &Attributes,
++            &ActiveEffects,
++            &UnmodelledContacts,
++            &TicksConnected,
++            &mut RawConnection,
++        ),
++        (
++            With<LocalEntity>,
++            With<DisconnectOnUnmodelledMovement>,
++            Without<UnmodelledDisconnect>,
++        ),
++    >,
++    mut events: MessageWriter<DisconnectEvent>,
++) {
++    for (entity, attributes, effects, contacts, ticks, mut raw) in &mut query {
++        let inputs: Vec<UnmodelledInput> = unmodelled_inputs(attributes, effects)
++            .into_iter()
++            .chain(contacts.0.iter().copied())
++            .filter(|i| i.kind() == UnmodelledKind::Movement)
++            .collect();
++        if inputs.is_empty() {
++            continue;
++        }
++        info!("unmodelled movement input in force, disconnecting {entity:?}: {inputs:?}");
++        // Dropping the network side closes the socket; no packet is written first.
++        raw.network = None;
++        raw.is_alive = false;
++        commands.entity(entity).insert((
++            UnmodelledDisconnect { tick: ticks.0, inputs },
++            PacketsAfterUnmodelledDisconnect::default(),
++        ));
++        // The same removal a `DisconnectEvent` does in `PostUpdate`, applied now so that the
++        // systems after the gate in this tick find no world, position or connection to work on.
++        commands.entity(entity).remove::<RemoveOnDisconnectBundle>();
++        events.write(DisconnectEvent { entity, reason: None });
++    }
++}
+diff --git a/azalea-client/tests/simulation/mod.rs b/azalea-client/tests/simulation/mod.rs
+index 326bca2..d6ffb45 100644
+--- a/azalea-client/tests/simulation/mod.rs
++++ b/azalea-client/tests/simulation/mod.rs
+@@ -24,7 +24,9 @@ mod pick_every_tick;
+ mod receive_spawn_entity_and_start_config_packet;
+ mod receive_start_config_packet;
+ mod reply_to_ping_with_pong;
++mod respawn_keeps_attributes;
+ mod respawn_like_vanilla;
+ mod set_health_before_login;
+ mod teleport_movement;
+ mod ticks_alive;
++mod unmodelled_disconnect;
+diff --git a/azalea-client/tests/simulation/respawn_keeps_attributes.rs b/azalea-client/tests/simulation/respawn_keeps_attributes.rs
+new file mode 100644
+index 0000000..e4c8e2b
+--- /dev/null
++++ b/azalea-client/tests/simulation/respawn_keeps_attributes.rs
+@@ -0,0 +1,67 @@
++use azalea_client::test_utils::prelude::*;
++use azalea_core::attribute_modifier_operation::AttributeModifierOperation;
++use azalea_entity::{ActiveEffects, Attributes, MobEffectData};
++use azalea_inventory::components::AttributeModifier;
++use azalea_protocol::packets::{
++    ConnectionProtocol,
++    game::{ClientboundUpdateAttributes, c_update_attributes::AttributeSnapshot},
++};
++use azalea_registry::{
++    builtin::{Attribute, MobEffect},
++    data::DimensionKind,
++    identifier::Identifier,
++    DataRegistry,
++};
++
++// Spec: specs/B1-movement.md §4.2 (a respawn keeps what vanilla keeps)
++// `ClientPacketListener#handleRespawn`: base values always, modifiers when keep bit 1 is set.
++
++fn run(keep: u8) -> (f64, f64, bool) {
++    let mut s = Simulation::new(ConnectionProtocol::Game);
++    s.receive_packet(default_login_packet());
++    s.tick();
++    let id = s.minecraft_entity_id();
++    let modifier = AttributeModifier {
++        id: Identifier::new("test:half"),
++        amount: -0.5,
++        operation: AttributeModifierOperation::AddMultipliedTotal,
++    };
++    s.receive_packet(ClientboundUpdateAttributes {
++        entity_id: id,
++        values: vec![
++            AttributeSnapshot { attribute: Attribute::MovementSpeed, base: 0.15, modifiers: vec![modifier] },
++            AttributeSnapshot { attribute: Attribute::Scale, base: 1.0, modifiers: vec![] },
++        ],
++    });
++    s.tick();
++    s.with_component_mut::<ActiveEffects>(|mut fx| {
++        fx.insert(MobEffect::Speed, MobEffectData::default());
++    });
++    let before = s.component::<Attributes>().movement_speed.calculate();
++    assert!((before - 0.075).abs() < 1e-9, "{before}");
++
++    let mut respawn = make_basic_respawn_packet(DimensionKind::new_raw(0), Identifier::new("minecraft:overworld"));
++    respawn.data_to_keep = keep;
++    s.receive_packet(respawn);
++    s.tick();
++    let a = s.component::<Attributes>();
++    (a.movement_speed.base, a.movement_speed.calculate(), s.component::<ActiveEffects>().get(MobEffect::Speed).is_none())
++}
++
++#[test]
++fn keep_0_keeps_the_base_value_and_drops_modifiers() {
++    let _lock = init();
++    let (base, value, effects_empty) = run(0);
++    assert_eq!(base, 0.15);
++    assert!((value - 0.15).abs() < 1e-9, "{value}");
++    assert!(effects_empty);
++}
++
++#[test]
++fn keep_1_keeps_the_modifiers_too() {
++    let _lock = init();
++    let (base, value, effects_empty) = run(1);
++    assert_eq!(base, 0.15);
++    assert!((value - 0.075).abs() < 1e-9, "{value}");
++    assert!(effects_empty);
++}
+diff --git a/azalea-client/tests/simulation/unmodelled_disconnect.rs b/azalea-client/tests/simulation/unmodelled_disconnect.rs
+new file mode 100644
+index 0000000..79f42f5
+--- /dev/null
++++ b/azalea-client/tests/simulation/unmodelled_disconnect.rs
+@@ -0,0 +1,205 @@
++use azalea_client::{
++    packet::game::SendGamePacketEvent,
++    test_utils::prelude::*,
++    unmodelled_disconnect::{
++        DisconnectOnUnmodelledMovement, PacketsAfterUnmodelledDisconnect, UnmodelledDisconnect,
++    },
++};
++use azalea_core::{
++    position::{BlockPos, ChunkPos, Vec3},
++    entity_id::MinecraftEntityId,
++};
++use azalea_entity::{ActiveEffects, LookDirection, MobEffectData, unmodelled::UnmodelledInput};
++use azalea_protocol::{
++    common::movements::{PositionMoveRotation, RelativeMovements},
++    packets::{
++        ConnectionProtocol,
++        game::{
++            ClientboundBlockUpdate, ClientboundInitializeBorder, ClientboundPlayerPosition, ClientboundSetBorderSize, ClientboundSetPassengers,
++            ClientboundUpdateAttributes, ServerboundClientTickEnd,
++            c_update_attributes::AttributeSnapshot,
++        },
++    },
++};
++use azalea_registry::builtin::{Attribute, BlockKind, MobEffect};
++use azalea_world::WorldName;
++
++// Spec: specs/F5-version-layer.md §4.6 (the disconnect for a Movement entry)
++
++fn setup(with_gate: bool) -> (Simulation, SentPackets) {
++    let mut s = Simulation::new(ConnectionProtocol::Game);
++    let sent = SentPackets::new(&mut s);
++    s.receive_packet(default_login_packet());
++    s.receive_packet(make_basic_empty_chunk(ChunkPos::new(0, 0), (384 + 64) / 16));
++    s.tick();
++    let floor = BlockPos::new(0, 2, 0);
++    s.receive_packet(ClientboundBlockUpdate { pos: floor, block_state: BlockKind::Stone.into() });
++    s.receive_packet(ClientboundPlayerPosition {
++        id: 1,
++        change: PositionMoveRotation {
++            pos: floor.up(1).center_bottom(),
++            delta: Vec3::ZERO,
++            look_direction: LookDirection::default(),
++        },
++        relative: RelativeMovements::all_absolute(),
++    });
++    s.tick();
++    s.tick();
++    if with_gate {
++        let e = s.entity;
++        s.app.world_mut().entity_mut(e).insert(DisconnectOnUnmodelledMovement);
++    }
++    (s, sent)
++}
++
++fn set_attribute(s: &mut Simulation, attribute: Attribute, base: f64) {
++    let id = s.minecraft_entity_id();
++    s.receive_packet(ClientboundUpdateAttributes {
++        entity_id: id,
++        values: vec![AttributeSnapshot { attribute, base, modifiers: vec![] }],
++    });
++}
++
++fn assert_disconnected_silently(s: &mut Simulation, sent: &SentPackets) {
++    s.update();
++    assert!(s.has_component::<UnmodelledDisconnect>(), "no record");
++    assert!(!s.has_component::<WorldName>(), "still connected");
++    assert!(sent.list.lock().is_empty(), "sent after the trigger: {:?}", sent.list.lock());
++    for _ in 0..5 {
++        s.tick();
++    }
++    assert!(sent.list.lock().is_empty(), "sent later: {:?}", sent.list.lock());
++    assert_eq!(s.component::<PacketsAfterUnmodelledDisconnect>(), PacketsAfterUnmodelledDisconnect(0));
++}
++
++#[test]
++fn scale_disconnects_before_the_next_tick_sends_anything() {
++    let _lock = init();
++    let (mut s, sent) = setup(true);
++    assert!(sent.list.lock().iter().any(|p| matches!(p, azalea_protocol::packets::game::ServerboundGamePacket::ClientTickEnd(_))));
++    sent.clear();
++    set_attribute(&mut s, Attribute::Scale, 2.0);
++    s.tick();
++    assert_disconnected_silently(&mut s, &sent);
++    let rec = s.component::<UnmodelledDisconnect>();
++    assert_eq!(rec.inputs, vec![UnmodelledInput::Attribute(Attribute::Scale, 2.0)]);
++}
++
++#[test]
++fn no_gate_component_no_disconnect() {
++    let _lock = init();
++    let (mut s, _sent) = setup(false);
++    set_attribute(&mut s, Attribute::Scale, 2.0);
++    s.tick();
++    s.tick();
++    assert!(!s.has_component::<UnmodelledDisconnect>());
++    assert!(s.has_component::<WorldName>());
++}
++
++#[test]
++fn levitation_and_slow_falling_stay_connected() {
++    let _lock = init();
++    let (mut s, sent) = setup(true);
++    s.with_component_mut::<ActiveEffects>(|mut fx| {
++        fx.insert(MobEffect::Levitation, MobEffectData { amplifier: 1, duration: 0, ..Default::default() });
++        fx.insert(MobEffect::SlowFalling, MobEffectData { amplifier: 0, duration: 0, ..Default::default() });
++    });
++    sent.clear();
++    for _ in 0..5 {
++        s.tick();
++    }
++    assert!(!s.has_component::<UnmodelledDisconnect>());
++    assert!(sent.list.lock().iter().any(|p| matches!(p, azalea_protocol::packets::game::ServerboundGamePacket::ClientTickEnd(_))));
++    // still in force at duration 0: only the server removes an effect
++    assert!(s.component::<ActiveEffects>().get(MobEffect::Levitation).is_some());
++}
++
++#[test]
++fn dolphins_grace_disconnects() {
++    let _lock = init();
++    let (mut s, sent) = setup(true);
++    sent.clear();
++    s.with_component_mut::<ActiveEffects>(|mut fx| {
++        fx.insert(MobEffect::DolphinsGrace, MobEffectData::default());
++    });
++    s.tick();
++    assert_disconnected_silently(&mut s, &sent);
++}
++
++#[test]
++fn riding_a_vehicle_disconnects() {
++    let _lock = init();
++    let (mut s, sent) = setup(true);
++    sent.clear();
++    let me = s.minecraft_entity_id();
++    s.receive_packet(ClientboundSetPassengers { vehicle: MinecraftEntityId(77), passengers: vec![me] });
++    s.tick();
++    assert_disconnected_silently(&mut s, &sent);
++    assert_eq!(s.component::<UnmodelledDisconnect>().inputs, vec![UnmodelledInput::Passenger]);
++}
++
++#[test]
++fn touching_a_bubble_column_disconnects() {
++    let _lock = init();
++    let (mut s, sent) = setup(true);
++    sent.clear();
++    s.receive_packet(ClientboundBlockUpdate { pos: BlockPos::new(0, 3, 0), block_state: BlockKind::BubbleColumn.into() });
++    s.tick();
++    assert_disconnected_silently(&mut s, &sent);
++    assert!(matches!(
++        s.component::<UnmodelledDisconnect>().inputs[0],
++        UnmodelledInput::Block(_, BlockKind::BubbleColumn)
++    ));
++}
++
++#[test]
++fn sends_after_the_trigger_are_counted_and_dropped() {
++    let _lock = init();
++    let (mut s, sent) = setup(true);
++    sent.clear();
++    set_attribute(&mut s, Attribute::Scale, 0.5);
++    s.tick();
++    let _ = &sent;
++    let e = s.entity;
++    s.trigger(SendGamePacketEvent::new(e, ServerboundClientTickEnd));
++    assert_eq!(s.component::<PacketsAfterUnmodelledDisconnect>(), PacketsAfterUnmodelledDisconnect(1));
++}
++
++#[test]
++fn the_world_border_edge_disconnects() {
++    let _lock = init();
++    let (mut s, sent) = setup(true);
++    s.receive_packet(ClientboundInitializeBorder {
++        new_center_x: 0.0,
++        new_center_z: 0.0,
++        old_size: 10.0,
++        new_size: 10.0,
++        lerp_time: 0,
++        new_absolute_max_size: 29999984,
++        warning_blocks: 5,
++        warning_time: 15,
++    });
++    s.tick();
++    s.tick();
++    assert!(!s.has_component::<UnmodelledDisconnect>(), "inside the border");
++    sent.clear();
++    // the bot stands at (0.5, 3, 0.5): a border 1 wide has its edge at 0.5
++    s.receive_packet(ClientboundSetBorderSize { size: 1.0 });
++    s.tick();
++    assert_disconnected_silently(&mut s, &sent);
++    assert_eq!(s.component::<UnmodelledDisconnect>().inputs, vec![UnmodelledInput::WorldBorder]);
++}
++
++// A packet for the vehicle that no longer lists the bot ends the ride (`handleSetEntityPassengers`).
++#[test]
++fn dismounting_clears_the_vehicle() {
++    let _lock = init();
++    let (mut s, _sent) = setup(false);
++    let me = s.minecraft_entity_id();
++    s.receive_packet(ClientboundSetPassengers { vehicle: MinecraftEntityId(77), passengers: vec![me] });
++    s.tick();
++    assert!(s.has_component::<azalea_entity::unmodelled::RidingVehicle>());
++    s.receive_packet(ClientboundSetPassengers { vehicle: MinecraftEntityId(77), passengers: vec![] });
++    s.tick();
++    assert!(!s.has_component::<azalea_entity::unmodelled::RidingVehicle>());
++}
+diff --git a/azalea-entity/src/attributes.rs b/azalea-entity/src/attributes.rs
+index 2408577..ebbb1a3 100644
+--- a/azalea-entity/src/attributes.rs
++++ b/azalea-entity/src/attributes.rs
+@@ -107,6 +107,43 @@ impl Attributes {
+         }
+     }
+ 
++    /// `AttributeMap#assignBaseValues`: take the base value of every attribute of `old` and
++    /// keep this map's modifiers. `ClientPacketListener#handleRespawn` does this on every respawn.
++    // Spec: specs/B1-movement.md §4.2
++    pub fn assign_base_values(&mut self, old: &Attributes) {
++        self.assign_from(old, |new, old| new.base = old.base);
++    }
++
++    /// `AttributeMap#assignAllValues`: take the base value and the modifiers of every attribute
++    /// of `old`. `handleRespawn` does this when the packet's keep bit 1
++    /// (`KEEP_ATTRIBUTE_MODIFIERS`) is set.
++    // Spec: specs/B1-movement.md §4.2
++    pub fn assign_all_values(&mut self, old: &Attributes) {
++        self.assign_from(old, |new, old| {
++            new.base = old.base;
++            new.modifiers_by_id = old.modifiers_by_id.clone();
++        });
++    }
++
++    fn assign_from(&mut self, old: &Attributes, copy: impl Fn(&mut AttributeInstance, &AttributeInstance)) {
++        macro_rules! fields {
++            ($($f:ident),*) => { $( copy(&mut self.$f, &old.$f); )* };
++        }
++        fields!(
++            movement_speed, sneaking_speed, attack_speed, water_movement_efficiency,
++            mining_efficiency, block_break_speed, block_interaction_range,
++            entity_interaction_range, step_height, jump_strength, gravity, movement_efficiency,
++            submerged_mining_speed
++        );
++        for (attribute, from) in &old.other {
++            if let Some((_, to)) = self.other.iter_mut().find(|(a, _)| a == attribute) {
++                copy(to, from);
++            } else {
++                self.other.push((*attribute, from.clone()));
++            }
++        }
++    }
++
+     /// The attributes in force that change what the client computes but that
+     /// the fork does not model, with their current values. Empty when every
+     /// such attribute has its default.
+diff --git a/azalea-entity/src/unmodelled.rs b/azalea-entity/src/unmodelled.rs
+index db1de2c..0e143af 100644
+--- a/azalea-entity/src/unmodelled.rs
++++ b/azalea-entity/src/unmodelled.rs
+@@ -1,17 +1,19 @@
+ //! Server-set inputs of the client's own computations that the fork does not model.
+ //!
+-//! A bot whose attribute or status effect changes what a vanilla client computes (hitbox,
+-//! gravity, speed in water, ...) must not move or break on a wrong prediction. This lists the
+-//! ones in force so the layer above can stop. Spec: specs/F5-version-layer.md §4.6.
++//! A bot whose attribute, status effect, vehicle or surroundings change what a vanilla client
++//! computes (hitbox, motion, ...) must not move or break on a wrong prediction. This lists the
++//! ones in force so the layer above can stop, and `azalea-client` disconnects the bot when one
++//! of them moves it by itself. Spec: specs/F5-version-layer.md §4.6, specs/B1-movement.md §4.2.
+ 
+-use azalea_registry::builtin::{Attribute, MobEffect};
++use azalea_core::{aabb::Aabb, entity_id::MinecraftEntityId, position::BlockPos};
++use azalea_registry::builtin::{Attribute, BlockKind, MobEffect};
+ 
+ use crate::{ActiveEffects, Attributes};
+ 
+ /// What an unmodelled input changes. `Movement` changes the bot's motion even with no input, so
+-/// stopping the skill is not enough (the client keeps simulating and sending positions); what to
+-/// do then is a decision above the fork. `Action` changes only what an action computes (reach,
+-/// break time).
++/// stopping the skill is not enough (the client keeps simulating and sending positions): the
++/// client disconnects the bot (patch 30). `Action` changes only what an action or a plan
++/// computes (reach, break time, the gravity a skill plans with).
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum UnmodelledKind {
+     Movement,
+@@ -25,27 +27,44 @@ pub enum UnmodelledInput {
+     Attribute(Attribute, f64),
+     /// The effect's amplifier (0 for level I).
+     Effect(MobEffect, i32),
++    /// The bot is a passenger (`Entity#isPassenger`); the vehicle moves it.
++    Passenger,
++    /// The bot's box touches a block whose effect on motion the fork does not model.
++    Block(BlockPos, BlockKind),
++    /// The bot's box is outside or at the world border (`WorldBorder` collision).
++    WorldBorder,
+ }
+ 
+ impl UnmodelledInput {
+-    /// Scale (hitbox), levitation, slow falling and dolphin's grace all move the bot or its box
+-    /// every tick.
++    /// Scale (hitbox and eye height) and Dolphin's Grace change the motion every tick, as do a
++    /// vehicle, a block the fork does not model and the world border. Levitation and Slow Falling
++    /// are modelled (patch 30), but skills and the pathfinder plan with normal gravity, so they
++    /// only stop the skill (Allen, 2026-10-20, P30.2).
++    // Spec: specs/F5-version-layer.md §4.6
+     pub fn kind(&self) -> UnmodelledKind {
+-        UnmodelledKind::Movement
++        match self {
++            UnmodelledInput::Effect(MobEffect::Levitation | MobEffect::SlowFalling, _) => {
++                UnmodelledKind::Action
++            }
++            _ => UnmodelledKind::Movement,
++        }
+     }
+ }
+ 
+-/// Status effects the client reads for its own movement that the fork does not model yet:
+-/// `LivingEntity#travelInAir` (levitation), `#getEffectiveGravity` (slow falling) and
+-/// `#travelInWater` (dolphin's grace). Blindness (`Player#isMobilityRestricted`, sprinting),
+-/// jump boost, haste, conduit power, mining fatigue, weaving, speed and slowness are modelled.
+-const UNMODELLED_EFFECTS: [MobEffect; 3] = [
++/// Status effects the client reads for its own movement. Dolphin's Grace is not modelled
++/// (`LivingEntity#travelInWater`) and is a `Movement` entry; Levitation
++/// (`LivingEntity#travelInAir`) and Slow Falling (`#getEffectiveGravity`) are modelled and are
++/// `Action` entries. Blindness (`Player#isMobilityRestricted`, sprinting), jump boost, haste,
++/// conduit power, mining fatigue, weaving, speed and slowness are modelled and not listed.
++const LISTED_EFFECTS: [MobEffect; 3] = [
+     MobEffect::Levitation,
+     MobEffect::SlowFalling,
+     MobEffect::DolphinsGrace,
+ ];
+ 
+-/// Every unmodelled attribute or effect in force; empty when the client's predictions hold.
++/// Every unmodelled attribute or effect in force; empty when the client's predictions hold. The
++/// vehicle, block and border entries come from [`UnmodelledContacts`], which `azalea-client`
++/// derives at the start of each tick.
+ // Spec: specs/F5-version-layer.md §4.6
+ pub fn unmodelled_inputs(attributes: &Attributes, effects: &ActiveEffects) -> Vec<UnmodelledInput> {
+     let mut out: Vec<UnmodelledInput> = attributes
+@@ -53,7 +72,7 @@ pub fn unmodelled_inputs(attributes: &Attributes, effects: &ActiveEffects) -> Ve
+         .into_iter()
+         .map(|(a, v)| UnmodelledInput::Attribute(a, v))
+         .collect();
+-    for effect in UNMODELLED_EFFECTS {
++    for effect in LISTED_EFFECTS {
+         if let Some(level) = effects.get_level(effect) {
+             out.push(UnmodelledInput::Effect(effect, level));
+         }
+@@ -61,8 +80,84 @@ pub fn unmodelled_inputs(attributes: &Attributes, effects: &ActiveEffects) -> Ve
+     out
+ }
+ 
++/// The `Passenger`, `Block` and `WorldBorder` entries in force, set at the start of each
++/// `GameTick` by the unmodelled-movement gate in `azalea-client`.
++#[cfg_attr(feature = "bevy_ecs", derive(bevy_ecs::component::Component))]
++#[derive(Clone, Debug, Default, PartialEq)]
++pub struct UnmodelledContacts(pub Vec<UnmodelledInput>);
++
++/// The vehicle the local player rides, from `ClientboundSetPassengers`
++/// (`ClientPacketListener#handleSetEntityPassengers`). Absent when the bot is not a passenger.
++#[cfg_attr(feature = "bevy_ecs", derive(bevy_ecs::component::Component))]
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct RidingVehicle(pub MinecraftEntityId);
++
++/// The world border as the server last described it (`ClientboundInitializeBorder`,
++/// `SetBorderCenter`, `SetBorderSize`, `SetBorderLerpSize`), so the gate can tell when the bot's
++/// box is outside or at it. Absent until the server sends one.
++#[cfg_attr(feature = "bevy_ecs", derive(bevy_ecs::component::Component))]
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct WorldBorderState {
++    pub center_x: f64,
++    pub center_z: f64,
++    /// Size at `start_tick`, and the size it moves to over `lerp_ticks` (`WorldBorder.MovingBorderExtent`).
++    pub from_size: f64,
++    pub to_size: f64,
++    pub start_tick: u64,
++    pub lerp_ticks: u64,
++}
++
++impl WorldBorderState {
++    /// The border's side length at `tick` (the local tick count).
++    pub fn size_at(&self, tick: u64) -> f64 {
++        if self.lerp_ticks == 0 || tick >= self.start_tick + self.lerp_ticks {
++            self.to_size
++        } else {
++            let t = tick.saturating_sub(self.start_tick) as f64 / self.lerp_ticks as f64;
++            self.from_size + (self.to_size - self.from_size) * t
++        }
++    }
++
++    /// Whether the box is outside the border or touches its edge (within 1e-3, the margin the
++    /// block test uses too).
++    // Spec: specs/F5-version-layer.md §4.6
++    pub fn touches(&self, bb: &Aabb, tick: u64) -> bool {
++        let half = self.size_at(tick) / 2.0;
++        const M: f64 = 1e-3;
++        bb.min.x <= self.center_x - half + M
++            || bb.max.x >= self.center_x + half - M
++            || bb.min.z <= self.center_z - half + M
++            || bb.max.z >= self.center_z + half - M
++    }
++}
++
++/// Whether a block of this kind changes a bot's motion in a way the fork does not model:
++/// `BubbleColumnBlock#entityInside`, `SlimeBlock#stepOn` and `#updateEntityMovementAfterFallOn`,
++/// `BedBlock#updateEntityMovementAfterFallOn`, `ScaffoldingBlock#getCollisionShape` (depends on
++/// the entity), `PistonMovingBlockEntity#moveCollidedEntities`. Honey is handled apart
++/// ([`honey_touches_side`]): standing on top is modelled (patch 26).
++// Spec: specs/B1-movement.md §4.3
++pub fn is_unmodelled_block(kind: BlockKind) -> bool {
++    matches!(
++        kind,
++        BlockKind::BubbleColumn
++            | BlockKind::SlimeBlock
++            | BlockKind::Scaffolding
++            | BlockKind::MovingPiston
++    ) || kind.to_str().ends_with("_bed")
++}
++
++/// `HoneyBlock#entityInside` slides a bot that is in the block's cell below its top (15/16) and
++/// not on the ground; standing on the top is not that. The box touches the cell from the side
++/// when its feet are below the top of the honey.
++// Spec: specs/B1-movement.md §4.3
++pub fn honey_touches_side(bb: &Aabb, cell: BlockPos) -> bool {
++    bb.min.y < cell.y as f64 + 0.9375 - 1e-7
++}
++
+ #[cfg(test)]
+ mod tests {
++    use azalea_core::position::Vec3;
+     use azalea_registry::builtin::EntityKind;
+ 
+     use super::*;
+@@ -80,4 +175,68 @@ mod tests {
+         fx.remove(MobEffect::Levitation);
+         assert!(unmodelled_inputs(&attrs, &fx).is_empty());
+     }
++
++    // Levitation and Slow Falling are modelled (patch 30): they stop the skill, not the bot.
++    // Dolphin's Grace and a scale away from 1 move the bot and disconnect it.
++    #[test]
++    fn entry_kinds() {
++        use UnmodelledKind::*;
++        let e = |m| UnmodelledInput::Effect(m, 0);
++        assert_eq!(e(MobEffect::Levitation).kind(), Action);
++        assert_eq!(e(MobEffect::SlowFalling).kind(), Action);
++        assert_eq!(e(MobEffect::DolphinsGrace).kind(), Movement);
++        assert_eq!(UnmodelledInput::Attribute(Attribute::Scale, 2.0).kind(), Movement);
++        assert_eq!(UnmodelledInput::Passenger.kind(), Movement);
++        assert_eq!(UnmodelledInput::WorldBorder.kind(), Movement);
++        assert_eq!(UnmodelledInput::Block(BlockPos::new(0, 0, 0), BlockKind::BubbleColumn).kind(), Movement);
++    }
++
++    // An effect stays until the server removes it; the duration is never counted down
++    // (`MobEffectInstance#tickClient` does not remove it on the client).
++    #[test]
++    fn an_effect_at_duration_zero_stays() {
++        let attrs = Attributes::new(EntityKind::Player);
++        let mut fx = ActiveEffects::default();
++        fx.insert(MobEffect::SlowFalling, MobEffectData { amplifier: 0, duration: 0, ..Default::default() });
++        assert_eq!(unmodelled_inputs(&attrs, &fx), vec![UnmodelledInput::Effect(MobEffect::SlowFalling, 0)]);
++    }
++
++    #[test]
++    fn block_kinds() {
++        for kind in [BlockKind::BubbleColumn, BlockKind::SlimeBlock, BlockKind::Scaffolding, BlockKind::MovingPiston, BlockKind::WhiteBed, BlockKind::RedBed] {
++            assert!(is_unmodelled_block(kind), "{kind:?}");
++        }
++        for kind in [BlockKind::Stone, BlockKind::HoneyBlock, BlockKind::Cobweb, BlockKind::Water, BlockKind::OakSlab] {
++            assert!(!is_unmodelled_block(kind), "{kind:?}");
++        }
++    }
++
++    // Honey: standing on top is modelled; feet below the 15/16 top touch it from the side.
++    #[test]
++    fn honey_side_vs_top() {
++        let cell = BlockPos::new(0, 70, 0);
++        let on_top = Aabb { min: Vec3::new(0.2, 70.9375, 0.2), max: Vec3::new(0.8, 72.7, 0.8) };
++        let beside = Aabb { min: Vec3::new(-0.5, 70.0, 0.2), max: Vec3::new(0.05, 71.8, 0.8) };
++        assert!(!honey_touches_side(&on_top, cell));
++        assert!(honey_touches_side(&beside, cell));
++    }
++
++    #[test]
++    fn world_border_touch_and_lerp() {
++        let mut b = WorldBorderState { center_x: 0.0, center_z: 0.0, from_size: 100.0, to_size: 100.0, start_tick: 0, lerp_ticks: 0 };
++        let at = |x: f64| Aabb { min: Vec3::new(x - 0.3, 70.0, -0.3), max: Vec3::new(x + 0.3, 71.8, 0.3) };
++        assert!(!b.touches(&at(10.0), 5));
++        assert!(b.touches(&at(49.8), 5));
++        assert!(b.touches(&at(60.0), 5));
++        assert!(b.touches(&at(-49.8), 5));
++        // shrinking from 100 to 20 over 10 ticks: halfway the border is 60 wide
++        b.from_size = 100.0;
++        b.to_size = 20.0;
++        b.start_tick = 0;
++        b.lerp_ticks = 10;
++        assert_eq!(b.size_at(5), 60.0);
++        assert!(b.touches(&at(29.9), 5));
++        assert!(!b.touches(&at(29.9), 0));
++        assert_eq!(b.size_at(50), 20.0);
++    }
+ }
+diff --git a/azalea-physics/src/collision/mod.rs b/azalea-physics/src/collision/mod.rs
+index f62fee0..60577b9 100644
+--- a/azalea-physics/src/collision/mod.rs
++++ b/azalea-physics/src/collision/mod.rs
+@@ -163,6 +163,11 @@ pub struct MoveCtx<'world, 'state, 'a, 'b> {
+     /// Whether the feet slot holds leather boots, for
+     /// `PowderSnowBlock#canEntityWalkOnPowderSnow`.
+     pub wears_leather_boots: bool,
++    /// Levitation's amplifier (0 is level I) while the effect is in force
++    /// (`LivingEntity#travelInAir`).
++    pub levitation: Option<i32>,
++    /// Slow Falling is in force (`LivingEntity#getEffectiveGravity`).
++    pub slow_falling: bool,
+ }
+ 
+ /// Move an entity by a given delta, checking for collisions.
+diff --git a/azalea-physics/src/lib.rs b/azalea-physics/src/lib.rs
+index a0ffb16..3b5ea8d 100644
+--- a/azalea-physics/src/lib.rs
++++ b/azalea-physics/src/lib.rs
+@@ -6,6 +6,7 @@ pub mod clip;
+ pub mod collision;
+ pub mod fluids;
+ pub mod travel;
++pub mod unmodelled_contacts;
+ 
+ use std::collections::HashSet;
+ 
+diff --git a/azalea-physics/src/travel.rs b/azalea-physics/src/travel.rs
+index 577c185..0fa0db8 100644
+--- a/azalea-physics/src/travel.rs
++++ b/azalea-physics/src/travel.rs
+@@ -4,11 +4,11 @@ use azalea_core::{
+     position::{BlockPos, Vec3},
+ };
+ use azalea_entity::{
+-    Attributes, HasClientLoaded, Jumping, LocalEntity, LookDirection, OnClimbable, Physics,
++    ActiveEffects, Attributes, HasClientLoaded, Jumping, LocalEntity, LookDirection, OnClimbable, Physics,
+     PlayerAbilities, Pose, Position, inventory::Inventory, metadata::Sprinting, move_relative,
+ };
+ use azalea_inventory::components::EquipmentSlot;
+-use azalea_registry::builtin::ItemKind;
++use azalea_registry::builtin::{ItemKind, MobEffect};
+ use azalea_world::{World, WorldName, Worlds};
+ use bevy_ecs::prelude::*;
+ 
+@@ -39,6 +39,7 @@ pub fn travel(
+             Option<&Pose>,
+             Option<&PlayerAbilities>,
+             Option<&Inventory>,
++            Option<&ActiveEffects>,
+             &mut Physics,
+             &mut LookDirection,
+             &mut Position,
+@@ -60,6 +61,7 @@ pub fn travel(
+         pose,
+         abilities,
+         inventory,
++        active_effects,
+         mut physics,
+         direction,
+         position,
+@@ -90,6 +92,9 @@ pub fn travel(
+             on_climbable: *on_climbable,
+             pose: pose.copied(),
+             jumping: *jumping,
++            // Null fork (patch 30): the effects `travelInAir` and `getEffectiveGravity` read.
++            levitation: active_effects.and_then(|e| e.get_level(MobEffect::Levitation)),
++            slow_falling: active_effects.is_some_and(|e| e.get(MobEffect::SlowFalling).is_some()),
+             wears_leather_boots: inventory.is_some_and(|inv| {
+                 inv.get_equipment(EquipmentSlot::Feet)
+                     .is_some_and(|s| s.kind() == ItemKind::LeatherBoots)
+@@ -108,8 +113,12 @@ pub fn travel(
+ }
+ 
+ /// The usual movement when we're not in water or using an elytra.
++///
++/// Null fork (patch 30), `LivingEntity#travelInAir`: with Levitation the vertical speed (after
++/// the climb and move step) moves a fifth of the way toward 0.05 x (amplifier + 1); without it
++/// the effective gravity is subtracted. Grim: `PointThreeEstimator` (levitation from the level).
++// Spec: specs/B1-movement.md §4.2
+ fn travel_in_air(ctx: &mut MoveCtx) {
+-    let gravity = get_effective_gravity(ctx.attributes);
+ 
+     let block_pos_below = get_block_pos_below_that_affects_movement(*ctx.position);
+ 
+@@ -129,7 +138,16 @@ fn travel_in_air(ctx: &mut MoveCtx) {
+     // this applies the current delta
+     let mut movement = handle_relative_friction_and_calculate_movement(ctx, block_friction);
+ 
+-    movement.y -= gravity;
++    if let Some(amplifier) = ctx.levitation {
++        movement.y = levitation_vertical_speed(movement.y, amplifier);
++    } else {
++        // `getEffectiveGravity` reads the speed at this point, after the move step.
++        movement.y -= effective_gravity(
++            ctx.attributes.gravity.calculate(),
++            movement.y,
++            ctx.slow_falling,
++        );
++    }
+ 
+     // if (this.shouldDiscardFriction()) {
+     //     this.setDeltaMovement(movement.x, yMovement, movement.z);
+@@ -152,7 +170,12 @@ fn travel_in_air(ctx: &mut MoveCtx) {
+ fn travel_in_fluid(ctx: &mut MoveCtx) {
+     let moving_down = ctx.physics.velocity.y <= 0.;
+     let y = ctx.position.y;
+-    let gravity = get_effective_gravity(ctx.attributes);
++    // `travelInFluid` reads the effective gravity once, at the start (Slow Falling, patch 30).
++    let gravity = effective_gravity(
++        ctx.attributes.gravity.calculate(),
++        ctx.physics.velocity.y,
++        ctx.slow_falling,
++    );
+ 
+     let acceleration = Vec3::new(
+         ctx.physics.x_acceleration as f64,
+@@ -352,11 +375,23 @@ fn contains_any_liquid(world: &World, bounding_box: Aabb) -> bool {
+     false
+ }
+ 
+-/// `LivingEntity#getEffectiveGravity`, without the slow falling cap (TODO).
++/// `LivingEntity#getEffectiveGravity` (patch 30): with Slow Falling and a vertical speed that is
++/// not upward, gravity is at most 0.01. Grim: `PointThreeEstimator` / `Simulation` read the
++/// same cap from the effect.
++// Spec: specs/B1-movement.md §4.2
++pub fn effective_gravity(gravity: f64, velocity_y: f64, slow_falling: bool) -> f64 {
++    if velocity_y <= 0.0 && slow_falling {
++        gravity.min(0.01)
++    } else {
++        gravity
++    }
++}
++
++/// The vertical speed `LivingEntity#travelInAir` gives with Levitation of this amplifier (0 is
++/// level I) before the air drag: the old speed plus a fifth of the gap to 0.05 x (amplifier + 1).
+ // Spec: specs/B1-movement.md §4.2
+-fn get_effective_gravity(attributes: &Attributes) -> f64 {
+-    // TODO: slow falling effect
+-    attributes.gravity.calculate()
++pub fn levitation_vertical_speed(velocity_y: f64, amplifier: i32) -> f64 {
++    velocity_y + (0.05 * (amplifier + 1) as f64 - velocity_y) * 0.2
+ }
+ 
+ pub fn fluid_jump_threshold() -> f64 {
+diff --git a/azalea-physics/src/unmodelled_contacts.rs b/azalea-physics/src/unmodelled_contacts.rs
+new file mode 100644
+index 0000000..22e4199
+--- /dev/null
++++ b/azalea-physics/src/unmodelled_contacts.rs
+@@ -0,0 +1,45 @@
++//! Blocks the bot's box touches that the fork does not model (patch 30).
++
++use azalea_block::BlockState;
++use azalea_core::{aabb::Aabb, position::BlockPos};
++use azalea_entity::unmodelled::{
++    UnmodelledInput, honey_touches_side, is_unmodelled_block,
++};
++use azalea_registry::builtin::BlockKind;
++use azalea_world::World;
++
++/// How far past the box a block still counts as touched. A bot that stands on a slime block or
++/// a bed has its feet exactly on the top face, and one that walks along a honey block has its
++/// side exactly on the wall; both are contacts.
++const TOUCH_MARGIN: f64 = 1e-3;
++
++/// Every block whose cell the box touches (within [`TOUCH_MARGIN`]) that changes motion in a way
++/// the fork does not model: bubble column (`BubbleColumnBlock#entityInside`), slime block
++/// (`SlimeBlock#stepOn`), bed (`BedBlock#updateEntityMovementAfterFallOn`), scaffolding
++/// (`ScaffoldingBlock#getCollisionShape`), moving piston
++/// (`PistonMovingBlockEntity#moveCollidedEntities`) and honey touched from the side
++/// (`HoneyBlock#entityInside`). Unloaded chunks add nothing.
++// Spec: specs/B1-movement.md §4.3
++pub fn unmodelled_block_contacts(world: &World, bb: &Aabb) -> Vec<UnmodelledInput> {
++    let probe = bb.inflate_all(TOUCH_MARGIN);
++    let min = probe.min.to_block_pos_floor();
++    let max = probe.max.to_block_pos_floor();
++    let mut out = Vec::new();
++    for x in min.x..=max.x {
++        for y in min.y..=max.y {
++            for z in min.z..=max.z {
++                let pos = BlockPos::new(x, y, z);
++                let Some(state) = world.chunks.get_block_state(pos) else {
++                    continue;
++                };
++                let kind = BlockKind::from(BlockState::from(state));
++                let touched = is_unmodelled_block(kind)
++                    || (kind == BlockKind::HoneyBlock && honey_touches_side(bb, pos));
++                if touched {
++                    out.push(UnmodelledInput::Block(pos, kind));
++                }
++            }
++        }
++    }
++    out
++}
+diff --git a/azalea-physics/tests/physics.rs b/azalea-physics/tests/physics.rs
+index 05aa77e..0eae06f 100644
+--- a/azalea-physics/tests/physics.rs
++++ b/azalea-physics/tests/physics.rs
+@@ -824,3 +824,125 @@ mod server_attributes {
+         }
+     }
+ }
++
++/// Levitation and Slow Falling (patch 30). Expected values are worked out from the vanilla
++/// formulas (`LivingEntity#travelInAir`, `#getEffectiveGravity`, `#getFluidFallingAdjustedMovement`),
++/// not from the fork: the drag is the float 0.98F widened to a double, and `aiStep` zeroes a
++/// vertical speed under 0.003 before the travel.
++mod levitation_slow_falling {
++    use azalea_entity::{ActiveEffects, MobEffectData};
++    use azalea_registry::builtin::MobEffect;
++    use bevy_ecs::entity::Entity;
++
++    use super::{block_effects::{setup, tick}, *};
++
++    const DRAG: f64 = 0.9800000190734863;
++
++    fn give(app: &mut App, e: Entity, effect: MobEffect, amplifier: i32) {
++        // `ai_step` (the under-0.003 zeroing) runs only for entities with `Sprinting`
++        app.world_mut().entity_mut(e).insert(azalea_entity::metadata::Sprinting(false));
++        app.world_mut().get_mut::<ActiveEffects>(e).unwrap().insert(
++            effect,
++            MobEffectData { amplifier, duration: 100, ..Default::default() },
++        );
++    }
++
++    fn vy(app: &App, e: Entity) -> f64 {
++        app.world().get::<Physics>(e).unwrap().velocity.y
++    }
++
++    fn set_vy(app: &mut App, e: Entity, v: f64) {
++        app.world_mut().get_mut::<Physics>(e).unwrap().velocity.y = v;
++    }
++
++    /// The vanilla vertical speed after one air tick, `start` being the speed before it.
++    fn air_step(start: f64, levitation: Option<i32>, slow_falling: bool) -> f64 {
++        let v = if start.abs() < 0.003 { 0.0 } else { start };
++        let d = match levitation {
++            Some(a) => v + (0.05 * (a + 1) as f64 - v) * 0.2,
++            None => v - if v <= 0.0 && slow_falling { 0.08f64.min(0.01) } else { 0.08 },
++        };
++        d * DRAG
++    }
++
++    fn check_air(levitation: Option<i32>, slow_falling: bool, start: f64) {
++        let (mut app, e, _w) = setup(BlockKind::Air, BlockKind::Air, false, false);
++        if let Some(a) = levitation {
++            give(&mut app, e, MobEffect::Levitation, a);
++        }
++        if slow_falling {
++            give(&mut app, e, MobEffect::SlowFalling, 0);
++        }
++        set_vy(&mut app, e, start);
++        let mut want = start;
++        for n in 0..30 {
++            tick(&mut app, e, 0.);
++            want = air_step(want, levitation, slow_falling);
++            let got = vy(&app, e);
++            assert!((got - want).abs() < 1e-9, "tick {n}: got {got} want {want}");
++        }
++    }
++
++    #[test]
++    fn levitation_i_and_ii_from_rest() {
++        check_air(Some(0), false, 0.0);
++        check_air(Some(1), false, 0.0);
++    }
++
++    #[test]
++    fn levitation_from_a_fall_climbs_toward_the_target() {
++        check_air(Some(0), false, -0.8);
++        check_air(Some(1), false, -1.5);
++    }
++
++    #[test]
++    fn slow_falling_caps_gravity_in_air() {
++        check_air(None, true, 0.0);
++        check_air(None, true, -0.5);
++    }
++
++    // With an upward speed gravity is unchanged (the speed is read after the move).
++    #[test]
++    fn slow_falling_keeps_gravity_on_the_way_up() {
++        check_air(None, true, 0.3);
++        let (mut app, e, _w) = setup(BlockKind::Air, BlockKind::Air, false, false);
++        give(&mut app, e, MobEffect::SlowFalling, 0);
++        set_vy(&mut app, e, 0.3);
++        tick(&mut app, e, 0.);
++        assert!((vy(&app, e) - (0.3 - 0.08) * DRAG).abs() < 1e-9);
++    }
++
++    // Fluid falling adjustment: with gravity g and a speed near 0 the bot sinks at -0.003 when
++    // |0 - g/16| < 0.003 (g 0.01), and at -g/16 otherwise (g 0.08 gives -0.005).
++    #[test]
++    fn slow_falling_caps_gravity_in_water_and_levitation_does_not_act() {
++        let sink = |slow: bool, lev: bool| {
++            let (mut app, e, _w) = setup(BlockKind::Air, BlockKind::Water, false, false);
++            if slow {
++                give(&mut app, e, MobEffect::SlowFalling, 0);
++            }
++            if lev {
++                give(&mut app, e, MobEffect::Levitation, 0);
++            }
++            tick(&mut app, e, 0.);
++            vy(&app, e)
++        };
++        assert!((sink(false, false) + 0.005).abs() < 1e-9, "{}", sink(false, false));
++        assert!((sink(true, false) + 0.003).abs() < 1e-9, "{}", sink(true, false));
++        assert!((sink(false, true) + 0.005).abs() < 1e-9, "{}", sink(false, true));
++    }
++
++    // Slow Falling in lava travel: gravity/4 is subtracted after the 0.5 scaling.
++    #[test]
++    fn effective_gravity_formula() {
++        use azalea_physics::travel::{effective_gravity, levitation_vertical_speed};
++        assert_eq!(effective_gravity(0.08, 0.0, true), 0.01);
++        assert_eq!(effective_gravity(0.08, -1.0, true), 0.01);
++        assert_eq!(effective_gravity(0.08, 0.1, true), 0.08);
++        assert_eq!(effective_gravity(0.005, -1.0, true), 0.005);
++        assert_eq!(effective_gravity(0.08, -1.0, false), 0.08);
++        assert!((levitation_vertical_speed(0.0, 0) - 0.01).abs() < 1e-12);
++        assert!((levitation_vertical_speed(0.0, 1) - 0.02).abs() < 1e-12);
++        assert!((levitation_vertical_speed(-1.0, 1) - (-1.0 + 1.1 * 0.2)).abs() < 1e-12);
++    }
++}

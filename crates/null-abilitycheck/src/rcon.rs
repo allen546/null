@@ -6,6 +6,9 @@ use std::{
     time::Duration,
 };
 
+/// Total time spent waiting for RCON replies, in nanoseconds (the timing summary reads it).
+pub static WAIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub struct Rcon {
     s: TcpStream,
 }
@@ -46,7 +49,10 @@ impl Rcon {
 
     /// Runs one command and returns the server's reply text.
     pub fn cmd(&mut self, c: &str) -> io::Result<String> {
+        let started = std::time::Instant::now();
         self.s.write_all(&packet(2, 2, c))?;
-        Ok(self.read()?.1)
+        let reply = self.read();
+        WAIT_NS.fetch_add(started.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(reply?.1)
     }
 }

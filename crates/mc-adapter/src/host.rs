@@ -10,7 +10,7 @@ use azalea::{
     attack::{AttackQueued, AttackStrengthScale},
     core::{entity_id::MinecraftEntityId, tick::GameTick},
     entity::{
-        HasClientLoaded, Jumping, LocalEntity, LookDirection, Physics, Position,
+        ActiveEffects, Attributes, HasClientLoaded, Jumping, LocalEntity, LookDirection, Physics, Position,
         inventory::Inventory,
         metadata::Health,
     },
@@ -46,6 +46,8 @@ use std::cell::RefCell;
 
 use azalea::app::{App, Plugin};
 use azalea::ecs::prelude::*;
+use azalea::entity::unmodelled::UnmodelledContacts;
+use azalea::unmodelled_disconnect::{PacketsAfterUnmodelledDisconnect, UnmodelledDisconnect};
 use azalea::entity::indexing::EntityIdIndex;
 use null_bot_api::{
     ActionId, AfterDeath, Brain, BotView, Command, Hand, MailboxEvent, Owner, Scope, Skill, SkillStatus,
@@ -73,6 +75,14 @@ pub struct BotBrain {
 impl BotBrain {
     pub fn new(brain: Brain, skill: Option<Box<dyn Skill>>) -> Self {
         Self { brain, skill, pending: Vec::new(), died_seen: 0, actions: Tracker::default() }
+    }
+
+    /// Starts `skill` when none runs (the node does this for a new job; the ability check, after a
+    /// skill the host ended).
+    pub fn install_skill(&mut self, skill: Box<dyn Skill>) {
+        if self.skill.is_none() {
+            self.skill = Some(skill);
+        }
     }
 
     // Spec: specs/B6-placement-breaking.md §4.6 (a skill's results go when it is replaced)
@@ -109,6 +119,10 @@ impl BotBrain {
 /// The reason of the `SkillStatus::Failed` that a death writes (F1 §4.4: a job does not survive
 /// a death).
 pub const SKILL_DIED: &str = "died";
+
+/// The start of the `SkillStatus::Failed` reason when the server has set an attribute the client
+/// does not model, or a status effect (fork patch 27, F5 §4.6); the attribute and its value follow.
+pub const SKILL_UNMODELLED: &str = "unmodelled input";
 
 /// The reason of the `SkillStatus::Failed` that the leak guard writes (AD-F5.4): the skill held
 /// 4,096 unreleased finished results.
@@ -383,6 +397,11 @@ fn decide(
                 Option<&RespawnLog>,
                 Option<&TicksConnected>,
                 Option<&DeathScreen>,
+                Option<&Attributes>,
+                Option<&ActiveEffects>,
+                Option<&UnmodelledContacts>,
+                Option<&UnmodelledDisconnect>,
+                Option<&PacketsAfterUnmodelledDisconnect>,
             ),
         ),
         (With<LocalEntity>, With<HasClientLoaded>),
@@ -393,7 +412,7 @@ fn decide(
     mut reflex_off: MessageWriter<ReflexDisabled>,
 ) {
     let now = tick.0;
-    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, attackers, tags, screen, movement, respawn_log, connected, death_screen)) in
+    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, attackers, tags, screen, movement, respawn_log, connected, death_screen, attributes, effects, contacts, disconnect, packets_after)) in
         &mut bots
     {
         let bb = &mut *bb;
@@ -452,6 +471,10 @@ fn decide(
                 respawn_log,
                 death_screen,
                 client_tick: connected.map_or(0, |t| t.0),
+                attributes,
+                effects,
+                contacts,
+                disconnect: disconnect.map(|d| (d, packets_after)),
             },
             &others,
         );
@@ -469,10 +492,13 @@ fn decide(
             }
             died.write(BotDied { entity, tick: now, death });
         }
+        // Spec: specs/F5-version-layer.md §4.6 (an input the client does not model: no skill runs,
+        // nothing moves or breaks)
+        let unmodelled = view.unmodelled_inputs();
         // Written out so the trait-object lifetime shortens (Option does not coerce).
         let skill: Option<&mut dyn Skill> = match bb.skill.as_mut() {
-            Some(s) => Some(&mut **s),
-            None => None,
+            Some(s) if unmodelled.is_empty() => Some(&mut **s),
+            _ => None,
         };
         let outcome = bb.brain.tick(&view, &mut buf, skill);
         drop(view);
@@ -489,6 +515,19 @@ fn decide(
             bb.actions.mailbox.expect(owner, n);
         }
         bb.pending = cmds;
+        if !unmodelled.is_empty() && bb.skill.is_some() {
+            let skill = bb.end_skill();
+            bb.pending.clear();
+            bb.pending.push((None, Command::Stop));
+            let list: Vec<String> = unmodelled.iter().map(|u| u.to_string()).collect();
+            tracing::warn!(?entity, inputs = %list.join(","), "unmodelled input in force: ending the skill");
+            ended.write(SkillEnded {
+                entity,
+                skill: skill.map(|s| s.id().to_string()).unwrap_or_default(),
+                status: SkillStatus::Failed(format!("{SKILL_UNMODELLED}: {}", list.join(","))),
+                tick: now,
+            });
+        }
         if let Some(skill) = ended_by_death {
             bb.actions.mailbox.end_owner(Owner::Skill);
             bb.brain.end_job();

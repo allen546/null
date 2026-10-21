@@ -27,6 +27,7 @@ Context used throughout (Allen, 2026-10-13): local testing is per component, not
 | [AD-F1.2](#ad-f12-does-a-job-survive-its-bots-death) job and death | **decided:** the skill decides (`on_death`: `End` by default, or `Keep`); the death is seen at the death tick | (Allen, 2026-10-19) |
 | [AD-F5.3](#ad-f53-how-does-the-bot-catch-up-after-its-tick-loop-stalls) tick catch-up | **decided:** match the vanilla client (at most 10 ticks in one frame, drop the rest) | (Allen, 2026-10-19) |
 | [AD-F5.4](#ad-f54-how-do-skills-read-the-results-of-their-actions) action results | **decided:** action ids; a mailbox per owner, pruned by owner release and end, not by time; a leak guard | (Allen, 2026-10-19) |
+| [AD-F5.5](#ad-f55-how-much-of-the-vanilla-client-does-the-fork-model) client parity | **decided:** a safe envelope in tiers, not full parity; an unmodelled input that moves the bot by itself disconnects it | (Allen, 2026-10-20) |
 | [AD-B2.1](#ad-b21-what-does-the-swarm-do-after-a-bots-death) after a death | **working rule** (Allen, 2026-10-19): go back to work, or escalate; **open:** recovery against quarantine, and whether a death is a hard interrupt or the skill decides | a step 2 design, or Allen's call |
 
 ---
@@ -466,3 +467,28 @@ Spec: [B2](B2-survival-upkeep.md) §4.7, [C3](C3-logistics.md) §4.8, [INTERRUPT
   - **Deaths as hard interrupts.** A death always goes the interrupt path (contain, requeue, escalate) and escalates directly, whatever the skill is. For: one rule, no skill can hide a death or walk back into its cause. Against: a harmless death (a farmer killed by a stray mob) costs an escalation and a requeue it didn't need.
   - **Skills define their own after-death behaviour.** `on_death` grows from `End`/`Keep` into the skill's own plan (for example: recover my drops, then carry on). For: the skill knows what it needs. Against: every skill author must get death handling right, and the interrupt rules can be bypassed.
   A mix is possible: the death is always reported and contained as an interrupt, and the skill's `on_death` only says whether its job may resume after that.
+
+## AD-F5.5 How much of the vanilla client does the fork model?
+
+Spec: [F5](F5-version-layer.md) §4.6 ("What Null computes"). Raised 2026-10-20 by fork patches 26 and 27 (a cobweb walked at normal speed, server attributes ignored) and the calibration in [reference/CLIENT_INPUT_COVERAGE.md](reference/CLIENT_INPUT_COVERAGE.md), which lists every input the vanilla client reads for itself and what the fork has.
+
+**Decided by Allen, 2026-10-20: a safe envelope in tiers, not full parity.** Full parity is a project longer than Null itself, and it grows with every Minecraft version. The fork models a minimum set that makes Azalea good enough for Null. The rest comes when a job needs it, or when there is time. Outside the envelope the bot is kept safe, not made correct:
+- An unmodelled block is a wall to the pathfinder.
+- An unmodelled action that only the bot can start (elytra, riptide, a vehicle) is refused on the client.
+- An unmodelled effect or attribute in force shows in `BotView::unmodelled_inputs()` (patch 27). An `Action` entry stops the skill. A `Movement` entry (the input moves the bot by itself, so the client's next position would be wrong) **disconnects the bot at once**; a vanilla player can always quit.
+
+**Tiers.**
+1. **Now (the minimum set):** Levitation and Slow Falling (a bot hit by a slow-falling arrow must not be banned), pushes from nearby entities (`LivingEntity#pushEntities`: the swarm crowds together, mobs push in melee), the disconnect for `Movement` entries, the refusals and the pathfinder walls above.
+2. **Next, high value:** travel by boat and by minecart; bubble columns, slime, beds, honey and scaffolding; scale; Dolphin's Grace; powdered snow with leather boots.
+3. **When needed or when there is time:** elytra, riptide, horses and other vehicles, pistons, the world border, the push out of a block, item-use slowdowns other than 0.2.
+
+**For full parity.** No surprise ever costs a ban or a stopped job; the bot can do anything a player can.
+
+**For the envelope.** The work is bounded and ordered by what jobs meet; the safety guarantee holds for the rest from the first day; it follows the standing rule never to trade safety for completion. The cost: some jobs refuse or reroute until their tier is built.
+
+**Tier 1 details, decided by Allen, 2026-10-20** (draft and Mojang names: `specs/plans/PATCH_30_TIER1.md`):
+- P30.1: the fork models the client's interpolation of other entities (pushes and the entity ray use it; F5 §4.6).
+- P30.2: once Levitation and Slow Falling are modelled, each is an `Action` entry: the skill stops, the bot stays connected.
+- P30.3: a box touching a block the fork does not model is a `Movement` entry, so the bot disconnects.
+- P30.4: patches in order: 30 (Levitation, Slow Falling, entry kinds, the disconnect, attributes across a respawn), 31 (interpolation), 32 (pushes, teams, entity tick order), 33 (refusals, pathfinder walls). Revised 2026-10-20 from three patches to four, because pushes and interpolation together were about 1,200 lines.
+- Bot-to-bot view (Allen, 2026-10-20): each bot keeps a smoothed view of the other bots within 16 blocks, at most its 32 nearest (its aim target always kept), so memory stays linear (about 3 KB per bot at most); other entities share one copy. Position only.

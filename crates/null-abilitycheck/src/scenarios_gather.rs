@@ -34,14 +34,8 @@ fn claim(max_x: i32) -> Claim {
 
 /// A job can run for minutes (by hand a log takes 10 s), so wait longer than `Ctx::call`.
 fn call_long(cx: &mut Ctx, op: Op) -> Report {
-    cx.ops.send(op).unwrap();
-    loop {
-        match cx.reports.recv_timeout(Duration::from_secs(1200)) {
-            Ok(r) if !matches!(r.info, Info::Started) => return r,
-            Ok(_) => {}
-            Err(e) => panic!("bot did not finish the job in 20 min: {e}"),
-        }
-    }
+    let seq = cx.send(op);
+    cx.finish_op(seq, Duration::from_secs(1200)).unwrap_or_else(|e| panic!("bot did not finish the job in 20 min: {e}"))
 }
 
 /// Fresh scene with the full height cleared, and the bot at `STAND`.

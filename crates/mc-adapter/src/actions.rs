@@ -15,8 +15,8 @@ use azalea::{
     respawn::RespawnLog,
 };
 use null_bot_api::{
-    ActionId, ActionRecord, BlockAction, BlockActionKind, BlockOutcome, BlockPos, ClickOutcome, EntityId,
-    Mailbox, OpenOutcome, OpenResult, OpenTarget, Owner, RespawnSent,
+    ActionId, ActionRecord, BlockAction, BlockActionKind, BlockOutcome, BlockPos, ClickEvidence, ClickHit,
+    ClickOutcome, EntityId, Mailbox, OpenOutcome, OpenResult, OpenTarget, Owner, RespawnSent, Vec3,
 };
 
 /// A command whose fork result has not appeared this many ticks after it was applied is judged
@@ -172,6 +172,7 @@ fn block_record(
         finish_tick: None,
         ack_tick: None,
         reason: None,
+        evidence: None,
     };
     if let Some(r) = r {
         a.outcome = match r.outcome {
@@ -181,6 +182,7 @@ fn block_record(
             BlockActionOutcome::Cancelled => BlockOutcome::Cancelled,
         };
         a.reason = r.refusal.map(|w| w.as_str());
+        a.evidence = r.evidence.map(evidence_of);
         // The fork knows the real target (a replaceable clicked block is placed into).
         a.pos = BlockPos::new(r.position.x, r.position.y, r.position.z);
         a.finish_tick = r.finish_ticks.map(|t| issued + t as u64);
@@ -190,8 +192,32 @@ fn block_record(
     a
 }
 
+// Spec: specs/B6-placement-breaking.md §4.1 (refusals carry their evidence)
+/// The fork's click evidence as the version-stable type.
+fn evidence_of(e: azalea::block_actions::ClickEvidence) -> ClickEvidence {
+    use azalea::block_actions::HitSeen;
+    ClickEvidence {
+        check_tick: e.tick,
+        eye: Vec3::new(e.eye.x, e.eye.y, e.eye.z),
+        eye_height: e.eye_height,
+        yaw: e.yaw,
+        pitch: e.pitch,
+        crouching: e.crouching,
+        hit: match e.hit {
+            HitSeen::Miss => ClickHit::Miss,
+            HitSeen::Block { pos, face, point } => ClickHit::Block {
+                pos: BlockPos::new(pos.x, pos.y, pos.z),
+                face: crate::blocks::dir_to_face(face),
+                point: Vec3::new(point.x, point.y, point.z),
+            },
+            HitSeen::Entity { id, kind } => ClickHit::Entity { id: EntityId(id.max(0) as u32), kind },
+        },
+        look_changed_after_hit: e.look_changed_after_hit,
+    }
+}
+
 fn open_from_block(pos: BlockPos, r: Option<&UseBlockResult>) -> OpenResult {
-    let mut o = OpenResult { target: OpenTarget::Block(pos), outcome: OpenOutcome::Pending, refused: None, ticks: 0 };
+    let mut o = OpenResult { target: OpenTarget::Block(pos), outcome: OpenOutcome::Pending, refused: None, evidence: None, ticks: 0 };
     if let Some(r) = r {
         o.outcome = match r.outcome {
             UseBlockOutcome::Pending => OpenOutcome::Pending,
@@ -200,13 +226,14 @@ fn open_from_block(pos: BlockPos, r: Option<&UseBlockResult>) -> OpenResult {
             UseBlockOutcome::Refused => OpenOutcome::Refused,
         };
         o.refused = r.refusal.map(|w| w.as_str());
+        o.evidence = r.evidence.map(evidence_of);
         o.ticks = r.elapsed_ticks;
     }
     o
 }
 
 fn open_from_entity(id: EntityId, r: Option<&UseEntityResult>) -> OpenResult {
-    let mut o = OpenResult { target: OpenTarget::Entity(id), outcome: OpenOutcome::Pending, refused: None, ticks: 0 };
+    let mut o = OpenResult { target: OpenTarget::Entity(id), outcome: OpenOutcome::Pending, refused: None, evidence: None, ticks: 0 };
     if let Some(r) = r {
         o.outcome = match r.outcome {
             UseEntityOutcome::Pending => OpenOutcome::Pending,
@@ -215,13 +242,14 @@ fn open_from_entity(id: EntityId, r: Option<&UseEntityResult>) -> OpenResult {
             UseEntityOutcome::Refused => OpenOutcome::Refused,
         };
         o.refused = r.refusal.map(|w| w.as_str());
+        o.evidence = r.evidence.map(evidence_of);
         o.ticks = r.elapsed_ticks;
     }
     o
 }
 
 fn refused_open(target: OpenTarget, why: &'static str) -> ActionRecord {
-    ActionRecord::Open(OpenResult { target, outcome: OpenOutcome::Refused, refused: Some(why), ticks: 0 })
+    ActionRecord::Open(OpenResult { target, outcome: OpenOutcome::Refused, refused: Some(why), evidence: None, ticks: 0 })
 }
 
 fn click_record(slot: Option<u16>, c: &azalea::inventory::ClickResult, superseded: bool) -> ClickOutcome {
@@ -326,6 +354,7 @@ impl Tracker {
                 target: OpenTarget::Inventory,
                 outcome: OpenOutcome::Pending,
                 refused: None,
+                evidence: None,
                 ticks: 0,
             })),
             Kind::Click | Kind::Respawn => None,
@@ -572,6 +601,7 @@ impl Tracker {
                         OpenOutcome::Opened { window_id: 0, kind: "minecraft:inventory" }
                     },
                     refused: refusal,
+                    evidence: None,
                     ticks: 0,
                 }))
             }

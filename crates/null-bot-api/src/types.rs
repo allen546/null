@@ -72,7 +72,7 @@ pub enum BlockActionKind {
 
 /// The latest break or placement. For a place, `pos` is the block that should appear
 /// (the clicked block's neighbour), not the clicked block.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlockAction {
     pub kind: BlockActionKind,
     pub pos: BlockPos,
@@ -86,6 +86,32 @@ pub struct BlockAction {
     /// Why a `Refused` action was refused: the client refused the click itself and sent nothing
     /// ("out of reach", "crosshair does not hit it", ...), or "no ack" (sent, the server never answered).
     pub reason: Option<&'static str>,
+    /// What the client's check saw when it refused (B6 §4.1); `None` for other outcomes.
+    pub evidence: Option<ClickEvidence>,
+}
+
+/// What the crosshair ray hit when a click was checked.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ClickHit {
+    Miss,
+    Block { pos: BlockPos, face: Face, point: Vec3 },
+    Entity { id: EntityId, kind: &'static str },
+}
+
+/// The values a refused click was checked with (B6 §4.1): the client's own eye, look and ray hit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClickEvidence {
+    /// The client's tick count when the click was checked.
+    pub check_tick: u64,
+    pub eye: Vec3,
+    /// The eye height above the feet the check used (it follows the pose).
+    pub eye_height: f64,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub crouching: bool,
+    pub hit: ClickHit,
+    /// The look changed after the crosshair was last picked, so the hit may predate the look.
+    pub look_changed_after_hit: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -268,6 +294,8 @@ pub struct OpenResult {
     pub outcome: OpenOutcome,
     /// Why the client refused it (nothing was sent), if it did.
     pub refused: Option<&'static str>,
+    /// What the client's check saw when it refused after casting the ray (B6 §4.1).
+    pub evidence: Option<ClickEvidence>,
     /// Ticks since the click was sent.
     pub ticks: u32,
 }
@@ -470,4 +498,69 @@ pub struct DeadRefusal {
     pub action: String,
     pub reason: &'static str,
     pub count: u32,
+}
+
+// Spec: specs/F5-version-layer.md §4.6 (inputs of the client's own computations that Null does not model)
+/// What an unmodelled input changes. `Movement` moves the bot even with no input, so stopping the
+/// skill is not enough: the fork disconnects the bot at once and the host reports it
+/// ([`UnmodelledDisconnect`]). `Action` changes only what an action or a plan computes (reach,
+/// break time, the gravity a skill plans with): the skill stops and the bot stays connected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnmodelledKind {
+    Movement,
+    Action,
+}
+
+/// An attribute, status effect, vehicle or surrounding the server has set that changes what a
+/// vanilla client computes for itself, and that Null does not model (or only models in the
+/// physics, not in the plans). While any is in force the host ends the running skill and nothing
+/// moves or breaks.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UnmodelledInput {
+    /// Attribute id ("minecraft:scale") and its current value.
+    Attribute { id: String, value: f64, kind: UnmodelledKind },
+    /// Effect id ("minecraft:levitation") and its amplifier (0 is level I).
+    Effect { id: String, amplifier: i32, kind: UnmodelledKind },
+    /// The bot is a passenger of a vehicle.
+    Passenger { kind: UnmodelledKind },
+    /// The bot's box touches a block the fork does not model (id "minecraft:bubble_column").
+    Block { pos: BlockPos, id: String, kind: UnmodelledKind },
+    /// The bot's box is outside or at the world border.
+    WorldBorder { kind: UnmodelledKind },
+}
+
+impl std::fmt::Display for UnmodelledInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UnmodelledInput::Attribute { id, value, .. } => write!(f, "attribute {id}={value} ({:?})", self.kind()),
+            UnmodelledInput::Effect { id, amplifier, .. } => write!(f, "effect {id}={amplifier} ({:?})", self.kind()),
+            UnmodelledInput::Passenger { .. } => write!(f, "passenger ({:?})", self.kind()),
+            UnmodelledInput::Block { pos, id, .. } => write!(f, "block {id} at {},{},{} ({:?})", pos.x, pos.y, pos.z, self.kind()),
+            UnmodelledInput::WorldBorder { .. } => write!(f, "world border ({:?})", self.kind()),
+        }
+    }
+}
+
+/// The fork closed the bot's connection because a `Movement` input was in force (AD-F5.5). The bot
+/// sends nothing more; staying off is the default.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnmodelledDisconnect {
+    /// The client's tick count when the connection was closed.
+    pub tick: u64,
+    /// The `Movement` entries that caused it.
+    pub inputs: Vec<UnmodelledInput>,
+    /// Packets the client tried to send after the trigger (dropped, never written). Must be 0.
+    pub packets_after: u32,
+}
+
+impl UnmodelledInput {
+    pub fn kind(&self) -> UnmodelledKind {
+        match self {
+            UnmodelledInput::Attribute { kind, .. }
+            | UnmodelledInput::Effect { kind, .. }
+            | UnmodelledInput::Passenger { kind }
+            | UnmodelledInput::Block { kind, .. }
+            | UnmodelledInput::WorldBorder { kind } => *kind,
+        }
+    }
 }

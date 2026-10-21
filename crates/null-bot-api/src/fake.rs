@@ -23,6 +23,10 @@ pub struct FakeView {
     pub entities: Vec<EntitySnapshot>,
     pub attackers: Vec<Attacker>,
     pub shield_hits: Vec<ShieldHit>,
+    /// Returned by `unmodelled_inputs`.
+    pub unmodelled_inputs: Vec<UnmodelledInput>,
+    /// Returned by `unmodelled_disconnect`.
+    pub unmodelled_disconnect: Option<UnmodelledDisconnect>,
     /// Solid blocks. Everything with y < `floor_y` is solid too (flat world).
     pub solid: Vec<BlockPos>,
     pub floor_y: i32,
@@ -59,6 +63,8 @@ impl Default for FakeView {
             entities: Vec::new(),
             attackers: Vec::new(),
             shield_hits: Vec::new(),
+            unmodelled_inputs: Vec::new(),
+            unmodelled_disconnect: None,
             solid: Vec::new(),
             floor_y: 64,
             blocks: Vec::new(),
@@ -159,6 +165,12 @@ impl BotView for FakeView {
     }
     fn recent_attackers(&self) -> &[Attacker] {
         &self.attackers
+    }
+    fn unmodelled_inputs(&self) -> Vec<UnmodelledInput> {
+        self.unmodelled_inputs.clone()
+    }
+    fn unmodelled_disconnect(&self) -> Option<UnmodelledDisconnect> {
+        self.unmodelled_disconnect.clone()
     }
     fn shield_hits(&self) -> &[ShieldHit] {
         &self.shield_hits
@@ -404,6 +416,7 @@ mod tests {
             finish_tick: Some(4),
             ack_tick: Some(5),
             reason: None,
+            evidence: None,
         }));
         assert_eq!(v.action(a).block().map(|x| x.outcome), Some(BlockOutcome::Done));
         v.expire(b);

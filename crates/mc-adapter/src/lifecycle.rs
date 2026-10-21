@@ -23,6 +23,7 @@ use azalea::{
 use azalea::ecs::prelude::*;
 use null_bot_api::SkillStatus;
 
+use azalea::unmodelled_disconnect::{DisconnectOnUnmodelledMovement, PacketsAfterUnmodelledDisconnect, UnmodelledDisconnect};
 use crate::host::{BotBrain, BotDied, ReflexDisabled, SKILL_DIED, SkillEnded};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +39,9 @@ pub enum BotState {
     /// The login itself failed (network); retried with backoff.
     Offline { reason: String, retry_in_ms: u64 },
     Banned,
+    /// The fork closed the connection for a `Movement` entry (AD-F5.5). The bot stays off: nothing
+    /// above the fork rejoins it unless it decides to (F5 §4.6).
+    UnmodelledOff { tick: u64, inputs: Vec<String>, packets_after: u32 },
 }
 
 impl BotState {
@@ -52,6 +56,7 @@ impl BotState {
             BotState::Kicked { .. } => "kicked",
             BotState::Offline { .. } => "offline",
             BotState::Banned => "banned",
+            BotState::UnmodelledOff { .. } => "unmodelled_off",
         }
     }
 }
@@ -93,6 +98,9 @@ pub enum HostEvent {
     Died { bot: String, tick: u64, death: Option<null_bot_api::Death> },
     /// The leak guard turned a reflex off at bot scope: it held 4,096 unreleased results (AD-F5.4).
     ReflexDisabled { bot: String, reflex: &'static str, tick: u64 },
+    /// The fork closed the connection because a `Movement` input was in force (AD-F5.5). The bot
+    /// stays off; no rejoin is tried.
+    UnmodelledDisconnect { bot: String, tick: u64, inputs: Vec<String>, packets_after: u32 },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -235,6 +243,7 @@ fn lifecycle(
     mut died: MessageReader<BotDied>,
     mut reflex_off: MessageReader<ReflexDisabled>,
     retry: Query<(&Account, &ConnectOpts)>,
+    unmodelled: Query<(&UnmodelledDisconnect, Option<&PacketsAfterUnmodelledDisconnect>)>,
     mut join: MessageWriter<StartJoinServerEvent>,
     mut respawn: MessageWriter<PerformRespawnEvent>,
 ) {
@@ -244,6 +253,8 @@ fn lifecycle(
             Rec { name: acc.username().to_string(), attempt: 0, retry_at: None, spawned_at: None },
         );
         lc.emit(e, BotState::Connecting);
+        // Spec: specs/F5-version-layer.md §4.6 (every bot may be disconnected by the fork)
+        commands.entity(e).insert(DisconnectOnUnmodelledMovement);
     }
 
     for e in &loaded {
@@ -311,6 +322,18 @@ fn lifecycle(
             continue;
         }
         commands.entity(ev.entity).remove::<BotBrain>();
+        // Spec: specs/F5-version-layer.md §4.6 (the disconnect for a Movement entry: stay off)
+        if let Ok((d, after)) = unmodelled.get(ev.entity) {
+            lc.bots.get_mut(&ev.entity).unwrap().retry_at = None;
+            let inputs: Vec<String> = d.inputs.iter().map(|i| format!("{i:?}")).collect();
+            let packets_after = after.map_or(0, |n| n.0);
+            tracing::warn!(entity = ?ev.entity, tick = d.tick, inputs = %inputs.join(","), packets_after, "disconnected for an unmodelled input; staying off");
+            if let Some(r) = lc.bots.get(&ev.entity) {
+                let _ = lc.tx.send(HostEvent::UnmodelledDisconnect { bot: r.name.clone(), tick: d.tick, inputs: inputs.clone(), packets_after });
+            }
+            lc.emit(ev.entity, BotState::UnmodelledOff { tick: d.tick, inputs, packets_after });
+            continue;
+        }
         let reason = ev.reason.as_ref().map(|r| r.to_string()).unwrap_or_default();
         let class = classify_kick(&reason);
         let state = match class {

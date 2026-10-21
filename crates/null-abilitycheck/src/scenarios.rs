@@ -30,13 +30,17 @@ pub struct Outcome {
     pub evidence: String,
     /// Already printed (by `Ctx::run`, as soon as the row finished).
     pub shown: bool,
+    /// Wall time of the row in seconds (0 when the row never ran).
+    pub secs: f64,
 }
 
 pub struct Ctx {
     pub rc: Rcon,
     pub name: String,
-    pub ops: Sender<Op>,
-    pub reports: Receiver<Report>,
+    pub(crate) ops: Sender<(u64, Op)>,
+    pub(crate) reports: Receiver<Report>,
+    /// Number of the last op sent; a report answers the op with its number (`recv`).
+    pub(crate) seq: u64,
     pub log: PathBuf,
     /// The host's bot state changes (A12 times deaths with them).
     pub events: Receiver<mc_adapter::HostEvent>,
@@ -131,16 +135,48 @@ impl Ctx {
         self.rc.cmd(c).unwrap_or_else(|e| panic!("rcon {c:?}: {e}"))
     }
 
+    /// Queues an op and returns its number.
+    pub(crate) fn send(&mut self, op: Op) -> u64 {
+        self.seq += 1;
+        self.ops.send((self.seq, op)).unwrap();
+        self.seq
+    }
+
+    /// The next report of op `seq` within `wait`. A report of another op (a late reply of an op
+    /// nobody waited for) is logged and dropped, never handed to this one.
+    pub(crate) fn recv(&mut self, seq: u64, wait: Duration) -> Result<Report, RecvTimeoutError> {
+        let end = Instant::now() + wait;
+        loop {
+            let r = self.reports.recv_timeout(end.saturating_duration_since(Instant::now()))?;
+            if r.seq == seq {
+                return Ok(r);
+            }
+            eprintln!("dropped a stale report of op {} while waiting for op {seq}: {:?}", r.seq, r.info);
+        }
+    }
+
+    /// As `recv`, for a short wait that may find nothing.
+    pub(crate) fn try_recv(&mut self, seq: u64) -> Option<Report> {
+        self.recv(seq, Duration::from_millis(5)).ok()
+    }
+
+    /// The final report of op `seq` (`Started` is skipped), waiting up to `wait`.
+    pub(crate) fn finish_op(&mut self, seq: u64, wait: Duration) -> Result<Report, RecvTimeoutError> {
+        loop {
+            let r = self.recv(seq, wait)?;
+            if !matches!(r.info, Info::Started) {
+                return Ok(r);
+            }
+        }
+    }
+
     /// Sends an op and waits for its final report.
     pub(crate) fn call(&mut self, op: Op) -> Report {
-        self.ops.send(op).unwrap();
-        loop {
-            match self.reports.recv_timeout(Duration::from_secs(60)) {
-                Ok(r) if !matches!(r.info, Info::Started) => return r,
-                Ok(_) => {}
-                Err(RecvTimeoutError::Timeout) => panic!("bot did not answer in 60 s"),
-                Err(e) => panic!("bot gone: {e}"),
-            }
+        let seq = self.send(op);
+        match self.finish_op(seq, Duration::from_secs(60)) {
+            Ok(r) => r,
+            Err(RecvTimeoutError::Timeout) => panic!("bot did not answer in 60 s"),
+            Err(e) => panic!("bot gone: {e}"),
         }
     }
 
@@ -264,6 +300,7 @@ impl Ctx {
     /// As `run`, but Grim alerts of the checks whose name starts with one of `allowed` are listed
     /// in the evidence and do not fail the row (AT: a forced stall draws `Timer`, AD-F5.3).
     pub(crate) fn run_allowing(&mut self, id: &'static str, name: &str, allowed: &[&str], body: impl FnOnce(&mut Self) -> (bool, String)) -> Outcome {
+        let started = std::time::Instant::now();
         let mark = self.log_len();
         sleep(Duration::from_millis(100));
         crate::skill::TICK_GAP_MAX_MS.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -295,7 +332,7 @@ impl Ctx {
         if !grim.is_empty() || !expected.is_empty() || gap > 150 {
             evidence += &format!("; client ticks: longest gap {gap} ms, {fast} under 25 ms (catch-up)");
         }
-        let o = Outcome { id, name: name.into(), pass, evidence, shown: true };
+        let o = Outcome { id, name: name.into(), pass, evidence, shown: true, secs: started.elapsed().as_secs_f64() };
         println!("{}", report_line(&o));
         o
     }
@@ -424,15 +461,13 @@ pub fn a2(cx: &mut Ctx) -> Vec<Outcome> {
         out.push(cx.run("A2", name, |cx| {
             let n = vanilla_ticks(hardness, speed, true);
             let air = format!("execute if block {} {} {} minecraft:air run time query gametime", target.x, target.y, target.z);
-            cx.ops.send(Op::Break(target)).unwrap();
+            let seq = cx.send(Op::Break(target));
             // The bot sends Started the tick it issues the break; sample the server clock at once.
-            loop {
-                match cx.reports.recv_timeout(Duration::from_secs(30)) {
-                    Ok(r) if matches!(r.info, Info::Started) => break,
-                    Ok(_) => {}
-                    Err(e) => return (false, format!("bot never started the break: {e}")),
-                }
-            };
+            match cx.recv(seq, Duration::from_secs(30)) {
+                Ok(r) if matches!(r.info, Info::Started) => {}
+                Ok(r) => return (false, format!("bot reported {:?} before the break started", r.info)),
+                Err(e) => return (false, format!("bot never started the break: {e}")),
+            }
             let g0 = last_int(&cx.r("time query gametime")).unwrap_or(-1);
             // Tight poll: one RCON command checks the block and reads the clock together.
             let t = Instant::now();
@@ -443,12 +478,9 @@ pub fn a2(cx: &mut Ctx) -> Vec<Outcome> {
                     g1 = last_int(&reply);
                 }
             }
-            let fin = loop {
-                match cx.reports.recv_timeout(Duration::from_secs(30)) {
-                    Ok(r) if !matches!(r.info, Info::Started) => break r,
-                    Ok(_) => {}
-                    Err(e) => return (false, format!("bot never finished the break: {e}")),
-                }
+            let fin = match cx.finish_op(seq, Duration::from_secs(30)) {
+                Ok(r) => r,
+                Err(e) => return (false, format!("bot never finished the break: {e}")),
             };
             let Info::Action(a) = fin.info else { return (false, format!("bot reported {:?}", fin.info)) };
             let bot_ticks = a.finish_tick.map(|f| f - a.start_tick);
@@ -632,5 +664,5 @@ pub fn a4(cx: &mut Ctx) -> Vec<Outcome> {
 }
 
 pub fn report_line(o: &Outcome) -> String {
-    format!("{} {} {} — {}", if o.pass { "PASS" } else { "FAIL" }, o.id, o.name, o.evidence)
+    format!("{} {} {} — {} [{:.1} s]", if o.pass { "PASS" } else { "FAIL" }, o.id, o.name, o.evidence, o.secs)
 }

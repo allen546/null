@@ -27,6 +27,8 @@ pub enum ItemOp {
     /// Walk forward this many ticks, then stop.
     Walk(u32),
     Face { yaw: f32, pitch: f32 },
+    /// One jump input, then idle (A16).
+    Jump,
     Status,
     /// Says `Started`, then waits for a new entry in `recent_attackers`.
     WatchAttackers,
@@ -115,6 +117,12 @@ pub fn step(
                 c.walk(0, 0);
             }
             (age >= n + 2).then(|| info(v, st, age))
+        }
+        ItemOp::Jump => {
+            if age == 0 {
+                c.jump();
+            }
+            (age >= 2).then(|| info(v, st, age))
         }
         ItemOp::Face { yaw, pitch } => {
             if age == 0 {

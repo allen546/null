@@ -157,7 +157,7 @@ impl Sim {
                             self.leaves_broken.push(p);
                         }
                     }
-                    let rec = BlockAction { kind: BlockActionKind::Break, pos: p, outcome, start_tick: self.tick, finish_tick: Some(self.tick), ack_tick: Some(self.tick + 1), reason };
+                    let rec = BlockAction { kind: BlockActionKind::Break, pos: p, outcome, start_tick: self.tick, finish_tick: Some(self.tick), ack_tick: Some(self.tick + 1), reason, evidence: None };
                     self.results.insert(id, ActionState::Pending(None));
                     let landed = if matches!(self.mode, Mode::ExpireAt(k) if k == n) { ActionState::Expired } else { ActionState::Finished(ActionRecord::Block(rec)) };
                     self.due.push((id, landed));

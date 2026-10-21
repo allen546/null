@@ -6,7 +6,7 @@
 
 use std::{thread::sleep, time::Duration};
 
-use null_bot_api::{BlockOutcome, BlockPos, Face, Vec3};
+use null_bot_api::{BlockOutcome, BlockPos, ClickHit, Face, Vec3};
 
 use crate::{
     scenarios::{Ctx, FLOOR_Y, Outcome, pos, ticks_between_packets, vanilla_ticks},
@@ -352,10 +352,121 @@ fn run_row(cx: &mut Ctx, r: &Row) -> Outcome {
     })
 }
 
+/// A standing click right after a crouched one, on the same spot. One run of `click_scaffolding_top`
+/// was refused ("crosshair does not hit it") after the composter row crouched: the check may have
+/// used the crouched eye (0.35 lower) while the pose had not yet returned. The stand-up and the
+/// click go out back to back, with no settle wait; a vanilla client uses the pose it has then.
+// Spec: specs/B6-placement-breaking.md §4.2 (the ray check uses the pose the client has at the click)
+fn scaffolding_after_crouch(cx: &mut Ctx) -> Outcome {
+    let name = "click_scaffolding_top_right_after_a_crouch_click";
+    reset(cx);
+    let setup: &[Blk] = &[(0, 0, 0, "scaffolding[bottom=false]"), (3, 0, 0, "stone")];
+    set_up(cx, setup);
+    give(cx, Some("stone"));
+    // two clicks, two stones
+    let n = cx.name.clone();
+    cx.r(&format!("item replace entity {n} hotbar.0 with minecraft:stone 3"));
+    sleep(Duration::from_millis(250));
+    let (crouch_at, clicked) = (at((3, 0, 0)), at((0, 0, 0)));
+    cx.run("A4S", name, |cx| {
+        cx.call(Op::Sneak(true));
+        let before = cx.count("stone");
+        let first = cx.call(Op::PlaceAim { pos: crouch_at, face: Face::North });
+        let (stand, click) = (cx.send(Op::Sneak(false)), cx.send(Op::PlaceAim { pos: clicked, face: Face::Up }));
+        let _ = cx.finish_op(stand, Duration::from_secs(30));
+        let rep = match cx.finish_op(click, Duration::from_secs(30)) {
+            Ok(r) => r,
+            Err(e) => return (false, format!("bot never answered the standing click: {e}")),
+        };
+        let (Info::Action(f), Info::Action(a)) = (first.info, rep.info) else { return (false, "bot reported no action".into()) };
+        sleep(Duration::from_millis(250));
+        let after = cx.count("stone");
+        let placed = cx.block_is(at((0, 1, 0)), "stone");
+        (
+            f.outcome == BlockOutcome::Done && a.outcome == BlockOutcome::Done && placed && after == before - 2,
+            format!("crouched click on {crouch_at:?}: {:?} ({:?}); then at once standing, top face of {clicked:?}: {:?} (reason {:?}); stone on top on the server: {placed}; stone count {before} -> {after} (want {})", f.outcome, f.reason, a.outcome, a.reason, before - 2),
+        )
+    })
+}
+
+/// What a client-refused place must record (fork patch 28): the click was refused as
+/// `NotLookingAtIt`, nothing was sent, nothing was placed, and the evidence holds the real eye,
+/// the real eye height and what the ray hit. `want_hit` judges the hit.
+// Spec: specs/B6-placement-breaking.md §4.1 (refusals carry their evidence)
+fn evidence_row(
+    cx: &mut Ctx,
+    name: &'static str,
+    setup: impl FnOnce(&mut Ctx),
+    op: Op,
+    want_hit: impl Fn(&ClickHit) -> bool,
+) -> Outcome {
+    reset(cx);
+    cx.r("kill @e[type=minecraft:armor_stand,x=500,y=199,z=342,dx=21,dy=10,dz=21]");
+    set_up(cx, &[(0, 0, 0, "stone")]);
+    setup(cx);
+    give(cx, Some("stone"));
+    let top = at((0, 1, 0));
+    let out = cx.run("A4S", name, |cx| {
+        let before = cx.count("stone");
+        let Info::Action(a) = cx.call(op).info else { return (false, "bot reported no action".into()) };
+        sleep(Duration::from_millis(250));
+        let after = cx.count("stone");
+        let placed = !cx.block_is(top, "air");
+        let Some(e) = a.evidence else { return (false, format!("refused {:?} without evidence", a.reason)) };
+        let stand_y = STAND.1;
+        let checks = [
+            ("refused as NotLookingAtIt", a.outcome == BlockOutcome::Refused && a.reason == Some("crosshair does not hit it")),
+            ("nothing sent (no ack)", a.ack_tick.is_none()),
+            ("nothing placed, stone count kept", !placed && after == before),
+            ("the hit is the expected one", want_hit(&e.hit)),
+            ("eye height is the pose's (standing 1.62), and the eye sits that high", (e.eye_height - 1.62).abs() < 1e-6 && (e.eye.y - stand_y - e.eye_height).abs() < 1e-3),
+            ("not crouching", !e.crouching),
+            ("the check tick is set", e.check_tick > 0),
+        ];
+        let bad: Vec<&str> = checks.iter().filter(|c| !c.1).map(|c| c.0).collect();
+        (bad.is_empty(), format!("top of {:?} holding stone: {}; {}", at((0, 0, 0)), crate::skill::describe_evidence(&e), if bad.is_empty() { "all evidence checks hold".to_string() } else { format!("FAILED: {}", bad.join(", ")) }))
+    });
+    cx.r("kill @e[type=minecraft:armor_stand,x=500,y=199,z=342,dx=21,dy=10,dz=21]");
+    out
+}
+
 // Spec: specs/B6-placement-breaking.md §4.2, §4.6 (place against and place every shape family)
 pub fn a4s(cx: &mut Ctx) -> Vec<Outcome> {
     cx.scene_in(AREA, &[], STAND);
-    let out = CLICKS.iter().chain(PLACES).filter(|r| wanted(r.name)).map(|r| run_row(cx, r)).collect();
+    let mut out: Vec<Outcome> = CLICKS.iter().chain(PLACES).filter(|r| wanted(r.name)).map(|r| run_row(cx, r)).collect();
+    if wanted("click_scaffolding_top_right_after_a_crouch_click") {
+        out.push(scaffolding_after_crouch(cx));
+    }
+    // The bot looks away from the block: the click is refused and the evidence names what the ray
+    // really hit (the floor or nothing, never the clicked block), with the real eye height.
+    if wanted("refused_place_looking_away_carries_evidence") {
+        out.push(evidence_row(
+            cx,
+            "refused_place_looking_away_carries_evidence",
+            |_| {},
+            Op::Place { pos: at((0, 0, 0)), face: Face::Up, aim: Vec3::new(3.0, 0.0, 0.0) },
+            |h| match h {
+                ClickHit::Miss => true,
+                ClickHit::Block { pos, .. } => *pos != at((0, 0, 0)),
+                ClickHit::Entity { .. } => false,
+            },
+        ));
+    }
+    // An armor stand (not a marker) stands between the eye and the top face: the real ray hits it
+    // first (`LocalPlayer#raycastHitResult` picks entities), so the click is refused and the
+    // evidence says Entity. Aiming ignores entities, so the aim itself lands on the face.
+    if wanted("refused_place_behind_an_armor_stand_carries_evidence") {
+        out.push(evidence_row(
+            cx,
+            "refused_place_behind_an_armor_stand_carries_evidence",
+            |cx| {
+                cx.r("summon minecraft:armor_stand 510.5 200.0 350.0 {NoGravity:1b}");
+                sleep(Duration::from_millis(500));
+            },
+            Op::PlaceAim { pos: at((0, 0, 0)), face: Face::Up },
+            |h| matches!(h, ClickHit::Entity { kind: "minecraft:armor_stand", .. }),
+        ));
+    }
     cx.clean_in(AREA);
     out
 }

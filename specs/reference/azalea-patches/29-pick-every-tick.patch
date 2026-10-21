@@ -1,0 +1,360 @@
+From feb84f789722d1f3dc860ef7f8d88cca6340152d Mon Sep 17 00:00:00 2001
+From: bench <bench@local>
+Date: Tue, 20 Oct 2026 20:57:15 +0800
+Subject: [PATCH] null patch: 29-pick-every-tick
+
+---
+ azalea-client/src/plugins/block_actions.rs    |   4 +-
+ azalea-client/src/plugins/interact/mod.rs     |  21 ++-
+ azalea-client/src/plugins/interact/pick.rs    | 136 ++++++++++++++----
+ azalea-client/src/plugins/mining.rs           |   2 +-
+ azalea-client/tests/simulation/mod.rs         |   1 +
+ .../tests/simulation/pick_every_tick.rs       |  86 +++++++++++
+ 6 files changed, 216 insertions(+), 34 deletions(-)
+ create mode 100644 azalea-client/tests/simulation/pick_every_tick.rs
+
+diff --git a/azalea-client/src/plugins/block_actions.rs b/azalea-client/src/plugins/block_actions.rs
+index 9358d60..751994a 100644
+--- a/azalea-client/src/plugins/block_actions.rs
++++ b/azalea-client/src/plugins/block_actions.rs
+@@ -88,8 +88,8 @@ impl Plugin for BlockActionsPlugin {
+                 GameTick,
+                 (handle_break_block_queued, begin_break_result, handle_stop_mining_queued)
+                     .chain()
+-                    // begin_break_result reads the look for its evidence (patch 28)
+-                    .before(crate::entity_actions::handle_look_at_entity_queued)
++                    // after the tick's pick (patch 29), which follows both look-at systems
++                    .after(crate::interact::pick::update_hit_result_component)
+                     .before(MiningSystems),
+             )
+             .add_systems(
+diff --git a/azalea-client/src/plugins/interact/mod.rs b/azalea-client/src/plugins/interact/mod.rs
+index 27f0177..75b4221 100644
+--- a/azalea-client/src/plugins/interact/mod.rs
++++ b/azalea-client/src/plugins/interact/mod.rs
+@@ -38,7 +38,9 @@ use tracing::warn;
+ use super::mining::Mining;
+ use crate::{
+     attack::handle_attack_event,
+-    interact::pick::{HitResultComponent, update_hit_result_component},
++    interact::pick::{
++        HitResultComponent, insert_initial_hit_result_component, update_hit_result_component,
++    },
+     inventory::InventorySystems,
+     local_player::{LocalGameMode, PermissionLevel},
+     movement::MoveEventsSystems,
+@@ -56,7 +58,7 @@ impl Plugin for InteractPlugin {
+                 (
+                     update_attributes_for_gamemode,
+                     handle_start_use_item_event,
+-                    update_hit_result_component
++                    insert_initial_hit_result_component
+                         .after(clamp_look_direction)
+                         .after(update_last_bounding_box),
+                 )
+@@ -70,6 +72,21 @@ impl Plugin for InteractPlugin {
+                 GameTick,
+                 handle_start_use_item_queued.before(PhysicsSystems),
+             )
++            // Patch 29: `Minecraft#tick` -> `GameRenderer#pick`, once per tick after the look is
++            // turned and before any click is checked.
++            .add_systems(
++                GameTick,
++                update_hit_result_component
++                    .after(crate::block_actions::handle_look_at_block_queued)
++                    .after(crate::entity_actions::handle_look_at_entity_queued)
++                    .before(crate::block_actions::handle_break_block_queued)
++                    .before(crate::block_actions::handle_place_block_queued)
++                    .before(crate::block_actions::handle_use_block_queued)
++                    .before(crate::entity_actions::handle_use_entity_queued)
++                    .before(handle_start_use_item_queued)
++                    .before(crate::mining::MiningSystems)
++                    .before(PhysicsSystems),
++            )
+             .add_observer(handle_entity_interact)
+             .add_observer(handle_swing_arm_trigger);
+     }
+diff --git a/azalea-client/src/plugins/interact/pick.rs b/azalea-client/src/plugins/interact/pick.rs
+index a2f2c8d..5f8cb7b 100644
+--- a/azalea-client/src/plugins/interact/pick.rs
++++ b/azalea-client/src/plugins/interact/pick.rs
+@@ -28,6 +28,25 @@ use derive_more::{Deref, DerefMut};
+ #[derive(Clone, Component, Debug, Deref, DerefMut)]
+ pub struct HitResultComponent(HitResult);
+ 
++/// Cast the crosshair ray once per `GameTick`, at the point where vanilla casts it.
++///
++/// Vanilla 1.21.11 (Mojang names): `Minecraft#tick` calls `GameRenderer#pick(1.0F)` near the top
++/// of every client tick, after this tick's packets and the mouse look are in, and before
++/// `MultiPlayerGameMode#tick` and `Minecraft#handleKeybinds` (`startAttack`, `startUseItem`,
++/// `continueAttack`), so every click of a tick is judged against that tick's ray. The other
++/// `pick` call, in `GameRenderer#renderLevel`, only feeds the frame (outline, debug); Null skips
++/// display, so there is no per-`Update` pick any more. After a stall, one `Update` runs up to 10
++/// `GameTick`s back to back (patch 23); each one picks again, so a click never sees a ray older
++/// than its own tick's look.
++///
++/// Grim checks this must satisfy: `RotationPlace` and `PositionPlace` (scaffolding) test the
++/// placed face against the player's look and eye when the place packet arrives, and
++/// `Reach` / `Hitboxes` (combat) do the same for entity interaction, so the click has to come
++/// from a look whose ray really hits the target at that tick.
++///
++/// Ordered after the systems that turn the look (`handle_look_at_block_queued`,
++/// `handle_look_at_entity_queued`) and before every system that checks a click against the hit.
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes); specs/B6-placement-breaking.md §4.2
+ #[allow(clippy::type_complexity)]
+ pub fn update_hit_result_component(
+     mut commands: Commands,
+@@ -48,38 +67,23 @@ pub fn update_hit_result_component(
+     aabb_query: AabbQuery,
+     pickable_query: MaybePickableEntityQuery,
+ ) {
+-    for (
+-        entity,
+-        hit_result_ref,
+-        position,
+-        dimensions,
+-        look_direction,
+-        world_name,
+-        physics,
+-        attributes,
+-    ) in &mut query
++    for (entity, hit_result_ref, position, dimensions, look_direction, world_name, physics, attributes) in
++        &mut query
+     {
+-        let block_pick_range = attributes.block_interaction_range.calculate();
+-        let entity_pick_range = attributes.entity_interaction_range.calculate();
+-
+-        let eye_position = position.up(dimensions.eye_height.into());
+-
+-        let Some(world_lock) = worlds.get(world_name) else {
++        let Some(hit_result) = cast_hit_result(
++            entity,
++            position,
++            dimensions,
++            look_direction,
++            world_name,
++            physics,
++            attributes,
++            &worlds,
++            &aabb_query,
++            &pickable_query,
++        ) else {
+             continue;
+         };
+-        let world = world_lock.read();
+-
+-        let hit_result = pick(PickOpts {
+-            source_entity: entity,
+-            look_direction: *look_direction,
+-            eye_position,
+-            aabb: &physics.bounding_box,
+-            world: &world,
+-            entity_pick_range,
+-            block_pick_range,
+-            aabb_query: &aabb_query,
+-            pickable_query: &pickable_query,
+-        });
+         if let Some(mut hit_result_ref) = hit_result_ref {
+             **hit_result_ref = hit_result;
+         } else {
+@@ -90,6 +94,80 @@ pub fn update_hit_result_component(
+     }
+ }
+ 
++/// Give a client its first [`HitResultComponent`] in `Update`, so code that reads it before the
++/// first `GameTick` (the `Update`-side mining event handler) finds one. Later updates are made by
++/// [`update_hit_result_component`] in `GameTick`.
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes)
++#[allow(clippy::type_complexity)]
++pub fn insert_initial_hit_result_component(
++    mut commands: Commands,
++    query: Query<
++        (
++            Entity,
++            &Position,
++            &EntityDimensions,
++            &LookDirection,
++            &WorldName,
++            &Physics,
++            &Attributes,
++        ),
++        (With<LocalEntity>, Without<HitResultComponent>),
++    >,
++    worlds: Res<Worlds>,
++    aabb_query: AabbQuery,
++    pickable_query: MaybePickableEntityQuery,
++) {
++    for (entity, position, dimensions, look_direction, world_name, physics, attributes) in &query {
++        if let Some(hit_result) = cast_hit_result(
++            entity,
++            position,
++            dimensions,
++            look_direction,
++            world_name,
++            physics,
++            attributes,
++            &worlds,
++            &aabb_query,
++            &pickable_query,
++        ) {
++            commands
++                .entity(entity)
++                .insert(HitResultComponent(hit_result));
++        }
++    }
++}
++
++#[allow(clippy::too_many_arguments)]
++fn cast_hit_result(
++    entity: Entity,
++    position: &Position,
++    dimensions: &EntityDimensions,
++    look_direction: &LookDirection,
++    world_name: &WorldName,
++    physics: &Physics,
++    attributes: &Attributes,
++    worlds: &Worlds,
++    aabb_query: &AabbQuery,
++    pickable_query: &MaybePickableEntityQuery,
++) -> Option<HitResult> {
++    let block_pick_range = attributes.block_interaction_range.calculate();
++    let entity_pick_range = attributes.entity_interaction_range.calculate();
++    let eye_position = position.up(dimensions.eye_height.into());
++    let world_lock = worlds.get(world_name)?;
++    let world = world_lock.read();
++    Some(pick(PickOpts {
++        source_entity: entity,
++        look_direction: *look_direction,
++        eye_position,
++        aabb: &physics.bounding_box,
++        world: &world,
++        entity_pick_range,
++        block_pick_range,
++        aabb_query,
++        pickable_query,
++    }))
++}
++
+ pub type MaybePickableEntityQuery<'world, 'state, 'a> = Query<
+     'world,
+     'state,
+diff --git a/azalea-client/src/plugins/mining.rs b/azalea-client/src/plugins/mining.rs
+index 4c56106..bf193b0 100644
+--- a/azalea-client/src/plugins/mining.rs
++++ b/azalea-client/src/plugins/mining.rs
+@@ -59,7 +59,7 @@ impl Plugin for MiningPlugin {
+                     .in_set(MiningSystems)
+                     .after(InventorySystems)
+                     .after(MoveEventsSystems)
+-                    .after(crate::interact::pick::update_hit_result_component)
++                    .after(crate::interact::pick::insert_initial_hit_result_component)
+                     .after(crate::attack::handle_attack_event),
+             )
+             .add_observer(handle_finish_mining_block_observer);
+diff --git a/azalea-client/tests/simulation/mod.rs b/azalea-client/tests/simulation/mod.rs
+index 598e918..326bca2 100644
+--- a/azalea-client/tests/simulation/mod.rs
++++ b/azalea-client/tests/simulation/mod.rs
+@@ -20,6 +20,7 @@ mod move_and_despawn_entity;
+ mod move_despawned_entity;
+ mod packet_order;
+ mod packet_order_set_carried_item;
++mod pick_every_tick;
+ mod receive_spawn_entity_and_start_config_packet;
+ mod receive_start_config_packet;
+ mod reply_to_ping_with_pong;
+diff --git a/azalea-client/tests/simulation/pick_every_tick.rs b/azalea-client/tests/simulation/pick_every_tick.rs
+new file mode 100644
+index 0000000..68880b4
+--- /dev/null
++++ b/azalea-client/tests/simulation/pick_every_tick.rs
+@@ -0,0 +1,86 @@
++use azalea_client::{interact::pick::HitResultComponent, test_utils::prelude::*};
++use azalea_core::{
++    position::{BlockPos, ChunkPos, Vec3},
++    tick::GameTick,
++};
++use azalea_entity::LookDirection;
++use azalea_protocol::{
++    common::movements::{PositionMoveRotation, RelativeMovements},
++    packets::{
++        ConnectionProtocol,
++        game::{ClientboundBlockUpdate, ClientboundPlayerPosition},
++    },
++};
++use azalea_registry::builtin::BlockKind;
++use bevy_ecs::prelude::*;
++
++#[derive(Resource, Default)]
++struct Seen(Vec<(f32, bool)>);
++
++// Stand-in for the look planner: turns the look down on even ticks and level on odd ticks.
++fn turn(mut query: Query<&mut LookDirection>, mut n: Local<u32>) {
++    for mut look in &mut query {
++        look.update_x_rot(if *n % 2 == 0 { 90. } else { 0. });
++    }
++    *n += 1;
++}
++
++fn record(query: Query<(&LookDirection, &HitResultComponent)>, mut seen: ResMut<Seen>) {
++    for (look, hit) in &query {
++        seen.0.push((look.x_rot(), hit.miss()));
++    }
++}
++
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes: the crosshair ray is cast once per tick)
++#[test]
++fn test_pick_every_tick() {
++    let _lock = init();
++
++    let mut simulation = Simulation::new(ConnectionProtocol::Game);
++    simulation.receive_packet(default_login_packet());
++    simulation.receive_packet(make_basic_empty_chunk(ChunkPos::new(0, 0), (384 + 64) / 16));
++    simulation.tick();
++
++    let floor = BlockPos::new(0, 2, 0);
++    simulation.receive_packet(ClientboundBlockUpdate {
++        pos: floor,
++        block_state: BlockKind::Stone.into(),
++    });
++    simulation.receive_packet(ClientboundPlayerPosition {
++        id: 1,
++        change: PositionMoveRotation {
++            pos: floor.up(1).center_bottom(),
++            delta: Vec3::ZERO,
++            look_direction: LookDirection::default(),
++        },
++        relative: RelativeMovements::all_absolute(),
++    });
++    simulation.tick();
++    simulation.tick();
++
++    simulation.app.init_resource::<Seen>();
++    simulation.app.add_systems(
++        GameTick,
++        (
++            turn.before(azalea_client::interact::pick::update_hit_result_component)
++                .ambiguous_with_all(),
++            record
++                .after(azalea_client::interact::pick::update_hit_result_component)
++                .ambiguous_with_all(),
++        ),
++    );
++
++    // One update, then four GameTicks back to back (a catch-up after a stall).
++    simulation.app.update();
++    for _ in 0..4 {
++        simulation.app.world_mut().run_schedule(GameTick);
++    }
++
++    let seen = simulation.app.world().resource::<Seen>().0.clone();
++    assert_eq!(seen.len(), 4);
++    for (i, (pitch, miss)) in seen.iter().enumerate() {
++        // pitch 90 looks at the floor under the feet; pitch 0 looks at empty air
++        assert_eq!(*pitch, if i % 2 == 0 { 90. } else { 0. });
++        assert_eq!(*miss, i % 2 == 1, "tick {i}: hit does not match the look");
++    }
++}
+-- 
+2.52.0
+

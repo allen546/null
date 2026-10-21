@@ -22,9 +22,25 @@ pub static TICK_FAST: AtomicU64 = AtomicU64::new(0);
 pub static REFUSAL_VIEW: Mutex<Option<String>> = Mutex::new(None);
 
 use null_bot_api::{
-    ActionId, ActionRecord, BlockAction, BlockOutcome, BlockPos, BotCommands, BotView, Face, ItemStack, Look,
+    ActionId, ActionRecord, BlockAction, BlockOutcome, BlockPos, BotCommands, BotView, ClickEvidence, ClickHit, Face,
+    ItemStack, Look,
     NavStatus, Skill, SkillStatus, Vec3,
 };
+
+/// The client's own record of a refused click (fork patch 28): what its ray hit, from which eye,
+/// and the real eye height, so a refusal can be told from a transient or a wrong aim.
+// Spec: specs/B6-placement-breaking.md §4.1 (refusals carry their evidence)
+pub fn describe_evidence(e: &ClickEvidence) -> String {
+    let hit = match e.hit {
+        ClickHit::Miss => "ray hit nothing".to_string(),
+        ClickHit::Block { pos, face, point } => format!("ray hit block {pos:?} face {face:?} at {point:?}"),
+        ClickHit::Entity { id, kind } => format!("ray hit entity {} ({kind})", id.0),
+    };
+    format!(
+        "evidence at client tick {}: {hit}; eye {:?}, eye height {:.3}, crouching {}, yaw {:.2} pitch {:.2}, look changed after the ray was cast: {}",
+        e.check_tick, e.eye, e.eye_height, e.crouching, e.yaw, e.pitch, e.look_changed_after_hit
+    )
+}
 
 #[derive(Clone, Debug)]
 pub enum Op {
@@ -44,6 +60,9 @@ pub enum Op {
     PlaceAim { pos: BlockPos, face: Face },
     /// As `PlaceAim`, with `auto_crouch` (B6 §4.2, crouch handling).
     PlaceAimCrouch { pos: BlockPos, face: Face, auto_crouch: bool },
+    /// As `PlaceAim`, but the loop stalls `ms` inside the tick between the look and the click, so
+    /// several catch-up ticks run before the click (fork patch 29, row AT).
+    PlaceAimStall { pos: BlockPos, face: Face, ms: u64 },
     /// Look at a visible point of the block's real shape, then break it.
     BreakAim(BlockPos),
     /// Look at the block, then send `break_block` every tick until the result settles.
@@ -91,15 +110,19 @@ pub enum Info {
     Gather(Box<crate::skill_gather::GatherInfo>),
     /// Per block of a chain: (block, ticks from start to finish, outcome).
     Chain(Vec<(BlockPos, Option<u64>, BlockOutcome)>),
+    /// The skill ended or was dropped with this op still open: it never finished (the host's safety stop).
+    Ended,
 }
 
 #[derive(Clone, Debug)]
 pub struct Report {
+    /// The number of the op this answers (`Ctx::send`), so a late reply never reaches another op.
+    pub seq: u64,
     pub info: Info,
 }
 
 pub struct RemoteSkill {
-    ops: Arc<Mutex<Receiver<Op>>>,
+    ops: Arc<Mutex<Receiver<(u64, Op)>>>,
     out: Sender<Report>,
     cur: Option<Run>,
     items: crate::skill_items::ItemState,
@@ -125,6 +148,7 @@ struct Chain {
 const CHAIN_TICKS: u64 = 1000;
 
 struct Run {
+    seq: u64,
     op: Op,
     t0: u64,
     offhand_before: Option<ItemStack>,
@@ -140,8 +164,18 @@ fn block_result(v: &dyn BotView, ids: &[ActionId]) -> Option<BlockAction> {
     }
 }
 
+/// An op still open when the skill goes away is answered, so the runner does not wait for it.
+impl Drop for RemoteSkill {
+    // Spec: specs/plans/ABILITY_CHECK.md (scenario ops: replies are paired to ops by number)
+    fn drop(&mut self) {
+        if let Some(run) = self.cur.take() {
+            let _ = self.out.send(Report { seq: run.seq, info: Info::Ended });
+        }
+    }
+}
+
 impl RemoteSkill {
-    pub fn new(ops: Arc<Mutex<Receiver<Op>>>, out: Sender<Report>) -> Self {
+    pub fn new(ops: Arc<Mutex<Receiver<(u64, Op)>>>, out: Sender<Report>) -> Self {
         Self { ops, out, cur: None, items: Default::default(), chain: Chain::default(), latest: Default::default(), mail: Default::default(), gather: Default::default(), last_step: None, keep: Default::default() }
     }
 }
@@ -202,15 +236,16 @@ impl Skill for RemoteSkill {
         self.items.shield.update(v);
         let now = v.tick();
         if self.cur.is_none()
-            && let Ok(op) = self.ops.lock().unwrap().try_recv()
+            && let Ok((seq, op)) = self.ops.lock().unwrap().try_recv()
         {
-            self.cur = Some(Run { op, t0: now, offhand_before: v.offhand().cloned(), ids: Vec::new() });
+            self.cur = Some(Run { seq, op, t0: now, offhand_before: v.offhand().cloned(), ids: Vec::new() });
         }
         let Some(run) = &self.cur else { return SkillStatus::Running };
         let age = now - run.t0;
         let mut ids = run.ids.clone();
+        let seq = run.seq;
         let say = |info: Info| {
-            let _ = self.out.send(Report { info });
+            let _ = self.out.send(Report { seq, info });
         };
         let done: Option<Info> = match &run.op {
             Op::Snapshot => Some(Info::Snapshot(snapshot(v))),
@@ -271,8 +306,19 @@ impl Skill for RemoteSkill {
                     _ => (age > 200).then_some(Info::Timeout),
                 }
             }
-            Op::PlaceAim { pos, face } | Op::PlaceAimCrouch { pos, face, .. } => {
-                if age == 0 {
+            // Spec: specs/F5-version-layer.md §4.6 (the crosshair ray is cast once per tick; patch 29)
+            Op::PlaceAim { pos, face } | Op::PlaceAimCrouch { pos, face, .. } | Op::PlaceAimStall { pos, face, .. } => {
+                // The stall row runs the stall first, so the look (age 1) and the click (age
+                // LOOK_TICKS) both fall in the catch-up ticks of ONE update. The old code cast
+                // its ray once at the start of that update, before the look: the click saw a
+                // stale ray. The bot first faces away from the target, so the stale ray misses.
+                let look_age = if matches!(run.op, Op::PlaceAimStall { .. }) { 1 } else { 0 };
+                if age == 0 && let Op::PlaceAimStall { ms, .. } = run.op {
+                    let (p, k) = (v.position(), pos.center());
+                    look_at(v, c, Vec3::new(2.0 * p.x - k.x, p.y + EYE, 2.0 * p.z - k.z));
+                    // Sleeping inside `step` holds the ECS lock like a long frame.
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                } else if age == look_age {
                     c.look_at_block(*pos, Some(*face));
                 } else if age == LOOK_TICKS {
                     let auto = matches!(run.op, Op::PlaceAimCrouch { auto_crouch: true, .. });
@@ -383,14 +429,23 @@ impl Skill for RemoteSkill {
             && a.ack_tick.is_none()
             && let Some(why) = a.reason
         {
+            let clicked = match &run.op {
+                Op::Place { pos, .. } | Op::PlaceAim { pos, .. } | Op::PlaceAimCrouch { pos, .. } | Op::PlaceAimStall { pos, .. } => Some(*pos),
+                Op::Break(pos) | Op::BreakAim(pos) | Op::BreakSpam(pos) | Op::BreakThenCancel(pos, _) => Some(*pos),
+                _ => None,
+            };
             *REFUSAL_VIEW.lock().unwrap() = Some(format!(
-                "bot view at refusal ({why}): pos {:?}, look {:?}, on ground {}, velocity {:?}, target {:?} seen as {:?}",
+                "bot view at refusal ({why}): {}; sneaking (input) {}, pos {:?}, look {:?}, on ground {}, velocity {:?}, target {:?} seen as {:?}, clicked block {:?} seen as {:?}",
+                a.evidence.as_ref().map_or("no click evidence".to_string(), describe_evidence),
+                v.sneaking(),
                 v.position(),
                 v.look(),
                 v.on_ground(),
                 v.velocity(),
                 a.pos,
-                v.block_at(a.pos)
+                v.block_at(a.pos),
+                clicked,
+                clicked.and_then(|p| v.block_at(p))
             ));
         }
         if let Some(info) = done {

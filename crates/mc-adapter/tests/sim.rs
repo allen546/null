@@ -736,3 +736,116 @@ fn a_break_that_never_finishes_is_cancelled_too_long_after_6000_ticks() {
     assert_eq!(b.outcome, BlockOutcome::Cancelled, "{b:?}");
     assert_eq!(b.reason, Some("too long"));
 }
+
+// Spec: specs/F5-version-layer.md §4.6 (an attribute the client does not model ends the skill)
+#[test]
+fn an_unmodelled_attribute_ends_the_skill_and_stops_the_bot() {
+    use azalea::protocol::packets::game::{ClientboundUpdateAttributes, c_update_attributes::AttributeSnapshot};
+    let _lock = azalea::test_utils::tracing::init_with_level(tracing::Level::ERROR);
+    let seen: Arc<Mutex<Vec<Vec<null_bot_api::UnmodelledInput>>>> = Default::default();
+    let log = seen.clone();
+    let skill = Script {
+        n: 0,
+        f: move |_, v: &dyn BotView, c: &mut dyn BotCommands| {
+            log.lock().unwrap().push(v.unmodelled_inputs());
+            c.walk(1, 0);
+            SkillStatus::Running
+        },
+    };
+    let mut rig = rig_with(Box::new(skill), Brain::new());
+    // The server only sends what it uses; a server-only attribute must not stop anything.
+    let id = *rig.sim.app.world().get::<MinecraftEntityId>(rig.sim.entity).unwrap();
+    rig.sim.receive_packet(ClientboundUpdateAttributes {
+        entity_id: id,
+        values: vec![AttributeSnapshot { attribute: azalea::registry::builtin::Attribute::MaxHealth, base: 40.0, modifiers: vec![] }],
+    });
+    for _ in 0..3 {
+        rig.sim.tick();
+    }
+    assert!(rig.sim.app.world().get::<BotBrain>(rig.sim.entity).unwrap().has_skill(), "max_health does not stop the skill");
+    assert!(seen.lock().unwrap().iter().all(|l| l.is_empty()));
+    // Scale away from 1 changes the hitbox: the skill ends and the walk input is cleared.
+    rig.sim.receive_packet(ClientboundUpdateAttributes {
+        entity_id: id,
+        values: vec![AttributeSnapshot { attribute: azalea::registry::builtin::Attribute::Scale, base: 2.0, modifiers: vec![] }],
+    });
+    for _ in 0..4 {
+        rig.sim.tick();
+    }
+    assert!(!rig.sim.app.world().get::<BotBrain>(rig.sim.entity).unwrap().has_skill(), "the skill ended");
+    let mv = rig.sim.app.world().get::<azalea::physics::client_movement::ClientMovementState>(rig.sim.entity).unwrap();
+    assert!(matches!(mv.move_direction, azalea::WalkDirection::None), "walk input cleared");
+}
+
+// Spec: specs/F5-version-layer.md §4.6 (a status effect the client does not model ends the skill)
+#[test]
+fn an_unmodelled_effect_ends_the_skill_and_a_modelled_one_does_not() {
+    use azalea::entity::MobEffectData;
+    use azalea::protocol::packets::game::ClientboundUpdateMobEffect;
+    use azalea::registry::builtin::MobEffect;
+    let _lock = azalea::test_utils::tracing::init_with_level(tracing::Level::ERROR);
+    let skill = Script {
+        n: 0,
+        f: |_, _: &dyn BotView, c: &mut dyn BotCommands| {
+            c.walk(1, 0);
+            SkillStatus::Running
+        },
+    };
+    let mut rig = rig_with(Box::new(skill), Brain::new());
+    let id = *rig.sim.app.world().get::<MinecraftEntityId>(rig.sim.entity).unwrap();
+    let data = MobEffectData { amplifier: 0, duration: 200, ..Default::default() };
+    rig.sim.receive_packet(ClientboundUpdateMobEffect { entity_id: id, mob_effect: MobEffect::JumpBoost, data: data.clone() });
+    for _ in 0..3 {
+        rig.sim.tick();
+    }
+    assert!(rig.sim.app.world().get::<BotBrain>(rig.sim.entity).unwrap().has_skill(), "jump boost is modelled");
+    rig.sim.receive_packet(ClientboundUpdateMobEffect { entity_id: id, mob_effect: MobEffect::Levitation, data });
+    for _ in 0..4 {
+        rig.sim.tick();
+    }
+    assert!(!rig.sim.app.world().get::<BotBrain>(rig.sim.entity).unwrap().has_skill(), "levitation ends the skill");
+}
+
+// Spec: specs/F5-version-layer.md §4.6 (entry kinds; the disconnect for a Movement entry)
+#[test]
+fn levitation_is_an_action_entry_and_scale_a_movement_entry_that_disconnects() {
+    use azalea::entity::MobEffectData;
+    use azalea::protocol::packets::game::{ClientboundUpdateAttributes, ClientboundUpdateMobEffect, c_update_attributes::AttributeSnapshot};
+    use azalea::registry::builtin::{Attribute, MobEffect};
+    use azalea::unmodelled_disconnect::{DisconnectOnUnmodelledMovement, UnmodelledDisconnect};
+    let _lock = azalea::test_utils::tracing::init_with_level(tracing::Level::ERROR);
+    let seen: Arc<Mutex<Vec<Vec<null_bot_api::UnmodelledInput>>>> = Default::default();
+    let log = seen.clone();
+    let skill = Script {
+        n: 0,
+        f: move |_, v: &dyn BotView, c: &mut dyn BotCommands| {
+            log.lock().unwrap().push(v.unmodelled_inputs());
+            c.walk(1, 0);
+            SkillStatus::Running
+        },
+    };
+    let mut rig = rig_with(Box::new(skill), Brain::new());
+    let e = rig.sim.entity;
+    rig.sim.app.world_mut().entity_mut(e).insert(DisconnectOnUnmodelledMovement);
+    let id = *rig.sim.app.world().get::<MinecraftEntityId>(e).unwrap();
+    let data = MobEffectData { amplifier: 0, duration: 200, ..Default::default() };
+    rig.sim.receive_packet(ClientboundUpdateMobEffect { entity_id: id, mob_effect: MobEffect::SlowFalling, data });
+    for _ in 0..4 {
+        rig.sim.tick();
+    }
+    assert!(rig.sim.app.world().get::<UnmodelledDisconnect>(e).is_none(), "slow falling does not disconnect");
+    assert!(!rig.sim.app.world().get::<BotBrain>(e).unwrap().has_skill(), "slow falling stops the skill");
+    {
+        let last = seen.lock().unwrap().last().cloned().unwrap_or_default();
+        // the skill saw nothing after it ended; the earlier ticks saw the entry
+        let any = seen.lock().unwrap().iter().flatten().any(|u| matches!(u, null_bot_api::UnmodelledInput::Effect { kind: null_bot_api::UnmodelledKind::Action, .. }));
+        assert!(any || last.is_empty());
+    }
+    rig.sim.receive_packet(ClientboundUpdateAttributes {
+        entity_id: id,
+        values: vec![AttributeSnapshot { attribute: Attribute::Scale, base: 2.0, modifiers: vec![] }],
+    });
+    rig.sim.tick();
+    let rec = rig.sim.app.world().get::<UnmodelledDisconnect>(e).expect("scale disconnects the bot");
+    assert_eq!(rec.inputs.len(), 1);
+}

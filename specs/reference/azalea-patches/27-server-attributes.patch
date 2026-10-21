@@ -1,0 +1,833 @@
+From 5bc68705cfffdee384495980e6ffaad5203605b8 Mon Sep 17 00:00:00 2001
+From: bench <bench@local>
+Date: Tue, 20 Oct 2026 13:05:56 +0800
+Subject: [PATCH] null patch: 27-server-attributes
+
+---
+ azalea-client/src/plugins/movement.rs        |  10 +-
+ azalea-client/src/plugins/packet/game/mod.rs |  26 ++-
+ azalea-entity/src/attributes.rs              | 157 ++++++++++++++++++-
+ azalea-entity/src/lib.rs                     |  26 +--
+ azalea-entity/src/mining.rs                  |  68 ++++++--
+ azalea-entity/src/unmodelled.rs              |  83 ++++++++++
+ azalea-physics/src/collision/mod.rs          |   7 +-
+ azalea-physics/src/lib.rs                    |  10 +-
+ azalea-physics/src/travel.rs                 |  10 +-
+ azalea-physics/tests/physics.rs              | 116 +++++++++++++-
+ 10 files changed, 459 insertions(+), 54 deletions(-)
+ create mode 100644 azalea-entity/src/unmodelled.rs
+
+diff --git a/azalea-client/src/plugins/movement.rs b/azalea-client/src/plugins/movement.rs
+index 7d33964..9643cb1 100644
+--- a/azalea-client/src/plugins/movement.rs
++++ b/azalea-client/src/plugins/movement.rs
+@@ -5,7 +5,7 @@ use azalea_core::{
+     tick::GameTick,
+ };
+ use azalea_entity::{
+-    Attributes, Crouching, HasClientLoaded, Jumping, LastSentPosition, LocalEntity, LookDirection,
++    ActiveEffects, Attributes, Crouching, HasClientLoaded, Jumping, LastSentPosition, LocalEntity, LookDirection,
+     Physics, PlayerAbilities, Pose, Position,
+     dimensions::calculate_dimensions,
+     metadata::{self, Sprinting},
+@@ -30,7 +30,7 @@ use azalea_protocol::{
+         },
+     },
+ };
+-use azalea_registry::builtin::EntityKind;
++use azalea_registry::builtin::{EntityKind, MobEffect};
+ use azalea_world::World;
+ use bevy_app::{App, Plugin, Update};
+ use bevy_ecs::prelude::*;
+@@ -332,6 +332,7 @@ pub fn local_player_ai_step(
+             &mut Crouching,
+             &mut Attributes,
+             Has<ItemInUse>,
++            &ActiveEffects,
+         ),
+         (With<HasClientLoaded>, With<LocalEntity>),
+     >,
+@@ -353,6 +354,7 @@ pub fn local_player_ai_step(
+         mut crouching,
+         mut attributes,
+         item_in_use,
++        active_effects,
+     ) in query.iter_mut()
+     {
+         // server ai step
+@@ -401,8 +403,8 @@ pub fn local_player_ai_step(
+         let is_passenger = false;
+         // Null fork: set by whoever sends the use-item packet (Azalea has no tracking yet).
+         let using_item = item_in_use;
+-        // TODO: status effects
+-        let has_blindness = false;
++        // `Player#isMobilityRestricted`: blindness stops and forbids sprinting.
++        let has_blindness = active_effects.get(MobEffect::Blindness).is_some();
+ 
+         let has_enough_impulse = has_enough_impulse_to_start_sprinting(physics_state);
+ 
+diff --git a/azalea-client/src/plugins/packet/game/mod.rs b/azalea-client/src/plugins/packet/game/mod.rs
+index 1ee88fe..f589edd 100644
+--- a/azalea-client/src/plugins/packet/game/mod.rs
++++ b/azalea-client/src/plugins/packet/game/mod.rs
+@@ -23,7 +23,7 @@ use azalea_protocol::{
+         game::{c_move_entity_pos_rot::CompactLookDirection, *},
+     },
+ };
+-use azalea_registry::builtin::{Attribute, EntityKind};
++use azalea_registry::builtin::EntityKind;
+ use azalea_world::{PartialWorld, WorldName, Worlds};
+ use bevy_ecs::{prelude::*, system::SystemState};
+ pub use events::*;
+@@ -754,10 +754,9 @@ impl GamePacketHandler<'_> {
+         });
+     }
+ 
+-    /// Null fork: the server's powdered-snow frost slows the bot's movement speed
+-    /// (`LivingEntity#tryAddFrost`, server side) and tells the client through this
+-    /// packet. Only that one modifier is taken over; the other speed modifiers
+-    /// (sprinting, effects) are still worked out locally.
++    /// `ClientPacketListener#handleUpdateAttributes` for the local player: the
++    /// server's base value and modifiers replace ours for every attribute in
++    /// the packet. (Null fork: patch 26 took only the powder snow modifier.)
+     // Spec: specs/B1-movement.md §4.2
+     pub fn update_attributes(&mut self, p: &ClientboundUpdateAttributes) {
+         as_system::<Query<(&MinecraftEntityId, &mut Attributes)>>(self.ecs, |mut query| {
+@@ -767,19 +766,12 @@ impl GamePacketHandler<'_> {
+             if *entity_id != p.entity_id {
+                 return;
+             }
+-            let id = azalea_registry::identifier::Identifier::new("powder_snow");
+             for snapshot in &p.values {
+-                if snapshot.attribute != Attribute::MovementSpeed {
+-                    continue;
+-                }
+-                match snapshot.modifiers.iter().find(|m| m.id == id) {
+-                    Some(modifier) => {
+-                        attributes.movement_speed.insert(modifier.clone());
+-                    }
+-                    None => {
+-                        attributes.movement_speed.remove(&id);
+-                    }
+-                }
++                attributes.apply_server_snapshot(
++                    snapshot.attribute,
++                    snapshot.base,
++                    &snapshot.modifiers,
++                );
+             }
+         });
+     }
+diff --git a/azalea-entity/src/attributes.rs b/azalea-entity/src/attributes.rs
+index d57a647..2408577 100644
+--- a/azalea-entity/src/attributes.rs
++++ b/azalea-entity/src/attributes.rs
+@@ -27,8 +27,32 @@ pub struct Attributes {
+     pub entity_interaction_range: AttributeInstance,
+ 
+     pub step_height: AttributeInstance,
++
++    /// `Attributes.JUMP_STRENGTH`: the upward speed of a jump.
++    pub jump_strength: AttributeInstance,
++    /// `Attributes.GRAVITY`: blocks per tick squared pulling the entity down.
++    pub gravity: AttributeInstance,
++    /// `Attributes.MOVEMENT_EFFICIENCY`: how much of a slowing block's speed
++    /// factor is ignored.
++    pub movement_efficiency: AttributeInstance,
++    /// `Attributes.SUBMERGED_MINING_SPEED`: the mining multiplier with the eyes
++    /// in water.
++    pub submerged_mining_speed: AttributeInstance,
++
++    /// Every other attribute the server sent, kept so that nothing is dropped.
++    /// Most of them only matter to the server; see [`Self::unmodelled_in_force`]
++    /// for the ones that change what a client computes.
++    pub other: Vec<(Attribute, AttributeInstance)>,
+ }
+ 
++/// Attributes that change what the client computes for itself but that the
++/// fork does not model, with the vanilla default. While one is away from its
++/// default, a prediction would be wrong, so Null refuses to move or break.
++///
++/// `Attributes.SCALE` changes the hitbox, the eye height and with them every
++/// collision, reach and ray check.
++const UNMODELLED_CLIENT_ATTRIBUTES: [(Attribute, f64); 1] = [(Attribute::Scale, 1.0)];
++
+ impl Attributes {
+     /// Returns a mutable reference to the [`AttributeInstance`] for the given
+     /// attribute, or `None` if the attribute isn't implemented.
+@@ -43,10 +67,61 @@ impl Attributes {
+             Attribute::EntityInteractionRange => &mut self.entity_interaction_range,
+             Attribute::StepHeight => &mut self.step_height,
+             Attribute::BlockBreakSpeed => &mut self.block_break_speed,
++            Attribute::JumpStrength => &mut self.jump_strength,
++            Attribute::Gravity => &mut self.gravity,
++            Attribute::MovementEfficiency => &mut self.movement_efficiency,
++            Attribute::SubmergedMiningSpeed => &mut self.submerged_mining_speed,
+             _ => return None,
+         };
+         Some(value)
+     }
++
++    /// Apply one entry of `ClientboundUpdateAttributesPacket` like
++    /// `ClientPacketListener#handleUpdateAttributes`: take the server's base
++    /// value and replace every modifier (the sprinting one included; the
++    /// server lists it while the player sprints).
++    // Spec: specs/B1-movement.md §4.2
++    pub fn apply_server_snapshot(
++        &mut self,
++        attribute: Attribute,
++        base: f64,
++        modifiers: &[AttributeModifier],
++    ) {
++        let instance = match self.get_mut(attribute) {
++            Some(instance) => instance,
++            None => {
++                let index = match self.other.iter().position(|(a, _)| *a == attribute) {
++                    Some(index) => index,
++                    None => {
++                        self.other.push((attribute, AttributeInstance::new(base)));
++                        self.other.len() - 1
++                    }
++                };
++                &mut self.other[index].1
++            }
++        };
++        instance.base = base;
++        instance.clear_modifiers();
++        for modifier in modifiers {
++            instance.insert(modifier.clone());
++        }
++    }
++
++    /// The attributes in force that change what the client computes but that
++    /// the fork does not model, with their current values. Empty when every
++    /// such attribute has its default.
++    // Spec: specs/B1-movement.md §4.2
++    pub fn unmodelled_in_force(&self) -> Vec<(Attribute, f64)> {
++        UNMODELLED_CLIENT_ATTRIBUTES
++            .iter()
++            .filter_map(|(attribute, default)| {
++                let (_, instance) = self.other.iter().find(|(a, _)| a == attribute)?;
++                let value = instance.calculate();
++                // the server sends the whole list, so "default" means equal after the f32 round
++                ((value - default).abs() > 1e-9).then_some((*attribute, value))
++            })
++            .collect()
++    }
+ }
+ 
+ /// An individual attribute for an entity, which may have any number of
+@@ -55,6 +130,9 @@ impl Attributes {
+ pub struct AttributeInstance {
+     pub base: f64,
+     modifiers_by_id: HashMap<Identifier, AttributeModifier>,
++    /// `RangedAttribute` limits; the value is clamped into them.
++    min: f64,
++    max: f64,
+     // TODO: add cache
+ }
+ 
+@@ -66,15 +144,29 @@ pub struct AlreadyPresentError;
+ 
+ impl AttributeInstance {
+     pub fn new(base: f64) -> Self {
++        Self::ranged(base, f64::NEG_INFINITY, f64::INFINITY)
++    }
++
++    /// An attribute whose value is clamped into `min..=max`, like
++    /// `RangedAttribute#sanitizeValue`.
++    pub fn ranged(base: f64, min: f64, max: f64) -> Self {
+         Self {
+             base,
+             modifiers_by_id: HashMap::new(),
++            min,
++            max,
+         }
+     }
+ 
++    /// `AttributeInstance#removeModifiers`.
++    pub fn clear_modifiers(&mut self) {
++        self.modifiers_by_id.clear();
++    }
++
+     /// In Mojmap, this is `AttributeInstance#calculateValue`: all `AddValue`
+     /// modifiers first, then `AddMultipliedBase` (of that sum), then
+-    /// `AddMultipliedTotal`, whatever order the modifiers were added in.
++    /// `AddMultipliedTotal`, whatever order the modifiers were added in. The
++    /// result is clamped into the attribute's range (a NaN becomes the minimum).
+     // Spec: specs/B1-movement.md §4.2
+     pub fn calculate(&self) -> f64 {
+         let mut with_adds = self.base;
+@@ -94,7 +186,11 @@ impl AttributeInstance {
+                 total *= 1. + modifier.amount;
+             }
+         }
+-        total
++        if total.is_nan() {
++            self.min
++        } else {
++            total.clamp(self.min, self.max)
++        }
+     }
+ 
+     /// Add a new modifier to this attribute and return the previous value, if
+@@ -180,4 +276,61 @@ mod tests {
+             assert!((speed.calculate() - want).abs() < 1e-12, "{}", speed.calculate());
+         }
+     }
++
++    fn modifier(id: &str, amount: f64, operation: AttributeModifierOperation) -> AttributeModifier {
++        AttributeModifier { id: Identifier::new(id), amount, operation }
++    }
++
++    // `ClientPacketListener#handleUpdateAttributes`: the base and the whole modifier list
++    // are the server's. A modifier the client had and the packet lacks (the sprinting one)
++    // is gone afterwards.
++    #[test]
++    fn server_snapshot_replaces_base_and_all_modifiers() {
++        let mut a = Attributes::new(azalea_registry::builtin::EntityKind::Player);
++        a.movement_speed.insert(sprinting_modifier());
++        a.apply_server_snapshot(
++            Attribute::MovementSpeed,
++            0.2,
++            &[modifier("test", 0.5, AttributeModifierOperation::AddMultipliedTotal)],
++        );
++        assert!((a.movement_speed.calculate() - 0.2 * 1.5).abs() < 1e-12);
++        a.apply_server_snapshot(Attribute::MovementSpeed, 0.1f32 as f64, &[]);
++        assert!((a.movement_speed.calculate() - 0.1f32 as f64).abs() < 1e-12);
++    }
++
++    // `AttributeInstance#calculateValue` clamps with the `RangedAttribute` limits.
++    #[test]
++    fn value_is_clamped_to_the_attribute_range() {
++        let mut a = Attributes::new(azalea_registry::builtin::EntityKind::Player);
++        a.apply_server_snapshot(
++            Attribute::MovementSpeed,
++            0.1,
++            &[modifier("slow", -5.0, AttributeModifierOperation::AddValue)],
++        );
++        assert_eq!(a.movement_speed.calculate(), 0.0);
++        a.apply_server_snapshot(Attribute::Gravity, 5.0, &[]);
++        assert_eq!(a.gravity.calculate(), 1.0);
++        a.apply_server_snapshot(Attribute::StepHeight, 50.0, &[]);
++        assert_eq!(a.step_height.calculate(), 10.0);
++    }
++
++    // Scale (`Attributes.SCALE`, default 1) is not modelled: away from the default it is
++    // listed. Attributes only the server uses never are.
++    #[test]
++    fn unmodelled_client_attributes_are_listed_only_off_the_default() {
++        let mut a = Attributes::new(azalea_registry::builtin::EntityKind::Player);
++        assert!(a.unmodelled_in_force().is_empty());
++        a.apply_server_snapshot(Attribute::Scale, 1.0, &[]);
++        a.apply_server_snapshot(Attribute::MaxHealth, 40.0, &[]);
++        a.apply_server_snapshot(Attribute::Armor, 20.0, &[]);
++        assert!(a.unmodelled_in_force().is_empty());
++        a.apply_server_snapshot(
++            Attribute::Scale,
++            1.0,
++            &[modifier("big", 0.5, AttributeModifierOperation::AddMultipliedTotal)],
++        );
++        assert_eq!(a.unmodelled_in_force(), vec![(Attribute::Scale, 1.5)]);
++        a.apply_server_snapshot(Attribute::Scale, 1.0, &[]);
++        assert!(a.unmodelled_in_force().is_empty());
++    }
+ }
+diff --git a/azalea-entity/src/lib.rs b/azalea-entity/src/lib.rs
+index 5684ead..7268f17 100644
+--- a/azalea-entity/src/lib.rs
++++ b/azalea-entity/src/lib.rs
+@@ -10,6 +10,7 @@ pub mod inventory;
+ pub mod metadata;
+ pub mod mining;
+ pub mod particle;
++pub mod unmodelled;
+ #[cfg(feature = "bevy_ecs")]
+ mod plugin;
+ pub mod vec_delta_codec;
+@@ -399,16 +400,23 @@ impl Attributes {
+     pub fn new(_entity_kind: EntityKind) -> Self {
+         // TODO: do the correct defaults for everything, some
+         // entities have different defaults
++        // The ranges are the `RangedAttribute` limits in `Attributes`.
++        let r = AttributeInstance::ranged;
+         Attributes {
+-            movement_speed: AttributeInstance::new(0.1f32 as f64),
+-            sneaking_speed: AttributeInstance::new(0.3),
+-            attack_speed: AttributeInstance::new(4.0),
+-            water_movement_efficiency: AttributeInstance::new(0.0),
+-            mining_efficiency: AttributeInstance::new(0.0),
+-            block_interaction_range: AttributeInstance::new(4.5),
+-            entity_interaction_range: AttributeInstance::new(3.0),
+-            step_height: AttributeInstance::new(0.6),
+-            block_break_speed: AttributeInstance::new(1.0),
++            movement_speed: r(0.1f32 as f64, 0.0, 1024.0),
++            sneaking_speed: r(0.3, 0.0, 1.0),
++            attack_speed: r(4.0, 0.0, 1024.0),
++            water_movement_efficiency: r(0.0, 0.0, 1.0),
++            mining_efficiency: r(0.0, 0.0, 1024.0),
++            block_interaction_range: r(4.5, 0.0, 64.0),
++            entity_interaction_range: r(3.0, 0.0, 64.0),
++            step_height: r(0.6, 0.0, 10.0),
++            block_break_speed: r(1.0, 0.0, 1024.0),
++            jump_strength: r(0.42f32 as f64, 0.0, 32.0),
++            gravity: r(0.08, -1.0, 1.0),
++            movement_efficiency: r(0.0, 0.0, 1.0),
++            submerged_mining_speed: r(0.2, 0.0, 20.0),
++            other: Vec::new(),
+         }
+     }
+ }
+diff --git a/azalea-entity/src/mining.rs b/azalea-entity/src/mining.rs
+index 19346ba..ae80156 100644
+--- a/azalea-entity/src/mining.rs
++++ b/azalea-entity/src/mining.rs
+@@ -1,4 +1,4 @@
+-use azalea_block::{BlockBehavior, BlockTrait};
++use azalea_block::{BlockBehavior, BlockTrait, fluid_state::FluidKind};
+ use azalea_inventory::{ItemStack, components::Tool};
+ use azalea_registry::builtin::{BlockKind, MobEffect};
+ 
+@@ -72,7 +72,7 @@ fn has_correct_tool_for_drops(block: &dyn BlockTrait, item: &ItemStack) -> bool
+ fn destroy_speed(
+     block: BlockKind,
+     tool: &ItemStack,
+-    _fluid_on_eyes: &FluidOnEyes,
++    fluid_on_eyes: &FluidOnEyes,
+     physics: &Physics,
+     attributes: &Attributes,
+     active_effects: &ActiveEffects,
+@@ -100,13 +100,11 @@ fn destroy_speed(
+ 
+     speed *= attributes.block_break_speed.calculate() as f32;
+ 
+-    // TODO
+-    // if **fluid_on_eyes == FluidKind::Water
+-    //     && enchantments::get_enchant_level(registry::Enchantment::AquaAffinity,
+-    // player_inventory)         == 0
+-    // {
+-    //     base_destroy_speed /= 5.;
+-    // }
++    // `Player#getDestroySpeed`: with the eyes in water, the submerged mining speed
++    // applies (aqua affinity raises it through the attribute).
++    if **fluid_on_eyes == FluidKind::Water {
++        speed *= attributes.submerged_mining_speed.calculate() as f32;
++    }
+ 
+     if !physics.on_ground {
+         speed /= 5.;
+@@ -127,3 +125,55 @@ fn base_destroy_speed(block: BlockKind, item: &ItemStack) -> f32 {
+     }
+     tool.default_mining_speed
+ }
++
++#[cfg(test)]
++mod tests {
++    use azalea_block::{BlockState, fluid_state::FluidKind};
++    use azalea_inventory::components::AttributeModifier;
++    use azalea_core::attribute_modifier_operation::AttributeModifierOperation;
++    use azalea_registry::{builtin::{Attribute, EntityKind}, identifier::Identifier};
++
++    use super::*;
++
++    fn progress(attributes: &Attributes, fluid: FluidKind, on_ground: bool) -> f32 {
++        let mut physics = Physics::default();
++        physics.set_on_ground(on_ground);
++        let block = BlockState::from(BlockKind::Stone).to_trait();
++        get_mine_progress(
++            &*block,
++            &ItemStack::Empty,
++            &FluidOnEyes(fluid),
++            &physics,
++            attributes,
++            &ActiveEffects::default(),
++        )
++    }
++
++    // `Player#getDestroySpeed` and `BlockState#getDestroyProgress`: bare hand 1.0, times
++    // block break speed, times submerged mining speed with the eyes in water; stone takes
++    // 1.5 to destroy and, without the right tool, a divisor of 100.
++    #[test]
++    fn break_speed_and_submerged_speed_scale_the_progress() {
++        let mut a = Attributes::new(EntityKind::Player);
++        let plain = 1.0 / 1.5 / 100.0;
++        assert!((progress(&a, FluidKind::Empty, true) - plain).abs() < 1e-9);
++        // under water, the default 0.2 applies
++        assert!((progress(&a, FluidKind::Water, true) - plain * 0.2).abs() < 1e-9);
++        // the server raises it (aqua affinity gives +4 on top of the base)
++        a.apply_server_snapshot(
++            Attribute::SubmergedMiningSpeed,
++            0.2,
++            &[AttributeModifier {
++                id: Identifier::new("enchantment.aqua_affinity"),
++                amount: 4.0,
++                operation: AttributeModifierOperation::AddValue,
++            }],
++        );
++        assert!((progress(&a, FluidKind::Water, true) - plain * 4.2).abs() < 1e-6);
++        // a block break speed of 3
++        a.apply_server_snapshot(Attribute::BlockBreakSpeed, 3.0, &[]);
++        assert!((progress(&a, FluidKind::Empty, true) - plain * 3.0).abs() < 1e-7);
++        // off the ground, a fifth
++        assert!((progress(&a, FluidKind::Empty, false) - plain * 3.0 / 5.0).abs() < 1e-7);
++    }
++}
+diff --git a/azalea-entity/src/unmodelled.rs b/azalea-entity/src/unmodelled.rs
+new file mode 100644
+index 0000000..db1de2c
+--- /dev/null
++++ b/azalea-entity/src/unmodelled.rs
+@@ -0,0 +1,83 @@
++//! Server-set inputs of the client's own computations that the fork does not model.
++//!
++//! A bot whose attribute or status effect changes what a vanilla client computes (hitbox,
++//! gravity, speed in water, ...) must not move or break on a wrong prediction. This lists the
++//! ones in force so the layer above can stop. Spec: specs/F5-version-layer.md §4.6.
++
++use azalea_registry::builtin::{Attribute, MobEffect};
++
++use crate::{ActiveEffects, Attributes};
++
++/// What an unmodelled input changes. `Movement` changes the bot's motion even with no input, so
++/// stopping the skill is not enough (the client keeps simulating and sending positions); what to
++/// do then is a decision above the fork. `Action` changes only what an action computes (reach,
++/// break time).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum UnmodelledKind {
++    Movement,
++    Action,
++}
++
++/// One unmodelled input in force.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub enum UnmodelledInput {
++    /// The attribute's current value.
++    Attribute(Attribute, f64),
++    /// The effect's amplifier (0 for level I).
++    Effect(MobEffect, i32),
++}
++
++impl UnmodelledInput {
++    /// Scale (hitbox), levitation, slow falling and dolphin's grace all move the bot or its box
++    /// every tick.
++    pub fn kind(&self) -> UnmodelledKind {
++        UnmodelledKind::Movement
++    }
++}
++
++/// Status effects the client reads for its own movement that the fork does not model yet:
++/// `LivingEntity#travelInAir` (levitation), `#getEffectiveGravity` (slow falling) and
++/// `#travelInWater` (dolphin's grace). Blindness (`Player#isMobilityRestricted`, sprinting),
++/// jump boost, haste, conduit power, mining fatigue, weaving, speed and slowness are modelled.
++const UNMODELLED_EFFECTS: [MobEffect; 3] = [
++    MobEffect::Levitation,
++    MobEffect::SlowFalling,
++    MobEffect::DolphinsGrace,
++];
++
++/// Every unmodelled attribute or effect in force; empty when the client's predictions hold.
++// Spec: specs/F5-version-layer.md §4.6
++pub fn unmodelled_inputs(attributes: &Attributes, effects: &ActiveEffects) -> Vec<UnmodelledInput> {
++    let mut out: Vec<UnmodelledInput> = attributes
++        .unmodelled_in_force()
++        .into_iter()
++        .map(|(a, v)| UnmodelledInput::Attribute(a, v))
++        .collect();
++    for effect in UNMODELLED_EFFECTS {
++        if let Some(level) = effects.get_level(effect) {
++            out.push(UnmodelledInput::Effect(effect, level));
++        }
++    }
++    out
++}
++
++#[cfg(test)]
++mod tests {
++    use azalea_registry::builtin::EntityKind;
++
++    use super::*;
++    use crate::MobEffectData;
++
++    // An effect entry appears when the server adds it and goes when it is removed.
++    #[test]
++    fn effects_are_listed_while_active() {
++        let attrs = Attributes::new(EntityKind::Player);
++        let mut fx = ActiveEffects::default();
++        assert!(unmodelled_inputs(&attrs, &fx).is_empty());
++        fx.insert(MobEffect::Levitation, MobEffectData { amplifier: 1, duration: 100, ..Default::default() });
++        fx.insert(MobEffect::Speed, MobEffectData::default());
++        assert_eq!(unmodelled_inputs(&attrs, &fx), vec![UnmodelledInput::Effect(MobEffect::Levitation, 1)]);
++        fx.remove(MobEffect::Levitation);
++        assert!(unmodelled_inputs(&attrs, &fx).is_empty());
++    }
++}
+diff --git a/azalea-physics/src/collision/mod.rs b/azalea-physics/src/collision/mod.rs
+index a1044bb..f62fee0 100644
+--- a/azalea-physics/src/collision/mod.rs
++++ b/azalea-physics/src/collision/mod.rs
+@@ -65,7 +65,7 @@ fn collide(ctx: &MoveCtx, movement: Vec3) -> Vec3 {
+ 
+     let on_ground = ctx.physics.on_ground() || y_collision && movement.y < 0.;
+ 
+-    let max_up_step = 0.6;
++    let max_up_step = get_max_up_step(ctx.attributes) as f64;
+     if max_up_step > 0. && on_ground && (x_collision || z_collision) {
+         let mut step_to_delta = collide_bounding_box(
+             movement.with_y(max_up_step),
+@@ -270,7 +270,10 @@ pub fn move_colliding(ctx: &mut MoveCtx, mut movement: Vec3) {
+     // sounds
+ 
+     // Null fork: Entity#getBlockSpeedFactor scales the velocity after the move.
+-    let speed_factor = block_speed_factor(ctx.world, **ctx.position, ctx.abilities) as f64;
++    // `LivingEntity#getBlockSpeedFactor` blends it toward 1 by movement efficiency.
++    let factor = block_speed_factor(ctx.world, **ctx.position, ctx.abilities);
++    let efficiency = ctx.attributes.movement_efficiency.calculate() as f32;
++    let speed_factor = (factor + efficiency * (1. - factor)) as f64;
+     ctx.physics.velocity.x *= speed_factor;
+     ctx.physics.velocity.z *= speed_factor;
+ 
+diff --git a/azalea-physics/src/lib.rs b/azalea-physics/src/lib.rs
+index 5fd4fb9..a0ffb16 100644
+--- a/azalea-physics/src/lib.rs
++++ b/azalea-physics/src/lib.rs
+@@ -75,6 +75,7 @@ pub fn ai_step(
+             &LookDirection,
+             &Sprinting,
+             &ActiveEffects,
++            &Attributes,
+             &WorldName,
+             &EntityKindComponent,
+             &ClientMovementState,
+@@ -90,6 +91,7 @@ pub fn ai_step(
+         look_direction,
+         sprinting,
+         active_effects,
++        attributes,
+         world_name,
+         entity_kind,
+         client_movement,
+@@ -160,6 +162,7 @@ pub fn ai_step(
+                             world_name,
+                             &worlds,
+                             active_effects,
++                            attributes,
+                         );
+                         physics.no_jump_delay = 10;
+                     }
+@@ -477,13 +480,14 @@ pub fn jump_from_ground(
+     world_name: &WorldName,
+     worlds: &Worlds,
+     active_effects: &ActiveEffects,
++    attributes: &Attributes,
+ ) {
+     let world_lock = worlds
+         .get(world_name)
+         .expect("All entities should be in a valid world");
+     let world = world_lock.read();
+ 
+-    let base_jump = jump_power(&world, position);
++    let base_jump = jump_power(&world, position, attributes);
+     let jump_power = base_jump + jump_boost_power(active_effects);
+     if jump_power <= 1.0E-5 {
+         return;
+@@ -654,8 +658,8 @@ fn block_jump_factor(world: &World, position: Position) -> f32 {
+ // public double getJumpBoostPower() {
+ //     return this.hasEffect(MobEffects.JUMP) ? (double)(0.1F *
+ // (float)(this.getEffect(MobEffects.JUMP).getAmplifier() + 1)) : 0.0D; }
+-fn jump_power(world: &World, position: Position) -> f32 {
+-    0.42 * block_jump_factor(world, position)
++fn jump_power(world: &World, position: Position, attributes: &Attributes) -> f32 {
++    attributes.jump_strength.calculate() as f32 * block_jump_factor(world, position)
+ }
+ 
+ fn jump_boost_power(active_effects: &ActiveEffects) -> f32 {
+diff --git a/azalea-physics/src/travel.rs b/azalea-physics/src/travel.rs
+index bbe41ed..577c185 100644
+--- a/azalea-physics/src/travel.rs
++++ b/azalea-physics/src/travel.rs
+@@ -109,7 +109,7 @@ pub fn travel(
+ 
+ /// The usual movement when we're not in water or using an elytra.
+ fn travel_in_air(ctx: &mut MoveCtx) {
+-    let gravity = get_effective_gravity();
++    let gravity = get_effective_gravity(ctx.attributes);
+ 
+     let block_pos_below = get_block_pos_below_that_affects_movement(*ctx.position);
+ 
+@@ -152,7 +152,7 @@ fn travel_in_air(ctx: &mut MoveCtx) {
+ fn travel_in_fluid(ctx: &mut MoveCtx) {
+     let moving_down = ctx.physics.velocity.y <= 0.;
+     let y = ctx.position.y;
+-    let gravity = get_effective_gravity();
++    let gravity = get_effective_gravity(ctx.attributes);
+ 
+     let acceleration = Vec3::new(
+         ctx.physics.x_acceleration as f64,
+@@ -352,9 +352,11 @@ fn contains_any_liquid(world: &World, bounding_box: Aabb) -> bool {
+     false
+ }
+ 
+-fn get_effective_gravity() -> f64 {
++/// `LivingEntity#getEffectiveGravity`, without the slow falling cap (TODO).
++// Spec: specs/B1-movement.md §4.2
++fn get_effective_gravity(attributes: &Attributes) -> f64 {
+     // TODO: slow falling effect
+-    0.08
++    attributes.gravity.calculate()
+ }
+ 
+ pub fn fluid_jump_threshold() -> f64 {
+diff --git a/azalea-physics/tests/physics.rs b/azalea-physics/tests/physics.rs
+index 3b638d9..05aa77e 100644
+--- a/azalea-physics/tests/physics.rs
++++ b/azalea-physics/tests/physics.rs
+@@ -577,7 +577,7 @@ mod block_effects {
+ 
+     /// A floor of `floor` at y=69 and `feet` at the bot's feet (y=70), the bot
+     /// at rest at (0.5, 70, 0.5), forward input held on every tick.
+-    fn setup(
++    pub(super) fn setup(
+         floor: BlockKind,
+         feet: BlockKind,
+         jumping: bool,
+@@ -635,7 +635,7 @@ mod block_effects {
+         (app, id, (world_lock, partial_world))
+     }
+ 
+-    fn tick(app: &mut App, entity: bevy_ecs::entity::Entity, input: f32) {
++    pub(super) fn tick(app: &mut App, entity: bevy_ecs::entity::Entity, input: f32) {
+         app.world_mut()
+             .get_mut::<Physics>(entity)
+             .unwrap()
+@@ -647,14 +647,14 @@ mod block_effects {
+ 
+     /// Three ticks with no input, so the bot is on the ground and any block
+     /// effect has taken hold.
+-    fn settle(app: &mut App, entity: bevy_ecs::entity::Entity) {
++    pub(super) fn settle(app: &mut App, entity: bevy_ecs::entity::Entity) {
+         for _ in 0..3 {
+             tick(app, entity, 0.);
+         }
+     }
+ 
+     /// One tick with full forward input; returns the z displacement.
+-    fn walk_dz(app: &mut App, entity: bevy_ecs::entity::Entity) -> f64 {
++    pub(super) fn walk_dz(app: &mut App, entity: bevy_ecs::entity::Entity) -> f64 {
+         let before = app.world_mut().get::<Position>(entity).unwrap().z;
+         tick(app, entity, 1.);
+         app.world_mut().get::<Position>(entity).unwrap().z - before
+@@ -716,3 +716,111 @@ mod block_effects {
+         assert!((vy - 0.12 * 0.98).abs() < 1e-4, "boots: vy {vy}");
+     }
+ }
++
++/// Attributes the server sets for the local player (patch 27). Expected values are worked out
++/// from the vanilla formulas (`LivingEntity#travel`, `#jumpFromGround`, `Entity#collide`,
++/// `#getBlockSpeedFactor`), not from the fork.
++mod server_attributes {
++    use azalea_core::attribute_modifier_operation::AttributeModifierOperation;
++    use azalea_entity::Attributes;
++    use azalea_inventory::components::AttributeModifier;
++    use azalea_registry::{builtin::Attribute, identifier::Identifier};
++    use bevy_ecs::entity::Entity;
++
++    use super::{block_effects::{settle, setup, tick, walk_dz}, *};
++
++    fn set(app: &mut App, e: Entity, attribute: Attribute, base: f64, mods: &[AttributeModifier]) {
++        app.world_mut()
++            .get_mut::<Attributes>(e)
++            .unwrap()
++            .apply_server_snapshot(attribute, base, mods);
++    }
++
++    fn vy(app: &mut App, e: Entity) -> f64 {
++        app.world_mut().get::<Physics>(e).unwrap().velocity.y
++    }
++
++    // Free fall from rest: the move adds -gravity, then drag 0.98: vy = -g * 0.98.
++    #[test]
++    fn gravity_attribute_sets_the_fall() {
++        for g in [0.08, 0.04, 0.0] {
++            let (mut app, e, _w) = setup(BlockKind::Air, BlockKind::Air, false, false);
++            set(&mut app, e, Attribute::Gravity, g, &[]);
++            tick(&mut app, e, 0.);
++            let v = vy(&mut app, e);
++            assert!((v + g * 0.98f32 as f64).abs() < 1e-9, "g {g}: vy {v}");
++        }
++    }
++
++    // Jump on stone: vy = jump strength, then the same tick's gravity and drag: (J - 0.08) * 0.98.
++    #[test]
++    fn jump_strength_attribute_sets_the_jump() {
++        for j in [0.42f32 as f64, 0.84, 0.21] {
++            let (mut app, e, _w) = setup(BlockKind::Stone, BlockKind::Air, true, false);
++            set(&mut app, e, Attribute::JumpStrength, j, &[]);
++            // `ai_step`, which jumps, only runs for entities with effects
++            app.world_mut().entity_mut(e).insert((azalea_entity::ActiveEffects::default(), azalea_entity::metadata::Sprinting(false)));
++            settle(&mut app, e);
++            // the first jump tick happened during settle; wait for the next jump (delay 10)
++            let mut best = f64::MIN;
++            for _ in 0..30 {
++                tick(&mut app, e, 0.);
++                best = best.max(vy(&mut app, e));
++            }
++            let want = (j - 0.08) * 0.98f32 as f64;
++            assert!((best - want).abs() < 1e-6, "J {j}: best vy {best}, want {want}");
++        }
++    }
++
++    // A full block in front: the default 0.6 cannot step it, a step height of 1.0 can.
++    #[test]
++    fn step_height_attribute_lets_the_bot_climb() {
++        for (step, climbs) in [(0.6, false), (1.0, true)] {
++            let (mut app, e, (world_lock, partial)) = setup(BlockKind::Stone, BlockKind::Air, false, false);
++            partial.chunks.set_block_state(
++                BlockPos { x: 0, y: 70, z: 3 },
++                BlockKind::Stone.into(),
++                &world_lock.write().chunks,
++            );
++            set(&mut app, e, Attribute::StepHeight, step, &[]);
++            settle(&mut app, e);
++            // the highest point reached; the floor ends at z 7, so the bot may fall later
++            let mut top = f64::MIN;
++            for _ in 0..60 {
++                tick(&mut app, e, 1.);
++                top = top.max(app.world_mut().get::<Position>(e).unwrap().y);
++            }
++            assert_eq!(top > 70.5, climbs, "step {step}: top {top}");
++        }
++    }
++
++    // A speed modifier of -50% (multiplied total) halves the step: 0.1 * 0.5 per tick on stone.
++    #[test]
++    fn movement_speed_modifier_changes_the_walk() {
++        let (mut app, e, _w) = setup(BlockKind::Stone, BlockKind::Air, false, false);
++        let m = AttributeModifier {
++            id: Identifier::new("test"),
++            amount: -0.5,
++            operation: AttributeModifierOperation::AddMultipliedTotal,
++        };
++        set(&mut app, e, Attribute::MovementSpeed, 0.1f32 as f64, &[m]);
++        settle(&mut app, e);
++        let dz = walk_dz(&mut app, e);
++        assert!((dz - 0.05).abs() < 1e-6, "dz {dz}");
++    }
++
++    // `LivingEntity#getBlockSpeedFactor`: lerp(efficiency, 0.4, 1.0) on soul sand.
++    #[test]
++    fn movement_efficiency_softens_the_speed_factor() {
++        for eff in [0.0, 0.5, 1.0] {
++            let (mut app, e, _w) = setup(BlockKind::SoulSand, BlockKind::Air, false, false);
++            set(&mut app, e, Attribute::MovementEfficiency, eff, &[]);
++            settle(&mut app, e);
++            let _ = walk_dz(&mut app, e);
++            let dz2 = walk_dz(&mut app, e);
++            let factor = 0.4 + eff * 0.6;
++            let want = 0.1 * 0.546 * factor + 0.1;
++            assert!((dz2 - want).abs() < 1e-6, "eff {eff}: dz2 {dz2} want {want}");
++        }
++    }
++}
+-- 
+2.52.0
+

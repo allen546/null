@@ -170,6 +170,11 @@ fn log_events(rx: mpsc::Receiver<HostEvent>, mut out: Box<dyn Write + Send>, exi
                 json!({ "wall_ms": wall_ms, "event": "reflex_disabled", "bot": bot, "reflex": reflex,
                         "why": "result leak", "tick": tick })
             }
+            // Spec: specs/F5-version-layer.md §4.6 (the bot stays off; no rejoin is tried)
+            HostEvent::UnmodelledDisconnect { bot, tick, inputs, packets_after } => {
+                json!({ "wall_ms": wall_ms, "event": "unmodelled_disconnect", "bot": bot, "tick": tick,
+                        "inputs": inputs, "packets_after": packets_after })
+            }
         };
         let _ = writeln!(out, "{line}");
         let _ = out.flush();

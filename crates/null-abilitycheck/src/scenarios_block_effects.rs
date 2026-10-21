@@ -102,7 +102,7 @@ fn model(z0: f64, input_ticks: u32, lane: Lane, lag: usize) -> f64 {
     z
 }
 
-fn floats(s: &str) -> Vec<f64> {
+pub(crate) fn floats(s: &str) -> Vec<f64> {
     s.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
         .filter(|t| t.chars().any(|c| c.is_ascii_digit()))
         .filter_map(|t| t.parse().ok())
@@ -110,7 +110,7 @@ fn floats(s: &str) -> Vec<f64> {
 }
 
 /// The server's position of the bot.
-fn bot_pos(cx: &mut Ctx) -> [f64; 3] {
+pub(crate) fn bot_pos(cx: &mut Ctx) -> [f64; 3] {
     let n = cx.name.clone();
     let f = floats(&cx.r(&format!("data get entity {n} Pos")));
     let k = f.len().saturating_sub(3);
@@ -265,12 +265,12 @@ fn goto_around_cobweb(cx: &mut Ctx, with_web: bool) -> Outcome {
     cx.run("A15", name, |cx| {
         let mark = cx.log_len();
         let mut alert_at: Option<String> = None;
-        cx.ops.send(Op::Goto(goal)).unwrap();
+        let seq = cx.send(Op::Goto(goal));
         let t = Instant::now();
         let (mut samples, mut inside, mut min_gap) = (0, 0, f64::MAX);
         let mut near: Vec<String> = Vec::new();
         loop {
-            if cx.reports.recv_timeout(Duration::from_millis(5)).is_ok_and(|r| !matches!(r.info, Info::Started)) {
+            if cx.try_recv(seq).is_some_and(|r| !matches!(r.info, Info::Started)) {
                 break;
             }
             if t.elapsed() > Duration::from_secs(40) {

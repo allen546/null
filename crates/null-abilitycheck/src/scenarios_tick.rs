@@ -10,9 +10,11 @@ use std::{sync::atomic::Ordering::Relaxed, thread::sleep, time::Duration};
 
 use azalea::tick_clock as tc;
 
+use null_bot_api::{BlockOutcome, Face};
+
 use crate::{
-    scenarios::{Ctx, Outcome, last_int, pos},
-    skill::Op,
+    scenarios::{Ctx, FLOOR_Y, Outcome, last_int, pos},
+    skill::{Info, Op, describe_evidence},
 };
 
 /// This module's test area (corner, 21x21), apart from the other scenarios' areas.
@@ -58,11 +60,50 @@ fn row(cx: &mut Ctx, ms: u64, bots: u64, to_x: i32, slot: u8) -> Outcome {
     })
 }
 
-// Spec: specs/F5-version-layer.md §4.6 (tick catch-up like vanilla)
+/// One stalled click: the bot faces away, the loop stalls `ms`, then the look at the top face of
+/// floor block `(x, FLOOR_Y, z)` (tick 1) and the click (tick 2) both fall in the catch-up ticks
+/// of one update. A ray cast once per update would predate the look (the negative control fails here).
+/// The crosshair ray is cast in every `GameTick` (fork patch 29; `Minecraft#tick` ->
+/// `GameRenderer#pick`), so the click sees the new look even when several ticks run back to back.
+/// Pass: the click is Done (a refusal would carry its evidence, including
+/// `look_changed_after_hit`) and the server has the stone.
+// Spec: specs/F5-version-layer.md §4.6 (the crosshair ray is cast once per tick); specs/B6-placement-breaking.md §4.2
+fn click_row(cx: &mut Ctx, ms: u64, x: i32, z: i32) -> Outcome {
+    let n = cx.name.clone();
+    let floor = pos(x, FLOOR_Y, z);
+    let above = pos(x, FLOOR_Y + 1, z);
+    cx.r(&format!("setblock {x} {} {z} minecraft:air", FLOOR_Y + 1));
+    cx.r(&format!("item replace entity {n} hotbar.0 with minecraft:stone 8"));
+    sleep(Duration::from_millis(400));
+    cx.run_allowing("AT", &format!("stall_{ms}_ms_then_look_and_click_in_one_update_places_at_the_new_look"), &["Timer"], |cx| {
+        tc::reset_loop_stats();
+        let rep = cx.call(Op::PlaceAimStall { pos: floor, face: Face::Up, ms });
+        let Info::Action(a) = rep.info else { return (false, format!("bot reported {:?}", rep.info)) };
+        let (due, ran) = (tc::MAX_DUE.load(Relaxed), tc::RAN_AT_MAX_DUE.load(Relaxed));
+        sleep(Duration::from_millis(400));
+        let placed = cx.block_is(above, "stone");
+        let refusal = a.evidence.as_ref().map_or(String::new(), |e| format!("; {} ({:?})", describe_evidence(e), a.reason));
+        let changed = a.evidence.as_ref().is_some_and(|e| e.look_changed_after_hit);
+        (
+            a.outcome == BlockOutcome::Done && placed && !changed,
+            format!(
+                "stalled {ms} ms, then look and click in one update (most ticks due in one update: {due}, ran {ran}); click on top of floor ({x},{z}): bot outcome {:?} (want Done), stone above on server: {placed}{refusal}",
+                a.outcome
+            ),
+        )
+    })
+}
+
+// Spec: specs/F5-version-layer.md §4.6 (tick catch-up like vanilla; the crosshair ray is cast once per tick)
 pub fn at(cx: &mut Ctx) -> Vec<Outcome> {
     cx.scene_in(AREA, &[], STAND);
     let bots = online(cx);
-    let out = vec![row(cx, 400, bots, 718, 4), row(cx, 1500, bots, 715, 6)];
+    let mut out = vec![row(cx, 400, bots, 718, 4), row(cx, 1500, bots, 715, 6)];
+    // Back at the stand point after the walks; the two targets lie in opposite directions, so each
+    // click needs a turn of well over 90 degrees.
+    cx.scene_in(AREA, &[], STAND);
+    out.push(click_row(cx, 250, 713, 346));
+    out.push(click_row(cx, 250, 715, 351));
     cx.clean_in(AREA);
     out
 }
