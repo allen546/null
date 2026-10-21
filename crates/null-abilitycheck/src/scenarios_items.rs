@@ -272,6 +272,8 @@ pub fn a6(cx: &mut Ctx) -> Vec<Outcome> {
     cx.r("gamerule natural_health_regeneration false");
     for (name, wait, dz, want_dmg, why) in cases {
         scene(cx, &[(0, "shield", 1)]);
+        // `scene` puts the game rule back to the suite's default, so each row sets it again
+        cx.r("gamerule natural_health_regeneration false");
         out.push(cx.run("A6", name, |cx| {
             let h0 = health_of(cx, &n);
             let absorb = floats(&cx.r(&format!("data get entity {n} AbsorptionAmount"))).last().copied();

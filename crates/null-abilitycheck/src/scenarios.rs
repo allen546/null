@@ -48,6 +48,32 @@ pub struct Ctx {
     pub probe: crate::skill_respawn::SharedProbe,
 }
 
+/// Attributes the suite sets (A16, A17) and neighbours a row could meet; `base reset` on each.
+const RESET_ATTRIBUTES: [&str; 20] = [
+    "movement_speed", "sneaking_speed", "jump_strength", "gravity", "step_height", "scale", "block_break_speed",
+    "submerged_mining_speed", "mining_efficiency", "max_health", "armor", "armor_toughness", "attack_damage", "attack_speed",
+    "knockback_resistance", "safe_fall_distance", "fall_damage_multiplier", "block_interaction_range", "entity_interaction_range",
+    "water_movement_efficiency",
+];
+
+/// Modifiers the suite adds by RCON (attribute, id); `modifier remove` on each.
+const SUITE_MODIFIERS: [(&str, &str); 2] = [("movement_speed", "a16_slow"), ("block_break_speed", "a16_fast")];
+
+/// Game rules some module changes (A6, A12), with the suite's default for each.
+const SUITE_GAMERULES: [(&str, &str); 3] = [("keep_inventory", "false"), ("immediate_respawn", "false"), ("natural_health_regeneration", "true")];
+
+/// The warm-up gate (`Ctx::settle_server`): the 20 TPS budget is 50 ms per tick; under 15 ms the
+/// server has room, so RCON readbacks come in time. The Pi pilot (2026-10-21) settled within about
+/// 30 s of its first start.
+const SETTLE_MEAN_MS: f64 = 15.0;
+const SETTLE_MAX_S: f64 = 30.0;
+
+/// The mean tick time in ms from a `tick query` reply ("Average time per tick: 7.3ms ...").
+fn tick_mean_ms(reply: &str) -> Option<f64> {
+    let rest = reply.split("Average time per tick:").nth(1)?;
+    rest.trim_start().split("ms").next()?.trim().parse().ok()
+}
+
 /// Entity-selector bounds for a test area, so cleanup never touches another run's area.
 fn in_area((x, z): (i32, i32)) -> String {
     format!("x={x},y={},z={z},dx=21,dy=10,dz=21", FLOOR_Y)
@@ -112,6 +138,13 @@ fn scan_log(s: &str, me: &str) -> (Vec<String>, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tick_query_mean_is_read() {
+        let r = "The game is running normallyTarget tick rate: 20.0 per second.Average time per tick: 7.3ms (Target: 50.0ms)Percentiles: P50: 5.7ms";
+        assert_eq!(tick_mean_ms(r), Some(7.3));
+        assert_eq!(tick_mean_ms("Unknown command"), None);
+    }
 
     #[test]
     fn grim_alerts_are_found_through_colour_codes() {
@@ -242,22 +275,83 @@ impl Ctx {
             format!("fill {x0} {} {z0} {x1} {} {z1} minecraft:air", FLOOR_Y + 1, FLOOR_Y + 8),
             format!("kill @e[type=minecraft:item,{}]", in_area(area)),
             format!("kill @e[type=minecraft:armor_stand,{}]", in_area(area)),
-            format!("gamemode survival {n}"),
-            format!("clear {n}"),
-            format!("tp {n} {} {} {} 0 0", at.0, at.1, at.2),
+            format!("kill @e[type=!minecraft:player,{}]", in_area(area)),
         ] {
             self.r(&c);
         }
+        // The tp comes first: the last module's cleanup may have taken the floor and the chunks from
+        // under the bot, and a fall in an unloaded chunk draws a Grim `Simulation` alert while the
+        // reset commands run.
+        self.r(&format!("execute in minecraft:overworld run tp {n} {} {} {} 0 0", at.0, at.1, at.2));
+        self.reset_player(area);
+        self.r(&format!("clear {n}"));
         for (slot, item, count) in hotbar {
             self.r(&format!("item replace entity {n} hotbar.{slot} with minecraft:{item} {count}"));
         }
         sleep(Duration::from_millis(1500));
         self.wait_block(pos(x0 + 10, FLOOR_Y, z0 + 10), "minecraft:stone");
         self.wait_block(pos(x0 + 10, FLOOR_Y + 1, z0 + 10), "minecraft:air");
+        self.settle_server();
         let here = self.snap_after(Op::SelectSlot(0)).pos;
         if (here.x - at.0).abs() > 0.5 || (here.y - at.1).abs() > 0.5 || (here.z - at.2).abs() > 0.5 {
             eprintln!("warning: bot is at {here:?}, not at {at:?}");
         }
+    }
+
+    // Spec: specs/plans/ABILITY_CHECK.md §How to run (the warm-up gate)
+    /// Waits until the server's mean tick time over its last 100 ticks (`tick query`) is under
+    /// `SETTLE_MEAN_MS`, at most `SETTLE_MAX_S`. A slow server (a Pi warming up, chunk loads after a
+    /// teleport) makes RCON readbacks late and timing rows fail for the server's sake, not the bot's.
+    /// On a fast machine it returns at once. It never fails a row; a server that does not settle
+    /// is reported and the run goes on.
+    pub(crate) fn settle_server(&mut self) {
+        let t = Instant::now();
+        let mut mean = None;
+        while t.elapsed().as_secs_f64() < SETTLE_MAX_S {
+            mean = tick_mean_ms(&self.r("tick query"));
+            if mean.is_some_and(|m| m < SETTLE_MEAN_MS) {
+                break;
+            }
+            sleep(Duration::from_millis(500));
+        }
+        let waited = t.elapsed().as_secs_f64();
+        if waited > 1.0 {
+            eprintln!("server settle: waited {waited:.1} s, mean tick {mean:?} ms (gate {SETTLE_MEAN_MS} ms)");
+        }
+    }
+
+    // Spec: specs/plans/ABILITY_CHECK.md §Which modules a change reruns (each module sets every piece of state it relies on)
+    /// Puts the shared player and world state back to the suite's defaults, so a module gives the
+    /// same result alone, after any other module, or after a run that stopped half way: survival,
+    /// no effects, base attributes and the suite's own modifiers, the three game rules the suite
+    /// changes, the spawn point in the area, full health and food, no fire or frost left.
+    pub(crate) fn reset_player(&mut self, area: (i32, i32)) {
+        let n = self.name.clone();
+        self.r(&format!("gamemode survival {n}"));
+        self.r(&format!("effect clear {n}"));
+        for a in RESET_ATTRIBUTES {
+            self.r(&format!("attribute {n} minecraft:{a} base reset"));
+        }
+        for (a, id) in SUITE_MODIFIERS {
+            self.r(&format!("attribute {n} minecraft:{a} modifier remove minecraft:{id}"));
+        }
+        for (rule, value) in SUITE_GAMERULES {
+            self.r(&format!("gamerule {rule} {value}"));
+        }
+        // A5 needs a difficulty that lowers food; the servers run on normal.
+        self.r("difficulty normal");
+        self.r(&format!("spawnpoint {n} {} {} {}", area.0 + 10, FLOOR_Y + 1, area.1 + 10));
+        // Full health and food (a golden apple's absorption goes with `effect clear`).
+        self.r(&format!("effect give {n} minecraft:instant_health 1 10 true"));
+        self.r(&format!("effect give {n} minecraft:saturation 1 255 true"));
+        sleep(Duration::from_millis(200));
+        self.r(&format!("effect clear {n}"));
+        // Fire and frost run down by themselves (no command clears them on a player).
+        self.poll(8.0, |cx| {
+            let fire = last_int(&cx.r(&format!("data get entity {n} Fire"))).unwrap_or(0);
+            let frost = last_int(&cx.r(&format!("data get entity {n} TicksFrozen"))).unwrap_or(0);
+            fire <= 0 && frost <= 0
+        });
     }
 
     pub fn clean(&mut self) {

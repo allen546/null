@@ -185,11 +185,26 @@ fn model_step(v_prev: f64, lev: Option<i32>, slow: bool) -> (f64, f64) {
 /// Returns (ticks compared, largest error, the first miss, ticks that needed the server's speed).
 fn compare(trace: &[TraceTick], server_motion: bool) -> (usize, f64, Option<String>, usize) {
     let (mut n, mut worst, mut miss, mut resets) = (0, 0.0_f64, None, 0);
+    let first_effect = trace.iter().position(|t| t.slow || t.lev.is_some());
     for (i, w) in trace.windows(2).enumerate() {
         let (p, c) = (&w[0], &w[1]);
         // A tick that ends on the floor is a collision (the flag can lag by one tick when the bot
         // lands exactly on the floor, as vanilla's `verticalCollision` needs a clipped move).
         if c.on_ground || c.y <= (FLOOR_Y + 1) as f64 + 1e-9 {
+            continue;
+        }
+        // A hit also sets the speed the server sends with it, which the trace cannot see, and the
+        // motion packet may land in any of the first four ticks with the effect. There the move
+        // itself is taken as the speed the tick started from, and what the tick did to it (gravity,
+        // the Slow Falling cap, the drag) is still compared; every tick after them is compared in full.
+        if server_motion && first_effect.is_some_and(|f| (f..=f + 3).contains(&(i + 1))) {
+            let (dy, v) = model_step(c.y - p.y, c.lev, c.slow);
+            let e = (c.vy - v).abs();
+            n += 1;
+            worst = worst.max(e);
+            if e > 1e-6 && miss.is_none() {
+                miss = Some(format!("tick {}: speed {:.7} want {v:.7} from a start of {dy:.7} (lev {:?}, slow {})", c.tick, c.vy, c.lev, c.slow));
+            }
             continue;
         }
         let err = |v_prev: f64| {
@@ -482,7 +497,8 @@ fn control_free_fall(cx: &mut Ctx) -> Outcome {
         cx.r(&format!("tp {n} {CX} {} {CZ}", FLOOR_Y + 7));
         let down = wait_until(10, landed);
         sleep(Duration::from_millis(300));
-        let trace = trace_stop();
+        // Ticks before the teleport arrives (RCON answers before the bot sees it) are not part of the fall.
+        let trace: Vec<TraceTick> = trace_stop().into_iter().skip_while(|t| t.y < (FLOOR_Y + 3) as f64).collect();
         let (checked, worst, miss, _) = compare(&trace, false);
         (
             down && checked >= 8 && miss.is_none(),

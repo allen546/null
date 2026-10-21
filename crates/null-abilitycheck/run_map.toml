@@ -1,0 +1,517 @@
+# Which ability-check modules a changed path can affect (read by scripts/affected_modules.sh).
+# Spec: specs/plans/ABILITY_CHECK.md §Which modules a change reruns
+#
+# Built by tracing, not guessing: module -> Op (skill*.rs) -> BotCommands / BotView (null-bot-api,
+# mc-adapter) -> fork systems. Coarse: one entry per crate area or file.
+#
+# Rules of the matcher:
+# - A path is a prefix. Null paths are relative to the repo root; fork paths start with `azalea:`
+#   and are relative to the fork root.
+# - The longest matching prefix decides. `all = true` means every module reaches the code (tick
+#   loop, connection, login, protocol, shared harness, the bot API).
+# - A path that matches no entry and no ignore pattern makes the helper print `all` and name it.
+# - A pattern in `ignore` ending in `/` is a prefix; any other pattern is a glob over the whole path.
+#
+# Module ids (22): A1 A2 A3 A4 A2S A4S A4C A5 A6 A7 A8 A9 A10 A10E A11 A12 A13 A14 A15 A16 A17 AT.
+#
+# Reach in one line each (what the ops go through):
+#   block ops (Break, Place*, BreakAim, BreakSpam, Mail, Gather): block_actions, mining, interact/pick
+#   walk and look (ItemOp::Walk, Jump, Sneak, Goto): movement, azalea-physics, pathfinder (Goto, Gather)
+#   item ops (Use, Release, Attack): item_use, attack, attackers, interact
+#   window ops (Inv): inventory plugin, azalea-inventory operations, container use (use-block)
+#   life ops (Life, kill by RCON): respawn, packet/game, the unmodelled gate
+#   every module: tick loop, connection, login, scene_in (attributes, effects, SelectSlot)
+
+ignore = [
+  "specs/", "scripts/", "mc_server4/", "target/",
+  "*.md", "*.log", "*.txt", ".gitignore",
+  "harness/skeleton-server/scripts/", "harness/grim-server/scripts/", "harness/skeleton-server/runs/",
+  "azalea:codegen/", "azalea:docs-rs/", "azalea:target/", "azalea:.github/",
+  "azalea:*/tests/*", "azalea:*/tests.rs", "azalea:*/benches/*",
+  "azalea:CHANGELOG*", "azalea:LICENSE*", "azalea:typos.toml", "azalea:rustfmt.toml",
+]
+
+# ---- Null: build, bot API, adapter, harness --------------------------------------------------
+
+[[entry]]
+path = "Cargo.toml"
+all = true
+why = "dependency pins (the fork rev) and workspace settings reach every build"
+
+[[entry]]
+path = "Cargo.lock"
+all = true
+why = "as Cargo.toml"
+
+[[entry]]
+path = "rust-toolchain.toml"
+all = true
+why = "compiler"
+
+[[entry]]
+path = "crates/null-bot-api/"
+all = true
+why = "BotView, BotCommands and the action records: every module goes through them"
+
+[[entry]]
+path = "crates/mc-adapter/"
+all = true
+why = "host tick, command buffer, action tracker, view and the lifecycle: every op goes through them"
+
+[[entry]]
+path = "crates/null-skills/"
+modules = ["A14"]
+why = "gather and the tree policy; only skill_gather.rs calls it"
+
+[[entry]]
+path = "crates/null-belief/"
+modules = ["A14"]
+why = "the belief store; only skill_gather.rs uses it"
+
+[[entry]]
+path = "crates/null-combat/"
+modules = ["A5", "A6", "A7", "A8"]
+why = "skill_items.rs uses ShieldDelay (A6); A5, A7 and A8 share the item ops"
+
+[[entry]]
+path = "crates/null-mechanics/"
+modules = ["A5", "A6", "A7", "A8"]
+why = "BlockDelayBelief in skill_items.rs (A6)"
+
+[[entry]]
+path = "crates/null-node/"
+modules = []
+why = "the swarm binary; no module runs it"
+
+[[entry]]
+path = "crates/null-skills-demo/"
+modules = []
+why = "demo skills; no module runs them"
+
+[[entry]]
+path = "crates/null-abilitycheck/run_map.toml"
+modules = []
+why = "this map; scripts/affected_modules.sh --check-history guards it"
+
+[[entry]]
+path = "crates/null-abilitycheck/Cargo.toml"
+all = true
+why = "harness dependencies"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/main.rs"
+all = true
+why = "runner, account set, module order, ReviveSkill"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/rcon.rs"
+all = true
+why = "every module sets the scene and reads the server by RCON"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/skill.rs"
+all = true
+why = "RemoteSkill and the shared Op set"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios.rs"
+all = true
+why = "Ctx (scene_in, reset_player, run, log scan) is shared; A1-A4 rows live here too"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/skill_items.rs"
+modules = ["A5", "A6", "A7", "A8", "A12", "A15", "A16", "A17"]
+why = "ItemOp: use, attack, Walk, Jump, Face"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/skill_inventory.rs"
+modules = ["A4C", "A9", "A10", "A10E", "A11", "A12"]
+why = "InvOp: window, click, open container or entity"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/skill_respawn.rs"
+modules = ["A12", "A17"]
+why = "LifeOp and the death probe (A17 kills the bot once)"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/skill_mailbox.rs"
+modules = ["A13"]
+why = "MailOp"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/skill_gather.rs"
+modules = ["A14"]
+why = "GatherOp"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_shapes.rs"
+modules = ["A2S", "A4S"]
+why = "own rows"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_crouch.rs"
+modules = ["A4C"]
+why = "own rows"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_items.rs"
+modules = ["A5", "A6", "A7", "A8"]
+why = "own rows"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_inventory.rs"
+modules = ["A9"]
+why = "own rows"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_containers.rs"
+modules = ["A10"]
+why = "own rows"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_entity_containers.rs"
+modules = ["A10E"]
+why = "own rows"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_crafting.rs"
+modules = ["A11"]
+why = "own rows"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_respawn.rs"
+modules = ["A12"]
+why = "own rows"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_mailbox.rs"
+modules = ["A13"]
+why = "own rows"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_gather.rs"
+modules = ["A14"]
+why = "own rows"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_block_effects.rs"
+modules = ["A15"]
+why = "own rows"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_server_attributes.rs"
+modules = ["A16"]
+why = "own rows"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_envelope.rs"
+modules = ["A16", "A17"]
+why = "A17 rows, and disconnect_row and the spare accounts that A16 uses"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_tick.rs"
+modules = ["AT"]
+why = "own rows"
+
+[[entry]]
+path = "harness/"
+all = true
+why = "server settings and plugins (world, game rules, Grim config)"
+
+[[entry]]
+path = "harness/vanilla-hash/"
+modules = ["A9", "A10", "A11"]
+why = "prints vanilla item component hashes; rows with custom items and components check against them"
+
+# ---- Fork: crate-wide defaults (shortest prefixes) ---------------------------------------------
+
+[[entry]]
+path = "azalea:Cargo.toml"
+all = true
+why = "fork dependencies"
+
+[[entry]]
+path = "azalea:Cargo.lock"
+all = true
+why = "fork dependencies"
+
+[[entry]]
+path = "azalea:azalea-protocol/"
+all = true
+why = "every packet"
+
+[[entry]]
+path = "azalea:azalea-buf/"
+all = true
+why = "packet encoding"
+
+[[entry]]
+path = "azalea:azalea-core/"
+all = true
+why = "positions, directions, boxes"
+
+[[entry]]
+path = "azalea:azalea-world/"
+all = true
+why = "chunks and block storage: every module reads blocks"
+
+[[entry]]
+path = "azalea:azalea-registry/"
+all = true
+why = "item, block and entity ids"
+
+[[entry]]
+path = "azalea:azalea-chat/"
+all = true
+why = "text components in packets"
+
+[[entry]]
+path = "azalea:azalea-auth/"
+all = true
+why = "login"
+
+[[entry]]
+path = "azalea:azalea-crypto/"
+all = true
+why = "login"
+
+[[entry]]
+path = "azalea:azalea-language/"
+all = true
+why = "text"
+
+[[entry]]
+path = "azalea:azalea-brigadier/"
+all = true
+why = "command packets"
+
+[[entry]]
+path = "azalea:azalea-client/"
+all = true
+why = "default for the client: connection, login, tick loop, packet handlers; narrower entries below"
+
+[[entry]]
+path = "azalea:azalea-entity/"
+all = true
+why = "default for entity data, attributes, effects, the unmodelled gate (scene_in gives every module effects)"
+
+[[entry]]
+path = "azalea:azalea-physics/"
+all = true
+why = "default; narrower entries below"
+
+[[entry]]
+path = "azalea:azalea-block/"
+all = true
+why = "default; block states are read by every module"
+
+[[entry]]
+path = "azalea:azalea-inventory/"
+all = true
+why = "default; items, components and slots are read by every module (scene_in selects slot 0)"
+
+[[entry]]
+path = "azalea:azalea/"
+all = true
+why = "default for the runner crate (swarm, builder, events, bot extension methods); narrower entries below"
+
+# ---- Fork: azalea-client, narrower -------------------------------------------------------------
+
+[[entry]]
+path = "azalea:azalea-client/src/plugins/block_actions.rs"
+modules = ["A1", "A2", "A2S", "A3", "A4", "A4C", "A4S", "A10", "A10E", "A11", "A12", "A13", "A14", "A16", "AT"]
+why = "place, break and use-block queues, results, evidence: every module with a Break, Place*, open-container or gather op"
+
+[[entry]]
+path = "azalea:azalea-client/src/plugins/mining.rs"
+modules = ["A1", "A2", "A2S", "A3", "A12", "A13", "A14", "A16"]
+why = "break progress and timing (Break, BreakAim, BreakChain, BreakSpam, gather, A16 break-speed rows)"
+
+[[entry]]
+path = "azalea:azalea-client/src/plugins/interact/"
+modules = ["A1", "A2", "A2S", "A3", "A4", "A4C", "A4S", "A5", "A6", "A7", "A8", "A10", "A10E", "A11", "A12", "A13", "A14", "A16", "AT"]
+why = "crosshair ray once per game tick, start-use-item, attack and use-entity entry; block and item ops go through it"
+
+[[entry]]
+path = "azalea:azalea-client/src/plugins/entity_actions.rs"
+modules = ["A10E", "A12"]
+why = "checked right-click on an entity (A10E); the dead-bot gate (A12)"
+
+[[entry]]
+path = "azalea:azalea-client/src/plugins/respawn.rs"
+modules = ["A12", "A17"]
+why = "death screen, respawn packet, dead-bot gate; A17 kills the bot once"
+
+[[entry]]
+path = "azalea:azalea-client/src/plugins/item_use.rs"
+modules = ["A5", "A6", "A7", "A8", "A12"]
+why = "use item and release (eating, shield); A12 eats an apple after a death"
+
+[[entry]]
+path = "azalea:azalea-client/src/plugins/attack.rs"
+modules = ["A6", "A7", "A8"]
+why = "attack op"
+
+[[entry]]
+path = "azalea:azalea-client/src/plugins/attackers.rs"
+modules = ["A6", "A7", "A8"]
+why = "recent attackers and shield hits"
+
+[[entry]]
+path = "azalea:azalea-client/src/plugins/inventory/equipment_effects.rs"
+modules = ["A6", "A9"]
+why = "armour and equipment effects"
+
+[[entry]]
+path = "azalea:azalea-client/src/plugins/client_chat/"
+modules = []
+why = "chat; no module sends or reads chat (Grim and server log checks are read from the log file)"
+
+# ---- Fork: azalea-entity, narrower ---------------------------------------------------------------
+
+[[entry]]
+path = "azalea:azalea-entity/src/mining.rs"
+modules = ["A1", "A2", "A2S", "A3", "A12", "A13", "A14", "A16"]
+why = "break speed formula (submerged mining speed, tool speed)"
+
+# ---- Fork: azalea-physics, narrower -------------------------------------------------------------
+
+[[entry]]
+path = "azalea:azalea-physics/src/unmodelled_contacts.rs"
+modules = ["A15", "A16", "A17"]
+why = "bubble column, boat and border contacts the bot cannot model (A17 disconnect rows)"
+
+[[entry]]
+path = "azalea:azalea-physics/src/collision/blocks.rs"
+modules = ["A2", "A2S", "A3", "A4", "A4C", "A4S", "A10", "A10E", "A14", "A15", "A16", "AT"]
+why = "generated block collision shapes: aim points, ray hits and cobweb or soul sand contact"
+
+[[entry]]
+path = "azalea:azalea-physics/src/collision/shape.rs"
+modules = ["A2", "A2S", "A3", "A4", "A4C", "A4S", "A10", "A10E", "A14", "A15", "A16", "AT"]
+why = "shape maths used by the ray and by movement"
+
+[[entry]]
+path = "azalea:azalea-physics/src/collision/entity_collisions.rs"
+modules = ["A7", "A8", "A10E", "A12", "A17"]
+why = "collision with entities (golem, attacker, minecart, boat, drops)"
+
+[[entry]]
+path = "azalea:azalea-physics/src/clip.rs"
+modules = ["A2", "A2S", "A3", "A4", "A4C", "A4S", "A10", "A10E", "A14", "A15", "A16", "AT"]
+why = "ray clip (pick) and the box traverse used by the inside-block check (A15)"
+
+[[entry]]
+path = "azalea:azalea-physics/src/fluids.rs"
+modules = ["A12", "A14", "A15", "A16", "A17"]
+why = "water and lava contact (A16 submerged break, A17 bubble column, A12 nether)"
+
+[[entry]]
+path = "azalea:azalea-physics/src/lib.rs"
+modules = ["A3", "A4C", "A4S", "A2S", "A5", "A6", "A7", "A8", "A10", "A10E", "A12", "A14", "A15", "A16", "A17", "AT"]
+why = "physics tick, jump, fall, inside-block effects: every module that walks, jumps, falls or crouches (A1, A2, A4, A9, A11, A13 only stand)"
+
+[[entry]]
+path = "azalea:azalea-physics/src/travel.rs"
+modules = ["A3", "A4C", "A4S", "A2S", "A5", "A6", "A7", "A8", "A10", "A10E", "A12", "A14", "A15", "A16", "A17", "AT"]
+why = "travel in air, water and lava: as lib.rs"
+
+[[entry]]
+path = "azalea:azalea-physics/src/client_movement.rs"
+modules = ["A3", "A4C", "A4S", "A2S", "A5", "A6", "A7", "A8", "A10", "A10E", "A12", "A14", "A15", "A16", "A17", "AT"]
+why = "input to movement: as lib.rs"
+
+[[entry]]
+path = "azalea:azalea-physics/src/collision/mod.rs"
+modules = ["A3", "A4C", "A4S", "A2S", "A5", "A6", "A7", "A8", "A10", "A10E", "A12", "A14", "A15", "A16", "A17", "AT"]
+why = "move_colliding, step height, block speed factor: as lib.rs"
+
+[[entry]]
+path = "azalea:azalea-physics/src/collision/world_collisions.rs"
+modules = ["A3", "A4C", "A4S", "A2S", "A5", "A6", "A7", "A8", "A10", "A10E", "A12", "A14", "A15", "A16", "A17", "AT"]
+why = "world collision lookup: as lib.rs"
+
+# ---- Fork: azalea-block, azalea-inventory, azalea (runner) ------------------------------------------
+
+[[entry]]
+path = "azalea:azalea-block/src/click_use.rs"
+modules = ["A1", "A4", "A4C", "A4S", "A10", "A10E", "A11", "A12", "A13", "AT"]
+why = "blocks with their own right-click: every placing click and every open-container row"
+
+[[entry]]
+path = "azalea:azalea-block/src/behavior.rs"
+modules = ["A14", "A15", "A16", "A17"]
+why = "block behaviour tables: stuck speed, speed factor, powdered snow (A15), pathfinder cost (A14), bubble column (A17)"
+
+[[entry]]
+path = "azalea:azalea-inventory/src/operations.rs"
+modules = ["A9", "A10", "A10E", "A11", "A12"]
+why = "window click maths (inventory, container, crafting and death-with-chest rows)"
+
+[[entry]]
+path = "azalea:azalea/src/pathfinder/"
+modules = ["A3", "A12", "A14", "A15", "AT"]
+why = "Goto (A3, AT, A15 goto around a cobweb, A12 dead-bot goal) and gather (A14)"
+
+[[entry]]
+path = "azalea:azalea/src/container.rs"
+modules = ["A9", "A10", "A10E", "A11", "A12"]
+why = "container client API"
+
+[[entry]]
+path = "azalea:azalea/src/auto_tool.rs"
+modules = ["A1", "A2", "A2S", "A3", "A14"]
+why = "tool choice before a break"
+
+[[entry]]
+path = "azalea:azalea/src/nearest_entity.rs"
+modules = ["A7", "A8", "A10E", "A12"]
+why = "entity lookup"
+
+# ---- History: patch -> modules its tests (or failures it caused) named -------------------------------
+# `scripts/affected_modules.sh --check-history` lists each patch's real changed files from the fork's
+# git log (commit subject `null patch: <n>-...`) and fails when the map's set misses a module here.
+
+[[history]]
+patch = 20
+modules = ["A4", "A4C", "A4S"]
+
+[[history]]
+patch = 21
+modules = ["A12"]
+
+[[history]]
+patch = 22
+modules = ["A12"]
+
+[[history]]
+patch = 23
+modules = ["A2", "A9", "AT"]
+
+[[history]]
+patch = 24
+modules = ["A10E"]
+
+[[history]]
+patch = 25
+modules = ["A13"]
+
+[[history]]
+patch = 26
+modules = ["A15"]
+
+[[history]]
+patch = 27
+modules = ["A15", "A16"]
+
+[[history]]
+patch = 28
+modules = ["A4S"]
+
+[[history]]
+patch = 29
+modules = ["A4S", "AT"]
+
+[[history]]
+patch = 30
+modules = ["A12", "A16", "A17"]

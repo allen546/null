@@ -113,6 +113,8 @@ fn items(cx: &mut Ctx, op: ItemOp) -> crate::skill_items::ItemsInfo {
 fn fresh(cx: &mut Ctx, hotbar: &[(u8, &str, u8)], keep: bool) {
     cx.scene_in(AREA, hotbar, STAND);
     let n = cx.name.clone();
+    // The drop search reaches 48 blocks, past this module's area: drops another module left count too.
+    cx.r(&format!("kill @e[type=minecraft:item,x={},y={},z={},distance=..60]", STAND.0, STAND.1, STAND.2));
     cx.r(&format!("spawnpoint {n} {} {} {}", SPAWN_BLOCK.0, SPAWN_BLOCK.1, SPAWN_BLOCK.2));
     cx.r(&format!("gamerule keep_inventory {keep}"));
     cx.r(&format!("effect give {n} minecraft:saturation 1 255 true"));

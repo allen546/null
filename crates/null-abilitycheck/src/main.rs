@@ -43,12 +43,14 @@ use scenarios::{Ctx, Outcome};
 use skill::RemoteSkill;
 
 const USAGE: &str = "usage: null-abilitycheck [--server 127.0.0.1:25567] [--account null_check] \
-[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|A16|A17|AT[,..]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH]";
+[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|A16|A17|AT[,..]] [--shuffle SEED] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH]";
 
 struct Args {
     server: String,
     account: String,
     scenarios: Vec<String>,
+    /// Run the chosen modules in an order drawn from this seed (rows inside a module keep theirs).
+    shuffle: Option<u64>,
     rcon_port: u16,
     rcon_pass: String,
     log: PathBuf,
@@ -59,6 +61,7 @@ fn parse_args() -> Result<Args, String> {
         server: "127.0.0.1:25567".into(),
         account: "null_check".into(),
         scenarios: vec!["all".into()],
+        shuffle: None,
         rcon_port: 25577,
         rcon_pass: "skeleton".into(),
         log: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../harness/skeleton-server/server/server.log"),
@@ -70,6 +73,7 @@ fn parse_args() -> Result<Args, String> {
             "--server" => a.server = val()?,
             "--account" => a.account = val()?,
             "--scenario" => a.scenarios = val()?.split(',').map(|s| s.trim().to_uppercase()).collect(),
+            "--shuffle" => a.shuffle = Some(val()?.parse().map_err(|e| format!("--shuffle: {e}"))?),
             "--rcon-port" => a.rcon_port = val()?.parse().map_err(|e| format!("--rcon-port: {e}"))?,
             "--rcon-password" => a.rcon_pass = val()?,
             "--server-log" => a.log = PathBuf::from(val()?),
@@ -105,6 +109,22 @@ impl azalea::app::Plugin for ReviveSkill {
     }
 }
 
+/// Fisher-Yates with a splitmix64 stream: the same seed gives the same order on every machine.
+// Spec: specs/plans/ABILITY_CHECK.md §Which modules a change reruns (shuffle)
+fn shuffle<T>(items: &mut [T], seed: u64) {
+    let mut state = seed;
+    let mut next = move || {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    };
+    for i in (1..items.len()).rev() {
+        items.swap(i, (next() % (i as u64 + 1)) as usize);
+    }
+}
+
 /// Prints total wall time, time per module (slowest first), the 10 slowest rows and the RCON wait.
 /// Fixed sleeps are not summed: they sit at about 150 call sites, so only RCON is counted.
 // Spec: specs/plans/ABILITY_CHECK.md §How to run (Timing)
@@ -121,6 +141,22 @@ fn print_timing(total: f64, modules: &[(&str, f64)], results: &[Outcome]) {
         println!("TIMING   {:.1} s {} {}", o.secs, o.id, o.name);
     }
     println!("TIMING RCON waits {rcon:.1} s ({:.0}% of total); fixed sleeps are not measured", rcon / total.max(0.001) * 100.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shuffle;
+
+    #[test]
+    fn a_seed_gives_one_order_and_keeps_every_item() {
+        let (mut a, mut b) = ((0..23).collect::<Vec<_>>(), (0..23).collect::<Vec<_>>());
+        shuffle(&mut a, 7);
+        shuffle(&mut b, 7);
+        assert_eq!(a, b);
+        assert_ne!(a, (0..23).collect::<Vec<_>>());
+        a.sort();
+        assert_eq!(a, (0..23).collect::<Vec<_>>());
+    }
 }
 
 fn main() {
@@ -234,10 +270,12 @@ fn main() {
     let mut aborted = false;
     let run_start = Instant::now();
     let mut modules: Vec<(&str, f64)> = Vec::new();
-    for (id, f) in all.into_iter().chain(shapes).chain(items) {
-        if !wants(id) {
-            continue;
-        }
+    let mut chosen: Vec<(&str, Scenario)> = all.into_iter().chain(shapes).chain(items).filter(|(id, _)| wants(id)).collect();
+    if let Some(seed) = args.shuffle {
+        shuffle(&mut chosen, seed);
+    }
+    let order = chosen.iter().map(|(id, _)| *id).collect::<Vec<_>>().join(",");
+    for (id, f) in chosen {
         // A panic (the bot stopped answering) becomes a failed row; the run then stops, since the
         // bot's state is unknown. Rows already printed stay printed.
         let module_start = Instant::now();
@@ -266,7 +304,8 @@ fn main() {
         cx.clean();
     }
     let failed = results.iter().filter(|o| !o.pass).count();
-    println!("{} scenario(s), {} passed, {failed} failed", results.len(), results.len() - failed);
+    let how = args.shuffle.map_or(String::new(), |seed| format!("; shuffle seed {seed}, order {order}"));
+    println!("{} scenario(s), {} passed, {failed} failed{how}", results.len(), results.len() - failed);
     print_timing(run_start.elapsed().as_secs_f64(), &modules, &results);
     // The bot thread never ends; leaving closes its socket.
     std::process::exit(if failed > 0 || results.is_empty() { 1 } else { 0 });
