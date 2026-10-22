@@ -500,6 +500,17 @@ pub struct DeadRefusal {
     pub count: u32,
 }
 
+// Spec: specs/F5-version-layer.md §4.6 (client refusals: elytra, riptide, item use effects)
+/// An input the fork refused to start because it does not model what follows (patch 34), with how
+/// many times. Nothing was sent. `kind` is "elytra_start", "riptide" or "use_effects". Mounting
+/// clicks are refused through the click's own result (`EntityUseRefusal::WouldMount`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputRefusal {
+    pub kind: String,
+    pub reason: &'static str,
+    pub count: u32,
+}
+
 // Spec: specs/F5-version-layer.md §4.6 (inputs of the client's own computations that Null does not model)
 /// What an unmodelled input changes. `Movement` moves the bot even with no input, so stopping the
 /// skill is not enough: the fork disconnects the bot at once and the host reports it
@@ -527,6 +538,8 @@ pub enum UnmodelledInput {
     Block { pos: BlockPos, id: String, kind: UnmodelledKind },
     /// The bot's box is outside or at the world border.
     WorldBorder { kind: UnmodelledKind },
+    /// The server set the bot's glide flag (shared flag 7); the client would glide by itself.
+    Gliding { kind: UnmodelledKind },
 }
 
 impl std::fmt::Display for UnmodelledInput {
@@ -537,6 +550,7 @@ impl std::fmt::Display for UnmodelledInput {
             UnmodelledInput::Passenger { .. } => write!(f, "passenger ({:?})", self.kind()),
             UnmodelledInput::Block { pos, id, .. } => write!(f, "block {id} at {},{},{} ({:?})", pos.x, pos.y, pos.z, self.kind()),
             UnmodelledInput::WorldBorder { .. } => write!(f, "world border ({:?})", self.kind()),
+            UnmodelledInput::Gliding { .. } => write!(f, "gliding ({:?})", self.kind()),
         }
     }
 }
@@ -560,7 +574,8 @@ impl UnmodelledInput {
             | UnmodelledInput::Effect { kind, .. }
             | UnmodelledInput::Passenger { kind }
             | UnmodelledInput::Block { kind, .. }
-            | UnmodelledInput::WorldBorder { kind } => *kind,
+            | UnmodelledInput::WorldBorder { kind }
+            | UnmodelledInput::Gliding { kind } => *kind,
         }
     }
 }

@@ -82,6 +82,10 @@ pub enum Op {
     Life(crate::skill_respawn::LifeOp),
     /// `gather` and the tree policy (A14), in `skill_gather`.
     Gather(crate::skill_gather::GatherOp),
+    /// Place prediction ops (A22), in `skill_predict`.
+    Predict(crate::skill_predict::PredOp),
+    /// Client refusal ops (A20), in `skill_refusals`.
+    Refuse(crate::skill_refusals::RefuseOp),
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +112,8 @@ pub enum Info {
     Life(crate::skill_respawn::LifeInfo),
     Mail(crate::skill_mailbox::MailInfo),
     Gather(Box<crate::skill_gather::GatherInfo>),
+    Predict(crate::skill_predict::PredInfo),
+    Refuse(crate::skill_refusals::RefuseInfo),
     /// Per block of a chain: (block, ticks from start to finish, outcome).
     Chain(Vec<(BlockPos, Option<u64>, BlockOutcome)>),
     /// The skill ended or was dropped with this op still open: it never finished (the host's safety stop).
@@ -131,6 +137,8 @@ pub struct RemoteSkill {
     latest: crate::skill_inventory::Latest,
     mail: crate::skill_mailbox::MailState,
     gather: crate::skill_gather::GatherState,
+    predict: crate::skill_predict::PredState,
+    refuse: crate::skill_refusals::RefuseState,
     last_step: Option<Instant>,
     keep: crate::skill_respawn::KeepState,
 }
@@ -176,7 +184,7 @@ impl Drop for RemoteSkill {
 
 impl RemoteSkill {
     pub fn new(ops: Arc<Mutex<Receiver<(u64, Op)>>>, out: Sender<Report>) -> Self {
-        Self { ops, out, cur: None, items: Default::default(), chain: Chain::default(), latest: Default::default(), mail: Default::default(), gather: Default::default(), last_step: None, keep: Default::default() }
+        Self { ops, out, cur: None, items: Default::default(), chain: Chain::default(), latest: Default::default(), mail: Default::default(), gather: Default::default(), predict: Default::default(), refuse: Default::default(), last_step: None, keep: Default::default() }
     }
 }
 
@@ -415,6 +423,8 @@ impl Skill for RemoteSkill {
             Op::Mail(io) => crate::skill_mailbox::step(io, age, v, c, &mut self.mail),
             Op::Life(io) => crate::skill_respawn::step(io, age, v, c, &mut self.latest),
             Op::Gather(io) => crate::skill_gather::step(io, age, v, c, &mut self.gather),
+            Op::Predict(io) => crate::skill_predict::step(io, age, v, c, &mut self.predict),
+            Op::Refuse(io) => crate::skill_refusals::step(io, age, v, c, &mut self.refuse),
             Op::Goto(pos) => {
                 if age == 0 {
                     c.goto(*pos, 0.0);

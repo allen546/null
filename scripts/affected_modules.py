@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MAP = ROOT / "crates/null-abilitycheck/run_map.toml"
-MODULES = "A1 A2 A3 A4 A2S A4S A4C A5 A6 A7 A8 A9 A10 A10E A11 A12 A13 A14 A15 A16 A17 AT".split()
+MODULES = "A1 A2 A3 A4 A2S A4S A4C A5 A6 A7 A8 A9 A10 A10E A11 A12 A13 A14 A15 A16 A17 A18 A19 A20 A22 AT".split()
 
 
 def git(repo, *args):

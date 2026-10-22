@@ -12,7 +12,7 @@
 # - A path that matches no entry and no ignore pattern makes the helper print `all` and name it.
 # - A pattern in `ignore` ending in `/` is a prefix; any other pattern is a glob over the whole path.
 #
-# Module ids (22): A1 A2 A3 A4 A2S A4S A4C A5 A6 A7 A8 A9 A10 A10E A11 A12 A13 A14 A15 A16 A17 AT.
+# Module ids (25): A1 A2 A3 A4 A2S A4S A4C A5 A6 A7 A8 A9 A10 A10E A11 A12 A13 A14 A15 A16 A17 A18 A19 A20 A22 AT.
 #
 # Reach in one line each (what the ops go through):
 #   block ops (Break, Place*, BreakAim, BreakSpam, Mail, Gather): block_actions, mining, interact/pick
@@ -144,6 +144,16 @@ modules = ["A14"]
 why = "GatherOp"
 
 [[entry]]
+path = "crates/null-abilitycheck/src/skill_refusals.rs"
+modules = ["A20"]
+why = "RefuseOp (air jump, use main hand, status)"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/skill_predict.rs"
+modules = ["A22"]
+why = "PredOp (pillar jump, bridge)"
+
+[[entry]]
 path = "crates/null-abilitycheck/src/scenarios_shapes.rs"
 modules = ["A2S", "A4S"]
 why = "own rows"
@@ -207,6 +217,26 @@ why = "own rows"
 path = "crates/null-abilitycheck/src/scenarios_envelope.rs"
 modules = ["A16", "A17"]
 why = "A17 rows, and disconnect_row and the spare accounts that A16 uses"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_interpolation.rs"
+modules = ["A18"]
+why = "own rows; the second bot is the A8 attacker account, which main.rs starts for A18 too"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_pushes.rs"
+modules = ["A19"]
+why = "own rows; the trace probe (PushProbe) is added for every bot but reads only when A19 turns it on"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_refusals.rs"
+modules = ["A20"]
+why = "own rows; the packet probe (RefusalProbe) is added for every bot but records only when A20 turns it on"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_prediction.rs"
+modules = ["A22"]
+why = "own rows; the cell probe (PredictionProbe) is added for every bot but reads only when A22 turns it on"
 
 [[entry]]
 path = "crates/null-abilitycheck/src/scenarios_tick.rs"
@@ -363,11 +393,26 @@ modules = ["A6", "A9"]
 why = "armour and equipment effects"
 
 [[entry]]
+path = "azalea:azalea-client/src/plugins/pushes.rs"
+modules = ["A8", "A10E", "A12", "A16", "A17", "A19"]
+why = "pushes from mobs, boats and other bots on the idle or walking bot: modules with a mob, golem, boat or second bot within a few blocks, and the spare bots that join at the world spawn"
+
+[[entry]]
 path = "azalea:azalea-client/src/plugins/client_chat/"
 modules = []
 why = "chat; no module sends or reads chat (Grim and server log checks are read from the log file)"
 
 # ---- Fork: azalea-entity, narrower ---------------------------------------------------------------
+
+[[entry]]
+path = "azalea:azalea-entity/src/push.rs"
+modules = ["A8", "A10E", "A12", "A16", "A17", "A19"]
+why = "push rules and PushRecord: as client/plugins/pushes.rs"
+
+[[entry]]
+path = "azalea:azalea-entity/src/teams.rs"
+modules = ["A19"]
+why = "scoreboard teams and the collision-rule table; only A19 sets teams"
 
 [[entry]]
 path = "azalea:azalea-entity/src/mining.rs"
@@ -515,3 +560,19 @@ modules = ["A4S", "AT"]
 [[history]]
 patch = 30
 modules = ["A12", "A16", "A17"]
+
+[[history]]
+patch = 31
+modules = ["A8", "A10E", "A18"]
+
+[[history]]
+patch = 32
+modules = ["A8", "A10E", "A12", "A16", "A17", "A19"]
+
+[[history]]
+patch = 33
+modules = ["A4", "A4C", "A4S", "A13", "A22"]
+
+[[history]]
+patch = 34
+modules = ["A10E", "A12", "A20"]

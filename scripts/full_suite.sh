@@ -11,7 +11,7 @@ abort() { echo "ABORT: $1" >&2; notify "aborted: $1"; exit 1; }
 [ $# -ge 1 ] && [[ "$1" != -* ]] || { echo "usage: $0 <prefix> [extra args]" >&2; exit 2; }
 prefix=$1; shift
 
-pgrep -x null-abilitycheck >/dev/null && abort "another null-abilitycheck is running"
+pgrep -f '^([^ ]*/)?null-abilitycheck( |$)' >/dev/null && abort "another null-abilitycheck is running"
 
 # name dir port rcon-port
 servers=("vanilla harness/skeleton-server 25567 25577" "grim harness/grim-server 25568 25578")

@@ -4,7 +4,7 @@
 //! consecutive ticks check that the fork settles every in-flight action by sequence (fork patch
 //! 25). Plan: specs/plans/ABILITY_CHECK.md.
 
-use null_bot_api::{ActionRecord, ActionState, BlockOutcome, Face, Vec3};
+use null_bot_api::{ActionRecord, ActionState, BlockAction, BlockOutcome, Face, Vec3};
 
 use crate::{
     scenarios::{Ctx, Outcome, pos, ticks_between_packets, vanilla_ticks},
@@ -208,6 +208,9 @@ fn two_places_consecutive_ticks(cx: &mut Ctx) -> Outcome {
         };
         let (d1, d2) = (cx.block_is(first, "dirt"), cx.block_is(second, "dirt"));
         let after = cx.count("dirt");
+        // A refusal says why (nothing was sent), so a late block update shows up as "crosshair does not hit it".
+        let why = |r: Option<BlockAction>| r.and_then(|b| b.reason.map(|w| (w, b.evidence.map(|e| e.hit))));
+        let (why1, why2) = (why(p1), why(p2));
         (
             p1.is_some_and(|p| p.outcome == BlockOutcome::Done)
                 && p2.is_some_and(|p| p.outcome == BlockOutcome::Done)
@@ -217,7 +220,7 @@ fn two_places_consecutive_ticks(cx: &mut Ctx) -> Outcome {
                 && pending
                 && after == before - 2,
             format!(
-                "first place {:?}, second place {:?} (want Done both, never Superseded); commands {gap:?} ticks apart (want 1); first result still pending when the second went out: {pending} (want true); server: dirt at the first spot {d1}, at the second {d2}, dirt count {before} -> {after} (want two fewer)",
+                "first place {:?}, second place {:?} (want Done both, never Superseded); commands {gap:?} ticks apart (want 1); first result still pending when the second went out: {pending} (want true); server: dirt at the first spot {d1}, at the second {d2}, dirt count {before} -> {after} (want two fewer); refusal reasons (reason, what the crosshair hit): first {why1:?}, second {why2:?}",
                 p1.map(|p| p.outcome),
                 p2.map(|p| p.outcome)
             ),

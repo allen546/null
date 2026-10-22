@@ -95,6 +95,12 @@ pub trait BotView {
     fn refused_while_dead(&self) -> Vec<DeadRefusal> {
         Vec::new()
     }
+    // Spec: specs/F5-version-layer.md §4.6 (client refusals: elytra, riptide, item use effects)
+    /// Inputs the fork refused to start because it does not model what follows, with counts
+    /// (patch 34). Never reset by a death.
+    fn refused_inputs(&self) -> Vec<InputRefusal> {
+        Vec::new()
+    }
     /// Game packets the client sent since the latest death began, by packet name, with counts.
     fn sent_while_dead(&self) -> Vec<(String, u32)> {
         Vec::new()

@@ -1,0 +1,1532 @@
+diff --git a/azalea-client/src/plugins/entity_actions.rs b/azalea-client/src/plugins/entity_actions.rs
+index 89648cb..0da97fc 100644
+--- a/azalea-client/src/plugins/entity_actions.rs
++++ b/azalea-client/src/plugins/entity_actions.rs
+@@ -38,7 +38,8 @@ use azalea_core::{
+ };
+ use azalea_entity::{
+     Attributes, Crouching, LookDirection, Physics, Position, dimensions::EntityDimensions,
+-    indexing::EntityIdIndex, inventory::Inventory, EntityKindComponent, view_vector,
++    indexing::EntityIdIndex, interpolation::PeerView, inventory::Inventory, EntityKindComponent,
++    view_vector,
+ };
+ use azalea_physics::{
+     PhysicsSystems, client_movement::ClientMovementState, collision::entity_collisions::{
+@@ -466,6 +467,7 @@ fn crosshair(
+     attrs: &Attributes,
+     aabb_query: &AabbQuery,
+     pickable: &MaybePickableEntityQuery,
++    peers: Option<&PeerView>,
+ ) -> HitResult {
+     pick(PickOpts {
+         source_entity: source,
+@@ -477,6 +479,7 @@ fn crosshair(
+         block_pick_range: attrs.block_interaction_range.calculate(),
+         aabb_query,
+         pickable_query: pickable,
++        peers,
+     })
+ }
+ 
+@@ -494,22 +497,34 @@ pub fn handle_look_at_entity_queued(
+         &Attributes,
+         &Physics,
+         &EntityIdIndex,
++        Option<&mut PeerView>,
+     )>,
+     boxes: Query<&LastBoundingBox>,
+     aabb_query: AabbQuery,
+     pickable: MaybePickableEntityQuery,
+ ) {
+-    for (entity, queued, mut look, world, position, dims, attrs, physics, ids) in &mut query {
++    for (entity, queued, mut look, world, position, dims, attrs, physics, ids, mut peers) in &mut query {
+         commands.entity(entity).remove::<LookAtEntityQueued>();
+         let Some(target) = ids.get_by_minecraft_entity(MinecraftEntityId(queued.entity_id)) else {
+             continue;
+         };
+-        let Ok(target_box) = boxes.get(target) else { continue };
++        // Patch 31: another bot is aimed at where this bot sees it, and stays in the view.
++        if let Some(view) = peers.as_deref_mut() {
++            view.set_aim_target(target);
++        }
++        let view = peers.as_deref();
++        let target_box = match view.and_then(|v| v.get(target)) {
++            Some(entry) => entry.bounding_box,
++            None => match boxes.get(target) {
++                Ok(b) => b.0,
++                Err(_) => continue,
++            },
++        };
+         let eye = position.up(dims.eye_height.into());
+         let world = world.shared.read();
+         let current = *look;
+-        let aim = aim_at_entity(eye, &target_box.0, current, target, |l| {
+-            crosshair(entity, l, eye, &physics.bounding_box, &world, attrs, &aabb_query, &pickable)
++        let aim = aim_at_entity(eye, &target_box, current, target, |l| {
++            crosshair(entity, l, eye, &physics.bounding_box, &world, attrs, &aabb_query, &pickable, view)
+         });
+         if let Some(aim) = aim {
+             look.update(aim);
+@@ -553,7 +568,7 @@ pub fn handle_use_entity_queued(
+         (&mut ClientMovementState, Option<&Crouching>, Has<AutoCrouchHold>),
+         &mut LookDirection,
+         (Has<OpenScreen>, Has<Mining>, Has<ItemInUse>, Has<DeathScreen>),
+-        (&Inventory, Option<&LocalGameMode>),
++        (&Inventory, Option<&LocalGameMode>, Option<&mut PeerView>),
+         &TicksConnected,
+     )>,
+     entities: EvidenceEntities,
+@@ -574,7 +589,7 @@ pub fn handle_use_entity_queued(
+         (mut mv, crouching, holding),
+         mut look,
+         (screen, mining, using, dead),
+-        (inv, game_mode),
++        (inv, game_mode, mut peers),
+         connected,
+     ) in &mut query
+     {
+@@ -593,13 +608,23 @@ pub fn handle_use_entity_queued(
+             refuse(&mut commands, entity, holding, &mut mv, &mut results, id, EntityUseRefusal::Spectator, None);
+             continue;
+         }
++        // Patch 31: another bot is clicked at the position and box this bot sees it at.
+         let Some((target, (kind, target_position, target_box))) = ids
+             .get_by_minecraft_entity(MinecraftEntityId(id))
+-            .and_then(|e| targets.get(e).ok().map(|(k, p, b)| (e, (k.0, **p, b.0))))
++            .and_then(|e| {
++                targets.get(e).ok().map(|(k, p, b)| match peers.as_deref().and_then(|v| v.get(e)) {
++                    Some(entry) => (e, (k.0, entry.position, entry.bounding_box)),
++                    None => (e, (k.0, **p, b.0)),
++                })
++            })
+         else {
+             refuse(&mut commands, entity, holding, &mut mv, &mut results, id, EntityUseRefusal::UnknownEntity, None);
+             continue;
+         };
++        if let Some(view) = peers.as_deref_mut() {
++            view.set_aim_target(target);
++        }
++        let view = peers.as_deref();
+         let secondary = is_crouching(&mv, crouching);
+         let plan = entity_use_plan(kind, secondary);
+         if plan == EntityUsePlan::Unsupported {
+@@ -608,7 +633,7 @@ pub fn handle_use_entity_queued(
+         }
+         let world = world.shared.read();
+         let eye = position.up(dims.eye_height.into());
+-        let hit = crosshair(entity, *look, eye, &physics.bounding_box, &world, attrs, &aabb_query, &pickable);
++        let hit = crosshair(entity, *look, eye, &physics.bounding_box, &world, attrs, &aabb_query, &pickable, view);
+         let range = attrs.entity_interaction_range.calculate();
+         let checked = check_entity_click(eye, view_vector(*look), range, target, &target_box, &hit);
+         // Patch 28: what this check saw, kept for a refusal. The pick above is fresh, so the hit
+@@ -643,7 +668,7 @@ pub fn handle_use_entity_queued(
+             let crouched_eye = position.up(CROUCH_EYE_HEIGHT);
+             let current = *look;
+             let aim = aim_at_entity(crouched_eye, &target_box, current, target, |l| {
+-                crosshair(entity, l, crouched_eye, &physics.bounding_box, &world, attrs, &aabb_query, &pickable)
++                crosshair(entity, l, crouched_eye, &physics.bounding_box, &world, attrs, &aabb_query, &pickable, view)
+             });
+             if let Some(aim) = aim {
+                 look.update(aim);
+diff --git a/azalea-client/src/plugins/interact/pick.rs b/azalea-client/src/plugins/interact/pick.rs
+index 5f8cb7b..204d1d6 100644
+--- a/azalea-client/src/plugins/interact/pick.rs
++++ b/azalea-client/src/plugins/interact/pick.rs
+@@ -7,6 +7,7 @@ use azalea_core::{
+ use azalea_entity::{
+     Attributes, Dead, LocalEntity, LookDirection, Physics, Position,
+     dimensions::EntityDimensions,
++    interpolation::PeerView,
+     metadata::{
+         AbstractArrow, AbstractBoat, AbstractLiving, AbstractMinecart, ArmorStand,
+         ArmorStandMarker, EndCrystal, FallingBlock, InGround, Interaction, ShulkerBullet, Tnt,
+@@ -60,6 +61,7 @@ pub fn update_hit_result_component(
+             &WorldName,
+             &Physics,
+             &Attributes,
++            Option<&PeerView>,
+         ),
+         With<LocalEntity>,
+     >,
+@@ -67,7 +69,7 @@ pub fn update_hit_result_component(
+     aabb_query: AabbQuery,
+     pickable_query: MaybePickableEntityQuery,
+ ) {
+-    for (entity, hit_result_ref, position, dimensions, look_direction, world_name, physics, attributes) in
++    for (entity, hit_result_ref, position, dimensions, look_direction, world_name, physics, attributes, peers) in
+         &mut query
+     {
+         let Some(hit_result) = cast_hit_result(
+@@ -78,6 +80,7 @@ pub fn update_hit_result_component(
+             world_name,
+             physics,
+             attributes,
++            peers,
+             &worlds,
+             &aabb_query,
+             &pickable_query,
+@@ -126,6 +129,7 @@ pub fn insert_initial_hit_result_component(
+             world_name,
+             physics,
+             attributes,
++            None,
+             &worlds,
+             &aabb_query,
+             &pickable_query,
+@@ -146,6 +150,7 @@ fn cast_hit_result(
+     world_name: &WorldName,
+     physics: &Physics,
+     attributes: &Attributes,
++    peers: Option<&PeerView>,
+     worlds: &Worlds,
+     aabb_query: &AabbQuery,
+     pickable_query: &MaybePickableEntityQuery,
+@@ -165,6 +170,7 @@ fn cast_hit_result(
+         block_pick_range,
+         aabb_query,
+         pickable_query,
++        peers,
+     }))
+ }
+ 
+@@ -201,6 +207,9 @@ pub struct PickOpts<'world, 'state, 'a, 'b, 'c> {
+     pub block_pick_range: f64,
+     pub aabb_query: &'a AabbQuery<'world, 'state, 'b>,
+     pub pickable_query: &'a MaybePickableEntityQuery<'world, 'state, 'c>,
++    /// The picking bot's view of the other bots (patch 31): a bot in it is picked at the
++    /// smoothed box this bot sees, not at the other bot's own.
++    pub peers: Option<&'a PeerView>,
+ }
+ 
+ /// Get the block or entity that a player would be looking at if their eyes were
+@@ -263,6 +272,7 @@ pub fn pick(opts: PickOpts<'_, '_, '_, '_, '_>) -> HitResult {
+         predicate: &is_pickable,
+         aabb: &pick_aabb,
+         aabb_query: opts.aabb_query,
++        peers: opts.peers,
+     });
+ 
+     if let Some(entity_hit_result) = entity_hit_result
+@@ -395,6 +405,7 @@ struct PickEntityOpts<'world, 'state, 'a, 'b> {
+     predicate: &'a dyn Fn(Entity) -> bool,
+     aabb: &'a Aabb,
+     aabb_query: &'a AabbQuery<'world, 'state, 'b>,
++    peers: Option<&'a PeerView>,
+ }
+ 
+ // port of getEntityHitResult
+@@ -402,13 +413,28 @@ fn pick_entity(opts: PickEntityOpts) -> Option<EntityHitResult> {
+     let mut picked_distance_squared = opts.pick_range_squared;
+     let mut result = None;
+ 
+-    for (candidate, candidate_aabb) in get_entities(
++    // Patch 31: a bot in the picking bot's view is a candidate at the box in that view; the world
++    // lookup skips it (it would give the other bot's own box).
++    let in_view = |e: Entity| opts.peers.is_some_and(|v| v.contains(e));
++    let world_predicate = |e: Entity| !in_view(e) && (opts.predicate)(e);
++    let mut candidates = get_entities(
+         opts.world,
+         Some(opts.source_entity),
+         opts.aabb,
+-        opts.predicate,
++        &world_predicate,
+         opts.aabb_query,
+-    ) {
++    );
++    if let Some(view) = opts.peers {
++        for (peer, entry) in view.iter() {
++            if peer != opts.source_entity
++                && (opts.predicate)(peer)
++                && opts.aabb.intersects_aabb(&entry.bounding_box)
++            {
++                candidates.push((peer, entry.bounding_box));
++            }
++        }
++    }
++    for (candidate, candidate_aabb) in candidates {
+         // TODO: if the entity is "REDIRECTABLE_PROJECTILE" then this should be 1.0.
+         // azalea needs support for entity tags first for this to be possible. see
+         // getPickRadius in decompiled minecraft source
+diff --git a/azalea-client/src/plugins/interpolation.rs b/azalea-client/src/plugins/interpolation.rs
+new file mode 100644
+index 0000000..547e4aa
+--- /dev/null
++++ b/azalea-client/src/plugins/interpolation.rs
+@@ -0,0 +1,38 @@
++//! Interpolation of other entities and the bot-to-bot view (fork patch 31).
++//!
++//! Vanilla 1.21.11: `Minecraft#tick` applies the tick's packets, casts the crosshair ray
++//! (`GameRenderer#pick`), handles the clicks (`handleKeybinds`), and only then ticks the entities
++//! (`ClientLevel#tickEntities`), where each entity's `InterpolationHandler#interpolate` runs. So a
++//! click in the tick a packet arrives is judged against the positions from before that packet's
++//! first step, and the next tick's ray sees the moved box. The systems here run after the
++//! physics set (the end of the bot's own tick) for that reason; the per-bot tick order among
++//! entities is patch 32.
++//!
++//! Spec: specs/F5-version-layer.md §4.6 (What Null computes), specs/B1-movement.md §4.2
++
++use azalea_core::tick::GameTick;
++use azalea_entity::interpolation::{interpolate_entities, update_peer_views};
++use azalea_physics::{PhysicsSystems, collision::entity_collisions::update_last_bounding_box};
++use bevy_app::{App, Plugin};
++use bevy_ecs::prelude::*;
++
++pub struct InterpolationPlugin;
++impl Plugin for InterpolationPlugin {
++    fn build(&self, app: &mut App) {
++        app.add_systems(
++            GameTick,
++            (
++                interpolate_entities,
++                update_peer_views,
++                // `LastBoundingBox` mirrors `Physics::bounding_box`; refresh it now, not in the
++                // next `Update`, so the box does not lag a tick behind the position.
++                update_last_bounding_box,
++            )
++                .chain()
++                .after(PhysicsSystems)
++                // Both read or write `Physics`, which these systems also touch.
++                .after(crate::attack::handle_attack_queued)
++                .after(crate::movement::send_position),
++        );
++    }
++}
+diff --git a/azalea-client/src/plugins/mod.rs b/azalea-client/src/plugins/mod.rs
+index 14144bf..2925f57 100644
+--- a/azalea-client/src/plugins/mod.rs
++++ b/azalea-client/src/plugins/mod.rs
+@@ -15,6 +15,7 @@ pub mod connection;
+ pub mod cookies;
+ pub mod disconnect;
+ pub mod interact;
++pub mod interpolation;
+ pub mod item_use;
+ pub mod inventory;
+ pub mod join;
+@@ -58,6 +59,7 @@ impl PluginGroup for DefaultPlugins {
+             .add(entity_actions::EntityActionsPlugin)
+             .add(attack::AttackPlugin)
+             .add(attackers::AttackersPlugin)
++            .add(interpolation::InterpolationPlugin)
+             .add(item_use::ItemUsePlugin)
+             .add(chunks::ChunksPlugin)
+             .add(block_update::BlockUpdatePlugin)
+diff --git a/azalea-client/src/plugins/packet/game/mod.rs b/azalea-client/src/plugins/packet/game/mod.rs
+index 05a7718..47cf6f1 100644
+--- a/azalea-client/src/plugins/packet/game/mod.rs
++++ b/azalea-client/src/plugins/packet/game/mod.rs
+@@ -9,6 +9,7 @@ use azalea_core::{
+     position::{ChunkPos, Vec3},
+ };
+ use azalea_entity::{
++    interpolation::{PeerEntry, PeerView, SNAP_DISTANCE_SQ, apply_server_pose},
+     unmodelled::{RidingVehicle, WorldBorderState},
+     Attributes, Dead, EntityBundle, EntityKindComponent, HasClientLoaded, LoadedBy, LocalEntity, LookDirection,
+     Physics, PlayerAbilities, Position,
+@@ -207,6 +208,29 @@ pub struct GamePacketHandler<'a> {
+     pub player: Entity,
+ }
+ impl GamePacketHandler<'_> {
++    /// Patch 31: a packet about another bot. The bot's own client owns its position, so the packet
++    /// feeds this bot's smoothed view of it instead (`PeerView`). Returns true when the target is
++    /// another bot (handled here, even if this bot keeps no view of it: it is out of the radius).
++    // Spec: specs/F5-version-layer.md §4.6 (What Null computes)
++    fn for_peer(&mut self, id: MinecraftEntityId, f: impl FnOnce(&mut PeerEntry)) -> bool {
++        let Some(target) = self
++            .ecs
++            .get::<EntityIdIndex>(self.player)
++            .and_then(|ids| ids.get_by_minecraft_entity(id))
++        else {
++            return false;
++        };
++        if target == self.player || self.ecs.get::<LocalEntity>(target).is_none() {
++            return false;
++        }
++        if let Some(mut view) = self.ecs.get_mut::<PeerView>(self.player)
++            && let Some(entry) = view.get_mut(target)
++        {
++            f(entry);
++        }
++        true
++    }
++
+     pub fn login(&mut self, p: &ClientboundLogin) {
+         debug!("Got login packet");
+ 
+@@ -592,6 +616,7 @@ impl GamePacketHandler<'_> {
+             Res<Worlds>,
+             ResMut<EntityUuidIndex>,
+             Query<(Option<&UpdatedBy>, Has<LocalEntity>)>,
++            Query<&mut PeerView>,
+         )>(
+             self.ecs,
+             |(
+@@ -602,6 +627,7 @@ impl GamePacketHandler<'_> {
+                 worlds,
+                 mut entity_uuid_index,
+                 updated_by_query,
++                mut peer_views,
+             )| {
+                 let (mut entity_id_index, world_name, tab_list) =
+                     query.get_mut(self.player).unwrap();
+@@ -640,13 +666,23 @@ impl GamePacketHandler<'_> {
+                     // Never for a local entity: another bot in our swarm owns its own position.
+                     let (updated_by, local) = updated_by_query.get(ecs_entity).unwrap_or((None, true));
+                     let driven = updated_by.is_some_and(|u| u.0 != self.player && loaded_by.contains(&u.0));
+-                    if !driven && !local {
++                    if local && ecs_entity != self.player {
++                        // Patch 31: another bot. Its own client owns its position; this bot's
++                        // view of it takes the packet's (`recreateFromPacket`: set at once).
++                        let look: LookDirection =
++                            CompactLookDirection { y_rot: p.y_rot, x_rot: p.x_rot }.into();
++                        if let Ok(mut view) = peer_views.get_mut(self.player)
++                            && let Some(entry) = view.get_mut(ecs_entity)
++                        {
++                            entry.on_add(p.position, (look.y_rot(), look.x_rot()));
++                        }
++                    } else if !driven && !local {
+                         let pos = p.position;
+                         commands.entity(ecs_entity).insert(UpdatedBy(self.player));
+                         commands.entity(ecs_entity).queue(move |mut e: EntityWorldMut| {
+-                            if let Some(mut position) = e.get_mut::<Position>() {
+-                                **position = pos;
+-                            }
++                            // Patch 31: `recreateFromPacket` sets the position at once and ends
++                            // any interpolation run.
++                            apply_server_pose(&mut e, Some(pos), None, true);
+                             if let Some(mut physics) = e.get_mut::<Physics>() {
+                                 physics.vec_delta_codec.set_base(pos);
+                                 physics.set_old_pos(Position::new(pos));
+@@ -896,9 +932,32 @@ impl GamePacketHandler<'_> {
+         });
+     }
+ 
++    // Patch 31, `handleTeleportEntity` / `setValuesFromPositionPacket`: a non-bot entity moves
++    // toward the new position by interpolation (a jump over 64 blocks snaps); a relative packet
++    // is applied to the entity's current (smoothed) position, as vanilla does.
++    // Spec: specs/F5-version-layer.md §4.6 (What Null computes)
+     pub fn teleport_entity(&mut self, p: &ClientboundTeleportEntity) {
+         debug!("Got teleport entity packet {p:?}");
+ 
++        let handled = self.for_peer(p.id, |entry| {
++            let r = &p.relative;
++            let rel = |base: f64, relative: bool, change: f64| if relative { base + change } else { change };
++            let pos = Vec3::new(
++                rel(entry.position.x, r.x, p.change.pos.x),
++                rel(entry.position.y, r.y, p.change.pos.y),
++                rel(entry.position.z, r.z, p.change.pos.z),
++            );
++            let (y_rot, x_rot) = entry.rot();
++            let look = LookDirection::new(
++                rel(y_rot as f64, r.y_rot, p.change.look_direction.y_rot() as f64) as f32,
++                rel(x_rot as f64, r.x_rot, p.change.look_direction.x_rot() as f64) as f32,
++            );
++            entry.on_teleport(pos, (look.y_rot(), look.x_rot()));
++        });
++        if handled {
++            return;
++        }
++
+         as_system::<(Commands, Query<(&EntityIdIndex, &WorldHolder)>)>(
+             self.ecs,
+             |(mut commands, query)| {
+@@ -915,22 +974,16 @@ impl GamePacketHandler<'_> {
+                 commands.entity(entity).queue(RelativeEntityUpdate::new(
+                     world_holder.partial.clone(),
+                     move |entity| {
+-                        let entity_id = entity.id();
+-                        entity.world_scope(move |world| {
+-                            let mut query =
+-                                world.query::<(&mut Physics, &mut LookDirection, &mut Position)>();
+-                            let (mut physics, mut look_direction, mut position) =
+-                                query.get_mut(world, entity_id).unwrap();
+-                            let old_position = *position;
+-                            relative.apply(
+-                                &change,
+-                                &mut position,
+-                                &mut look_direction,
+-                                &mut physics,
+-                            );
+-                            // old_pos is set to the current position when we're teleported
+-                            physics.set_old_pos(old_position);
+-                        });
++                        let Some(old_position) = entity.get::<Position>().copied() else { return };
++                        let Some(mut look_direction) = entity.get::<LookDirection>().copied() else { return };
++                        // Apply the packet to copies, then move toward the result.
++                        let mut target = old_position;
++                        let Some(mut physics) = entity.get_mut::<Physics>() else { return };
++                        relative.apply(&change, &mut target, &mut look_direction, &mut physics);
++                        // old_pos is set to the current position when we're teleported
++                        physics.set_old_pos(old_position);
++                        let far = (*old_position).distance_squared_to(*target) > SNAP_DISTANCE_SQ;
++                        apply_server_pose(entity, Some(*target), Some(look_direction), far);
+                     },
+                 ));
+             },
+@@ -944,6 +997,9 @@ impl GamePacketHandler<'_> {
+     pub fn rotate_head(&mut self, _p: &ClientboundRotateHead) {}
+ 
+     pub fn move_entity_pos(&mut self, p: &ClientboundMoveEntityPos) {
++        if self.for_peer(p.entity_id, |e| e.on_move(Some(&p.delta), None)) {
++            return;
++        }
+         as_system::<(
+             Commands,
+             Query<(&EntityIdIndex, &WorldHolder)>,
+@@ -969,6 +1025,9 @@ impl GamePacketHandler<'_> {
+         );
+     }
+     pub fn move_entity_pos_rot(&mut self, p: &ClientboundMoveEntityPosRot) {
++        if self.for_peer(p.entity_id, |e| e.on_move(Some(&p.delta), Some({ let l = LookDirection::from(p.look_direction); (l.y_rot(), l.x_rot()) }))) {
++            return;
++        }
+         as_system::<(
+             Commands,
+             Query<(&EntityIdIndex, &WorldHolder)>,
+@@ -994,6 +1053,9 @@ impl GamePacketHandler<'_> {
+         );
+     }
+     pub fn move_entity_rot(&mut self, p: &ClientboundMoveEntityRot) {
++        if self.for_peer(p.entity_id, |e| e.on_move(None, Some({ let l = LookDirection::from(p.look_direction); (l.y_rot(), l.x_rot()) }))) {
++            return;
++        }
+         as_system::<(
+             Commands,
+             Query<(&EntityIdIndex, &WorldHolder)>,
+@@ -1684,14 +1746,21 @@ impl GamePacketHandler<'_> {
+         );
+     }
+ 
++    // Patch 31, `handleEntityPositionSync`: sets the codec base, then a non-bot entity moves
++    // toward the position by interpolation (a jump over 64 blocks snaps). The fork treats every
++    // entity as ticking, so the "not in the tick list: snap" case is not modelled.
++    // Spec: specs/F5-version-layer.md §4.6 (What Null computes)
+     pub fn entity_position_sync(&mut self, p: &ClientboundEntityPositionSync) {
++        let look = p.values.look_direction;
++        if self.for_peer(p.id, |e| e.on_position_sync(p.values.pos, (look.y_rot(), look.x_rot()))) {
++            return;
++        }
+         as_system::<(
+             Commands,
+             Query<(&EntityIdIndex, &WorldHolder)>,
+             Query<(
+                 &mut Physics,
+-                &mut Position,
+-                &mut LookDirection,
++                &Position,
+                 Option<&LocalEntity>,
+             )>,
+             EntityUpdateQuery,
+@@ -1718,9 +1787,7 @@ impl GamePacketHandler<'_> {
+                     return;
+                 }
+ 
+-                let Ok((mut physics, mut position, mut look_direction, local_entity)) =
+-                    entity_query.get_mut(entity)
+-                else {
++                let Ok((mut physics, position, local_entity)) = entity_query.get_mut(entity) else {
+                     return;
+                 };
+ 
+@@ -1734,13 +1801,10 @@ impl GamePacketHandler<'_> {
+ 
+                 physics.set_on_ground(new_on_ground);
+ 
+-                if **position != new_position {
+-                    **position = new_position;
+-                }
+-
+-                if *look_direction != new_look_direction {
+-                    *look_direction = new_look_direction;
+-                }
++                let far = (**position).distance_squared_to(new_position) > SNAP_DISTANCE_SQ;
++                commands.entity(entity).queue(move |mut e: EntityWorldMut| {
++                    apply_server_pose(&mut e, Some(new_position), Some(new_look_direction), far);
++                });
+             },
+         );
+     }
+@@ -1930,8 +1994,7 @@ struct MoveEntity {
+     pub on_ground: bool,
+ }
+ 
+-type MoveEntityQuery<'world, 'state, 'a> =
+-    Query<'world, 'state, (&'a mut Physics, &'a mut Position, &'a mut LookDirection)>;
++type MoveEntityQuery<'world, 'state, 'a> = Query<'world, 'state, &'a mut Physics>;
+ 
+ fn move_entity(
+     player_entity: Entity,
+@@ -1952,7 +2015,7 @@ fn move_entity(
+         return;
+     };
+ 
+-    let Ok((mut physics, mut position, mut look_direction)) = entity_query.get_mut(entity) else {
++    let Ok(mut physics) = entity_query.get_mut(entity) else {
+         debug!("Got move entity packet for entity with missing components {entity_id}");
+         return;
+     };
+@@ -1966,21 +2029,18 @@ fn move_entity(
+         return;
+     }
+ 
++    // Patch 31, `handleMoveEntity`: decode against the codec base (the last decoded target, not
++    // the smoothed position), then `moveOrInterpolateTo`.
++    let mut new_position = None;
+     if let Some(new_delta) = p.delta {
+-        let new_position = physics.vec_delta_codec.decode(&new_delta);
+-        physics.vec_delta_codec.set_base(new_position);
+-
+-        if new_position != **position {
+-            **position = new_position;
+-        }
++        let decoded = physics.vec_delta_codec.decode(&new_delta);
++        physics.vec_delta_codec.set_base(decoded);
++        new_position = Some(decoded);
+     }
+-
+-    if let Some(new_look_direction) = p.look_direction {
+-        let new_look_direction = new_look_direction.into();
+-        if new_look_direction != *look_direction {
+-            *look_direction = new_look_direction;
+-        }
+-    }
+-
++    let new_look = p.look_direction.map(LookDirection::from);
+     physics.set_on_ground(p.on_ground);
++    commands.entity(entity).queue(move |mut e: EntityWorldMut| {
++        apply_server_pose(&mut e, new_position, new_look, false);
++    });
+ }
++
+diff --git a/azalea-client/tests/simulation/entity_interpolation.rs b/azalea-client/tests/simulation/entity_interpolation.rs
+new file mode 100644
+index 0000000..1242ac7
+--- /dev/null
++++ b/azalea-client/tests/simulation/entity_interpolation.rs
+@@ -0,0 +1,290 @@
++use azalea_client::test_utils::prelude::*;
++use azalea_core::{
++    delta::PositionDelta8,
++    entity_id::MinecraftEntityId,
++    position::{ChunkPos, Vec3},
++};
++use azalea_entity::{
++    LocalEntity, Position,
++    indexing::EntityIdIndex,
++    interpolation::{PEER_CAP, PeerView},
++};
++use azalea_physics::collision::entity_collisions::LastBoundingBox;
++use azalea_protocol::{
++    common::movements::{PositionMoveRotation, RelativeMovements},
++    packets::{
++        ConnectionProtocol,
++        game::{ClientboundMoveEntityPos, ClientboundTeleportEntity},
++    },
++};
++use azalea_registry::builtin::EntityKind;
++use bevy_ecs::prelude::*;
++use uuid::Uuid;
++
++fn setup() -> Simulation {
++    let mut simulation = Simulation::new(ConnectionProtocol::Game);
++    simulation.receive_packet(default_login_packet());
++    simulation.receive_packet(make_basic_empty_chunk(ChunkPos::new(0, 0), (384 + 64) / 16));
++    simulation.tick();
++    simulation
++}
++
++fn add(simulation: &mut Simulation, kind: EntityKind, id: i32, pos: impl Into<Vec3>) -> Entity {
++    let mut p = make_basic_add_entity(kind, id, pos);
++    p.uuid = Uuid::from_u128(10_000 + id as u128);
++    simulation.receive_packet(p);
++    simulation.tick();
++    entity_of(simulation, id)
++}
++
++fn entity_of(simulation: &Simulation, id: i32) -> Entity {
++    let mut found = None;
++    simulation.with_component::<EntityIdIndex>(|ids| {
++        found = ids.get_by_minecraft_entity(MinecraftEntityId(id));
++    });
++    found.expect("entity is loaded")
++}
++
++fn x_of(simulation: &Simulation, e: Entity) -> f64 {
++    simulation.app.world().get::<Position>(e).unwrap().x
++}
++
++fn teleport(simulation: &mut Simulation, id: i32, pos: Vec3) {
++    simulation.receive_packet(ClientboundTeleportEntity {
++        id: MinecraftEntityId(id),
++        change: PositionMoveRotation {
++            pos,
++            delta: Vec3::ZERO,
++            look_direction: Default::default(),
++        },
++        relative: RelativeMovements::all_absolute(),
++        on_ground: true,
++    });
++}
++
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes: interpolation of other entities)
++#[test]
++fn test_entity_moves_in_three_steps_and_its_box_follows() {
++    let _lock = init();
++    let mut simulation = setup();
++    let cow = add(&mut simulation, EntityKind::Cow, 123, (0.5, 64., 0.5));
++
++    teleport(&mut simulation, 123, Vec3::new(3.5, 64., 0.5));
++    simulation.tick();
++    // 1/3 of the gap in the tick the packet arrives, and the box moved with it in the same tick.
++    assert!((x_of(&simulation, cow) - 1.5).abs() < 1e-9);
++    let centre = |s: &Simulation| {
++        let b = &s.app.world().get::<LastBoundingBox>(cow).unwrap().0;
++        (b.min.x + b.max.x) / 2.
++    };
++    assert!((centre(&simulation) - 1.5).abs() < 1e-6, "box centre {}", centre(&simulation));
++
++    // The same target again is ignored: the run does not restart.
++    teleport(&mut simulation, 123, Vec3::new(3.5, 64., 0.5));
++    simulation.tick();
++    assert!((x_of(&simulation, cow) - 2.5).abs() < 1e-9);
++    simulation.tick();
++    assert!((x_of(&simulation, cow) - 3.5).abs() < 1e-9);
++    assert!((centre(&simulation) - 3.5).abs() < 1e-6);
++    // Then it stays.
++    simulation.tick();
++    assert!((x_of(&simulation, cow) - 3.5).abs() < 1e-9);
++}
++
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes: interpolation of other entities)
++#[test]
++fn test_relative_move_decodes_against_the_target_not_the_smoothed_position() {
++    let _lock = init();
++    let mut simulation = setup();
++    let cow = add(&mut simulation, EntityKind::Cow, 123, (0.5, 64., 0.5));
++
++    // 3 blocks, then 3 more before the run ends: the second delta is from the first target.
++    simulation.receive_packet(ClientboundMoveEntityPos {
++        entity_id: MinecraftEntityId(123),
++        delta: PositionDelta8 { xa: 12288, ya: 0, za: 0 },
++        on_ground: true,
++    });
++    simulation.tick();
++    assert!((x_of(&simulation, cow) - 1.5).abs() < 1e-9);
++    simulation.receive_packet(ClientboundMoveEntityPos {
++        entity_id: MinecraftEntityId(123),
++        delta: PositionDelta8 { xa: 12288, ya: 0, za: 0 },
++        on_ground: true,
++    });
++    simulation.tick();
++    // Target 6.5 from 1.5, three fresh steps: +5/3.
++    assert!((x_of(&simulation, cow) - (1.5 + 5.0 / 3.0)).abs() < 1e-9);
++}
++
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes: interpolation of other entities)
++#[test]
++fn test_snaps_over_64_blocks_on_add_and_by_kind() {
++    let _lock = init();
++    let mut simulation = setup();
++    let cow = add(&mut simulation, EntityKind::Cow, 123, (0.5, 64., 0.5));
++
++    // Over 64 blocks: at once.
++    teleport(&mut simulation, 123, Vec3::new(100.5, 64., 0.5));
++    simulation.update();
++    assert_eq!(x_of(&simulation, cow), 100.5);
++
++    // An add packet for an entity already known sets the position at once and ends a run.
++    teleport(&mut simulation, 123, Vec3::new(103.5, 64., 0.5));
++    simulation.tick();
++    assert!((x_of(&simulation, cow) - 101.5).abs() < 1e-9);
++    let mut p = make_basic_add_entity(EntityKind::Cow, 123, (50.5, 64., 0.5));
++    p.uuid = Uuid::from_u128(10_123);
++    simulation.receive_packet(p);
++    simulation.tick();
++    assert_eq!(x_of(&simulation, cow), 50.5);
++    simulation.tick();
++    assert_eq!(x_of(&simulation, cow), 50.5);
++
++    // The per-kind table: a handler of 3 steps for living entities (not the shulker), boats,
++    // experience orbs, fishing hooks and minecarts; none for items, projectiles and displays.
++    let table = [
++        (EntityKind::Cow, true),
++        (EntityKind::OakBoat, true),
++        (EntityKind::ExperienceOrb, true),
++        (EntityKind::FishingBobber, true),
++        (EntityKind::Minecart, true),
++        (EntityKind::Shulker, false),
++        (EntityKind::Item, false),
++        (EntityKind::Arrow, false),
++        (EntityKind::TextDisplay, false),
++    ];
++    for (i, (kind, smooth)) in table.into_iter().enumerate() {
++        let id = 200 + i as i32;
++        let e = add(&mut simulation, kind, id, (0.5, 64., 0.5));
++        teleport(&mut simulation, id, Vec3::new(3.5, 64., 0.5));
++        simulation.tick();
++        let x = x_of(&simulation, e);
++        let want = if smooth { 1.5 } else { 3.5 };
++        assert!((x - want).abs() < 1e-9, "{kind:?}: x {x}, wanted {want}");
++    }
++}
++
++// Add players and mark them as bots (local entities). A bot falls under its own physics in this
++// empty world, so tests add them in one tick and keep the ticks after that few.
++fn make_bots(simulation: &mut Simulation, bots: &[(i32, Vec3)]) -> Vec<Entity> {
++    let origin = *simulation.component::<Position>();
++    for (id, offset) in bots {
++        let mut p = make_basic_add_entity(EntityKind::Player, *id, origin + *offset);
++        p.uuid = Uuid::from_u128(10_000 + *id as u128);
++        simulation.receive_packet(p);
++    }
++    simulation.tick();
++    let found: Vec<Entity> = bots.iter().map(|(id, _)| entity_of(simulation, *id)).collect();
++    for e in &found {
++        simulation.app.world_mut().entity_mut(*e).insert(LocalEntity);
++    }
++    found
++}
++
++fn view_len(simulation: &Simulation) -> usize {
++    let mut n = 0;
++    simulation.with_component::<PeerView>(|v| n = v.len());
++    n
++}
++
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes: the bot-to-bot view)
++#[test]
++fn test_bot_to_bot_view_is_built_from_packets_and_does_not_touch_the_other_bot() {
++    let _lock = init();
++    let mut simulation = setup();
++    let bot = make_bots(&mut simulation, &[(300, Vec3::new(2., 0., 0.))])[0];
++    simulation.tick();
++    let truth = *simulation.app.world().get::<Position>(bot).unwrap();
++
++    simulation.with_component::<PeerView>(|v| {
++        assert_eq!(v.len(), 1);
++        // Seeded from the other bot's simulated position, rounded as the server's packets round.
++        assert!((v.get(bot).unwrap().position.x - truth.x).abs() < 1e-3);
++    });
++
++    // The server moves it 3 blocks: this bot's view moves in steps, the other bot's own position
++    // (written by its own client) is not touched by the packet.
++    let start = simulation.with_peer(bot);
++    teleport(&mut simulation, 300, start + Vec3::new(3., 0., 0.));
++    for want in [1.0, 2.0, 3.0] {
++        simulation.tick();
++        let x = simulation.with_peer(bot).x;
++        assert!((x - (start.x + want)).abs() < 1e-3, "view x {x}, wanted {}", start.x + want);
++    }
++}
++
++trait WithPeer {
++    fn with_peer(&self, bot: Entity) -> Vec3;
++}
++impl WithPeer for Simulation {
++    fn with_peer(&self, bot: Entity) -> Vec3 {
++        let mut p = Vec3::ZERO;
++        self.with_component::<PeerView>(|v| p = v.get(bot).expect("in the view").position);
++        p
++    }
++}
++
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes: the bot-to-bot view)
++#[test]
++fn test_bot_view_radius_cap_aim_target_and_counter() {
++    let _lock = init();
++    let mut simulation = setup();
++
++    // A bot 20 blocks away is not kept.
++    let far = make_bots(&mut simulation, &[(400, Vec3::new(20., 0., 0.))])[0];
++    simulation.tick();
++    assert_eq!(view_len(&simulation), 0);
++
++    // It comes within 16 blocks and is kept; going out drops it.
++    let here = *simulation.component::<Position>();
++    let far_now = *simulation.app.world().get::<Position>(far).unwrap();
++    simulation.app.world_mut().entity_mut(far).insert(Position::new(Vec3::new(here.x + 10., far_now.y, far_now.z)));
++    simulation.tick();
++    assert_eq!(view_len(&simulation), 1);
++    simulation.app.world_mut().entity_mut(far).insert(Position::new(Vec3::new(here.x + 17., far_now.y, far_now.z)));
++    simulation.tick();
++    assert_eq!(view_len(&simulation), 0);
++
++    // 40 bots within 15 blocks: the view holds the 32 nearest and the aim target.
++    let specs: Vec<(i32, Vec3)> =
++        (0..40).map(|i| (500 + i, Vec3::new(1.0 + i as f64 * 0.35, 0., 0.))).collect();
++    let bots = make_bots(&mut simulation, &specs);
++    let farthest = *bots.last().unwrap();
++    simulation.with_component_mut::<PeerView>(|v| v.set_aim_target(farthest));
++    simulation.tick();
++    simulation.with_component::<PeerView>(|v| {
++        assert_eq!(v.len(), PEER_CAP);
++        assert_eq!(v.peak(), PEER_CAP);
++        assert_eq!(v.cap_hits(), 1, "the cap is logged once per episode");
++        assert!(v.contains(farthest), "the aim target is kept");
++        assert!(v.contains(bots[0]), "the nearest is kept");
++        assert!(!v.contains(bots[38]), "a far one is out");
++    });
++}
++
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes: the crosshair ray reads the observer's view)
++#[test]
++fn test_ray_hits_a_bot_where_this_bot_sees_it() {
++    use azalea_client::interact::pick::HitResultComponent;
++    use azalea_core::hit_result::HitResult;
++
++    let _lock = init();
++    let mut simulation = setup();
++    let bot = make_bots(&mut simulation, &[(600, Vec3::new(0., 0., 3.))])[0];
++    simulation.tick();
++    let hit = |s: &Simulation| s.component::<HitResultComponent>();
++    assert!(matches!(*hit(&simulation), HitResult::Entity(ref r) if r.entity == bot), "straight ahead");
++
++    // The server moves the bot 5 blocks sideways; its own position (and box) stay, but this bot
++    // sees it 1/3 of the way there, which is off the ray.
++    let at = simulation.with_peer(bot);
++    teleport(&mut simulation, 600, at + Vec3::new(5., 0., 0.));
++    simulation.tick();
++    simulation.tick();
++    let truth = simulation.app.world().get::<Position>(bot).unwrap().x;
++    assert!((truth - (*simulation.component::<Position>()).x).abs() < 1e-6, "the bot itself did not move");
++    assert!(
++        !matches!(*hit(&simulation), HitResult::Entity(ref r) if r.entity == bot),
++        "the ray must not hit the bot at its own position"
++    );
++}
+diff --git a/azalea-client/tests/simulation/mod.rs b/azalea-client/tests/simulation/mod.rs
+index d6ffb45..564e923 100644
+--- a/azalea-client/tests/simulation/mod.rs
++++ b/azalea-client/tests/simulation/mod.rs
+@@ -10,6 +10,7 @@ mod correct_sneak_movement;
+ mod correct_sprint_sneak_movement;
+ mod despawn_entities_when_changing_dimension;
+ mod enchantments;
++mod entity_interpolation;
+ mod fast_login;
+ mod item_use_hold_and_release;
+ mod login_to_dimension_with_same_name;
+diff --git a/azalea-entity/src/interpolation.rs b/azalea-entity/src/interpolation.rs
+new file mode 100644
+index 0000000..6462373
+--- /dev/null
++++ b/azalea-entity/src/interpolation.rs
+@@ -0,0 +1,582 @@
++//! The client's interpolation of other entities' positions, and the bot-to-bot view.
++//!
++//! Null fork, patch 31. A vanilla client does not put another entity at the position the server
++//! sent. It moves the entity toward that position over a few ticks. Pushes, the crosshair ray and
++//! attack reach all read the smoothed position, so the fork computes it as vanilla does.
++//!
++//! Vanilla 1.21.11, Mojang names: `InterpolationHandler#interpolateTo` and `#interpolate`;
++//! `Entity#moveOrInterpolateTo`; `ClientPacketListener#handleMoveEntity`,
++//! `#handleEntityPositionSync`, `#handleTeleportEntity` (`setValuesFromPositionPacket`) and
++//! `#handleAddEntity`. Only the position is smoothed: no client decision reads another entity's
++//! rotation (Allen, 2026-10-20), so a rotation is set at once and kept here only for the "same
++//! target" test.
++//!
++//! Grim checks this must stay clean for: `Reach` and `Hitboxes` (the server's own boxes, widened
++//! by the interpolation range) and `MovementTicker#handleEntityCollisions`.
++//!
++//! Spec: specs/F5-version-layer.md §4.6 (What Null computes), specs/B1-movement.md §4.2
++
++use std::collections::HashMap;
++
++use azalea_core::{aabb::Aabb, delta::PositionDelta8, position::{ChunkPos, Vec3}};
++use azalea_world::{WorldName, Worlds};
++use bevy_ecs::prelude::*;
++use tracing::info;
++
++use crate::{
++    LocalEntity, LookDirection, Physics, Position,
++    dimensions::EntityDimensions,
++    indexing::EntityIdIndex,
++    metadata::{
++        AbstractBoat, AbstractLiving, AbstractMinecart, ExperienceOrb, FishingBobber, Shulker,
++    },
++    vec_delta_codec::{VecDeltaCodec, quantise},
++};
++
++/// `InterpolationHandler.DEFAULT_INTERPOLATION_STEPS`.
++pub const DEFAULT_INTERPOLATION_STEPS: u32 = 3;
++/// A jump farther than 64 blocks (squared) snaps (`handleEntityPositionSync`,
++/// `setValuesFromPositionPacket`).
++pub const SNAP_DISTANCE_SQ: f64 = 4096.0;
++/// How far from a bot another bot is kept in its view: reach plus three ticks of movement, with
++/// margin (Allen, 2026-10-20).
++pub const PEER_RADIUS: f64 = 16.0;
++/// The most other bots one bot keeps in its view.
++pub const PEER_CAP: usize = 32;
++
++/// What `interpolate_to` did.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum Interpolate {
++    /// The entity has no steps: the caller sets the values at once.
++    Snap,
++    /// A new run of steps started from the entity's current position.
++    Started,
++    /// The target equals the active one: nothing changed.
++    Ignored,
++}
++
++/// `InterpolationHandler`, position part: the target, and how many steps are left to reach it.
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes)
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct InterpolationState {
++    left: u32,
++    target: Vec3,
++    rot: (f32, f32),
++}
++
++impl InterpolationState {
++    /// An idle state. `rot` is the entity's rotation now.
++    pub fn new(rot: (f32, f32)) -> Self {
++        Self { left: 0, target: Vec3::ZERO, rot }
++    }
++    /// `hasActiveInterpolation`.
++    pub fn is_active(&self) -> bool {
++        self.left > 0
++    }
++    pub fn steps_left(&self) -> u32 {
++        self.left
++    }
++    /// `InterpolationHandler#position`: the target while a run is active, else `current`.
++    pub fn position(&self, current: Vec3) -> Vec3 {
++        if self.is_active() { self.target } else { current }
++    }
++    pub fn rot(&self) -> (f32, f32) {
++        self.rot
++    }
++    pub fn set_rot(&mut self, rot: (f32, f32)) {
++        self.rot = rot;
++    }
++    /// `InterpolationHandler#cancel`.
++    pub fn cancel(&mut self) {
++        self.left = 0;
++    }
++
++    /// `Entity#moveOrInterpolateTo` for an entity with a handler of `steps` steps (`steps` 0 is
++    /// `Display`: set at once). A missing part keeps the handler's current one. A run restarts
++    /// when it is idle or the target differs in position or rotation.
++    pub fn interpolate_to(
++        &mut self,
++        steps: u32,
++        pos: Option<Vec3>,
++        rot: Option<(f32, f32)>,
++        current: Vec3,
++    ) -> Interpolate {
++        let rot = rot.unwrap_or(self.rot);
++        if steps == 0 {
++            self.cancel();
++            self.rot = rot;
++            return Interpolate::Snap;
++        }
++        let pos = pos.unwrap_or_else(|| self.position(current));
++        if self.is_active() && self.rot == rot && self.target == pos {
++            return Interpolate::Ignored;
++        }
++        self.left = steps;
++        self.target = pos;
++        self.rot = rot;
++        Interpolate::Started
++    }
++
++    /// `InterpolationHandler#interpolate`, once per tick: move `1 / steps left` of the way to the
++    /// target on each axis, then count one step off. The displacement shift for riders and
++    /// carried entities is not modelled. Returns the new position, or `None` when idle.
++    pub fn step(&mut self, current: Vec3) -> Option<Vec3> {
++        if !self.is_active() {
++            return None;
++        }
++        let d = 1.0 / self.left as f64;
++        let lerp = |a: f64, b: f64| a + d * (b - a);
++        let next = Vec3::new(
++            lerp(current.x, self.target.x),
++            lerp(current.y, self.target.y),
++            lerp(current.z, self.target.z),
++        );
++        self.left -= 1;
++        Some(next)
++    }
++}
++
++/// The steps of the entity's interpolation handler: 3 for living entities (not the shulker, which
++/// has none), boats, experience orbs, fishing hooks and minecarts (old behaviour); 0 for
++/// everything else (`Display` has a handler of 0 steps; items and projectiles have none).
++/// `NewMinecartBehavior` moves by `ClientboundMoveMinecartAlongTrack`, which the fork does not
++/// handle, so a server that uses it leaves its minecarts where they were.
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes)
++pub fn interpolation_steps(entity: &EntityWorldMut) -> u32 {
++    let living = entity.contains::<AbstractLiving>() && !entity.contains::<Shulker>();
++    if living
++        || entity.contains::<AbstractBoat>()
++        || entity.contains::<ExperienceOrb>()
++        || entity.contains::<FishingBobber>()
++        || entity.contains::<AbstractMinecart>()
++    {
++        DEFAULT_INTERPOLATION_STEPS
++    } else {
++        0
++    }
++}
++
++/// A non-bot entity's interpolation state. The entity's [`Position`] is the smoothed position;
++/// this holds the server's target. Added by the first server move.
++#[derive(Clone, Component, Copy, Debug, PartialEq)]
++pub struct EntityInterpolation(pub InterpolationState);
++
++/// Apply a server position and rotation to a shared (non-bot) entity as `moveOrInterpolateTo`
++/// does: smooth the position when the entity has steps, else set it at once. The rotation is
++/// always set at once. `snap` forces the at-once path (add, a jump over 64 blocks).
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes)
++pub fn apply_server_pose(
++    entity: &mut EntityWorldMut,
++    pos: Option<Vec3>,
++    rot: Option<LookDirection>,
++    snap: bool,
++) {
++    let steps = if snap { 0 } else { interpolation_steps(entity) };
++    let Some(current) = entity.get::<Position>().map(|p| **p) else { return };
++    let look = entity.get::<LookDirection>().copied();
++    if let Some(rot) = rot
++        && look != Some(rot)
++        && let Some(mut l) = entity.get_mut::<LookDirection>()
++    {
++        *l = rot;
++    }
++    let rot_pair = rot.map(|r| (r.y_rot(), r.x_rot()));
++    let initial_rot = look.map_or((0., 0.), |l| (l.y_rot(), l.x_rot()));
++
++    let mut state = entity
++        .get::<EntityInterpolation>()
++        .map_or_else(|| InterpolationState::new(initial_rot), |s| s.0);
++    let outcome = state.interpolate_to(steps, pos, rot_pair, current);
++    if outcome == Interpolate::Snap
++        && let Some(pos) = pos
++        && pos != current
++        && let Some(mut p) = entity.get_mut::<Position>()
++    {
++        **p = pos;
++    }
++    if outcome == Interpolate::Snap && !entity.contains::<EntityInterpolation>() {
++        return;
++    }
++    entity.insert(EntityInterpolation(state));
++}
++
++/// One interpolation step for every non-bot entity with a run in progress, at the point in the
++/// tick where vanilla ticks the entity (`LivingEntity#aiStep`, `AbstractBoat#tick`,
++/// `OldMinecartBehavior#tick`: after this tick's packets and clicks). It refreshes the entity's
++/// bounding box at once, so the next tick's ray and reach checks read the moved box.
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes)
++pub fn interpolate_entities(
++    mut query: Query<
++        (&mut Position, &mut EntityInterpolation, &EntityDimensions, &mut Physics),
++        Without<LocalEntity>,
++    >,
++) {
++    for (mut position, mut interpolation, dimensions, mut physics) in &mut query {
++        if !interpolation.0.is_active() {
++            continue;
++        }
++        let Some(next) = interpolation.0.step(**position) else { continue };
++        if next != **position {
++            **position = next;
++            physics.bounding_box = dimensions.make_bounding_box(next);
++        }
++    }
++}
++
++/// One other bot as this bot sees it: the server's packets for it, smoothed.
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes)
++#[derive(Clone, Debug)]
++pub struct PeerEntry {
++    codec: VecDeltaCodec,
++    state: InterpolationState,
++    /// The smoothed position this bot sees.
++    pub position: Vec3,
++    /// The box at that position.
++    pub bounding_box: Aabb,
++}
++
++impl PeerEntry {
++    /// Start a view of a bot with no packet seen yet: the server's position for it is the
++    /// position it last sent, which is its own simulated position, rounded as the server's
++    /// packets round. Error: up to one tick of its movement, until the next absolute packet.
++    pub fn seed(true_position: Vec3, rot: (f32, f32), dimensions: &EntityDimensions) -> Self {
++        let position = quantise(true_position);
++        Self {
++            codec: VecDeltaCodec::new(position),
++            state: InterpolationState::new(rot),
++            position,
++            bounding_box: dimensions.make_bounding_box(position),
++        }
++    }
++
++    /// `handleMoveEntity` (position and/or rotation delta; `delta` None is a rotation-only packet).
++    pub fn on_move(&mut self, delta: Option<&PositionDelta8>, rot: Option<(f32, f32)>) {
++        let pos = delta.map(|d| {
++            let p = self.codec.decode(d);
++            self.codec.set_base(p);
++            p
++        });
++        self.state.interpolate_to(DEFAULT_INTERPOLATION_STEPS, pos, rot, self.position);
++    }
++
++    /// `handleEntityPositionSync`: sets the codec base; smooths unless the jump is over 64 blocks.
++    pub fn on_position_sync(&mut self, pos: Vec3, rot: (f32, f32)) {
++        self.codec.set_base(pos);
++        self.on_teleport(pos, rot);
++    }
++
++    /// `handleTeleportEntity`: smooths unless the jump is over 64 blocks (the codec base is not
++    /// touched, as in vanilla). `pos` is absolute.
++    pub fn on_teleport(&mut self, pos: Vec3, rot: (f32, f32)) {
++        if self.position.distance_squared_to(pos) > SNAP_DISTANCE_SQ {
++            self.snap(pos, rot);
++        } else {
++            self.state.interpolate_to(DEFAULT_INTERPOLATION_STEPS, Some(pos), Some(rot), self.position);
++        }
++    }
++
++    /// `handleAddEntity` (`recreateFromPacket`): the codec base and the position are set at once.
++    pub fn on_add(&mut self, pos: Vec3, rot: (f32, f32)) {
++        self.codec.set_base(pos);
++        self.snap(pos, rot);
++    }
++
++    fn snap(&mut self, pos: Vec3, rot: (f32, f32)) {
++        self.position = pos;
++        self.state.cancel();
++        self.state.set_rot(rot);
++    }
++
++    /// The rotation last received (position-only smoothing: it is set at once).
++    pub fn rot(&self) -> (f32, f32) {
++        self.state.rot()
++    }
++
++    /// Steps left in the run; for tests and the load counters.
++    pub fn steps_left(&self) -> u32 {
++        self.state.steps_left()
++    }
++
++    /// One tick: an interpolation step, then the box at the new position.
++    pub fn tick(&mut self, dimensions: &EntityDimensions) {
++        if let Some(next) = self.state.step(self.position) {
++            self.position = next;
++        }
++        self.bounding_box = dimensions.make_bounding_box(self.position);
++    }
++}
++
++/// One bot's view of the other bots near it (Allen, 2026-10-20). The swarm shares one world and a
++/// bot writes its own exact position, but a vanilla client sees another player where the server
++/// said, smoothed. So each bot keeps its own smoothed copy of the bots within [`PEER_RADIUS`],
++/// the nearest [`PEER_CAP`] of them, always including its aim target. Outside the radius nothing
++/// is kept. Readers use the entry for a bot target and the shared entity for everything else.
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes)
++#[derive(Component, Debug, Default)]
++pub struct PeerView {
++    entries: HashMap<Entity, PeerEntry>,
++    aim_target: Option<Entity>,
++    peak: usize,
++    cap_hits: u32,
++    cap_logged: bool,
++}
++
++impl PeerView {
++    pub fn get(&self, peer: Entity) -> Option<&PeerEntry> {
++        self.entries.get(&peer)
++    }
++    pub fn get_mut(&mut self, peer: Entity) -> Option<&mut PeerEntry> {
++        self.entries.get_mut(&peer)
++    }
++    pub fn contains(&self, peer: Entity) -> bool {
++        self.entries.contains_key(&peer)
++    }
++    pub fn iter(&self) -> impl Iterator<Item = (Entity, &PeerEntry)> {
++        self.entries.iter().map(|(e, p)| (*e, p))
++    }
++    /// Entries now.
++    pub fn len(&self) -> usize {
++        self.entries.len()
++    }
++    pub fn is_empty(&self) -> bool {
++        self.entries.is_empty()
++    }
++    /// The most entries this view has held.
++    pub fn peak(&self) -> usize {
++        self.peak
++    }
++    /// How many times the cap forced a bot out or kept one out (once per episode).
++    pub fn cap_hits(&self) -> u32 {
++        self.cap_hits
++    }
++    /// Keep this bot in the view whatever the cap (the bot being aimed at or clicked).
++    pub fn set_aim_target(&mut self, peer: Entity) {
++        self.aim_target = Some(peer);
++    }
++    pub fn aim_target(&self) -> Option<Entity> {
++        self.aim_target
++    }
++
++    /// Make room for `peer` at `distance_sq` from the observer. Returns false when the cap keeps
++    /// it out. The farthest entry that is not the aim target goes first.
++    fn admit(&mut self, observer: Entity, peer: Entity, distance_sq: f64, observer_pos: Vec3) -> bool {
++        if self.entries.len() < PEER_CAP {
++            return true;
++        }
++        if !self.cap_logged {
++            self.cap_logged = true;
++            self.cap_hits += 1;
++            info!("bot {observer:?}: bot view at its cap of {PEER_CAP}; keeping the nearest");
++        }
++        let farthest = self
++            .entries
++            .iter()
++            .filter(|(e, _)| Some(**e) != self.aim_target)
++            .map(|(e, p)| (*e, p.position.distance_squared_to(observer_pos)))
++            .max_by(|a, b| a.1.total_cmp(&b.1));
++        match farthest {
++            Some((out, d)) if Some(peer) == self.aim_target || distance_sq < d => {
++                self.entries.remove(&out);
++                true
++            }
++            _ => false,
++        }
++    }
++
++    fn insert(&mut self, peer: Entity, entry: PeerEntry) {
++        self.entries.insert(peer, entry);
++        self.peak = self.peak.max(self.entries.len());
++    }
++}
++
++/// Keep each bot's [`PeerView`]: give every bot one, drop bots that left the radius or the world,
++/// admit the bots that came within it (nearest first, aim target first, at most [`PEER_CAP`]),
++/// then step every entry and refresh its box. Packets update entries in `Update`; this runs at
++/// the end of the `GameTick`, with the other entities' interpolation.
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes)
++#[allow(clippy::type_complexity)]
++pub fn update_peer_views(
++    mut commands: Commands,
++    mut observers: Query<
++        (Entity, &Position, &WorldName, &EntityIdIndex, Option<&mut PeerView>),
++        With<LocalEntity>,
++    >,
++    peers: Query<(&Position, &EntityDimensions, &LookDirection, &WorldName), With<LocalEntity>>,
++    worlds: Res<Worlds>,
++) {
++    let radius_sq = PEER_RADIUS * PEER_RADIUS;
++    for (observer, position, world_name, ids, view) in &mut observers {
++        let Some(mut view) = view else {
++            commands.entity(observer).insert(PeerView::default());
++            continue;
++        };
++        let origin: Vec3 = **position;
++
++        view.entries.retain(|&peer, _| {
++            peers.get(peer).is_ok_and(|(p, _, _, w)| {
++                w == world_name && (**p).distance_squared_to(origin) <= radius_sq && ids.contains_ecs_entity(peer)
++            })
++        });
++
++        let mut candidates: Vec<(bool, f64, Entity)> = Vec::new();
++        if let Some(world) = worlds.get(world_name) {
++            let world = world.read();
++            let chunk = |v: f64| (v / 16.0).floor() as i32;
++            for cx in chunk(origin.x - PEER_RADIUS)..=chunk(origin.x + PEER_RADIUS) {
++                for cz in chunk(origin.z - PEER_RADIUS)..=chunk(origin.z + PEER_RADIUS) {
++                    let Some(in_chunk) = world.entities_by_chunk.get(&ChunkPos::new(cx, cz)) else {
++                        continue;
++                    };
++                    for &peer in in_chunk {
++                        if peer == observer || view.entries.contains_key(&peer) {
++                            continue;
++                        }
++                        let Ok((p, _, _, w)) = peers.get(peer) else { continue };
++                        let d = (**p).distance_squared_to(origin);
++                        if w == world_name && d <= radius_sq && ids.contains_ecs_entity(peer) {
++                            candidates.push((Some(peer) != view.aim_target, d, peer));
++                        }
++                    }
++                }
++            }
++        }
++        candidates.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
++        for (_, d, peer) in candidates {
++            if !view.admit(observer, peer, d, origin) {
++                break;
++            }
++            let (p, dims, look, _) = peers.get(peer).expect("checked above");
++            view.insert(peer, PeerEntry::seed(**p, (look.y_rot(), look.x_rot()), dims));
++        }
++        if view.entries.len() < PEER_CAP {
++            view.cap_logged = false;
++        }
++
++        for (peer, entry) in &mut view.entries {
++            if let Ok((_, dims, _, _)) = peers.get(*peer) {
++                entry.tick(dims);
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn v(x: f64, y: f64, z: f64) -> Vec3 {
++        Vec3::new(x, y, z)
++    }
++    fn dims() -> EntityDimensions {
++        EntityDimensions::new(0.6, 1.8)
++    }
++
++    #[test]
++    fn steps_are_a_third_a_half_then_the_rest() {
++        let mut s = InterpolationState::new((0., 0.));
++        let mut at = v(0., 0., 0.);
++        assert_eq!(s.interpolate_to(3, Some(v(9., 0., 0.)), None, at), Interpolate::Started);
++        at = s.step(at).unwrap();
++        assert!((at.x - 3.0).abs() < 1e-12);
++        at = s.step(at).unwrap();
++        assert!((at.x - 6.0).abs() < 1e-12);
++        at = s.step(at).unwrap();
++        assert!((at.x - 9.0).abs() < 1e-12);
++        assert!(!s.is_active());
++        assert!(s.step(at).is_none());
++    }
++
++    #[test]
++    fn an_equal_target_is_ignored_and_a_new_one_restarts() {
++        let mut s = InterpolationState::new((10., 5.));
++        let at = v(0., 0., 0.);
++        s.interpolate_to(3, Some(v(3., 0., 0.)), None, at);
++        let at = s.step(at).unwrap();
++        assert_eq!(s.interpolate_to(3, Some(v(3., 0., 0.)), None, at), Interpolate::Ignored);
++        assert_eq!(s.steps_left(), 2);
++        // A different rotation restarts the run toward the same target.
++        assert_eq!(
++            s.interpolate_to(3, Some(v(3., 0., 0.)), Some((20., 5.)), at),
++            Interpolate::Started
++        );
++        assert_eq!(s.steps_left(), 3);
++        // A rotation-only packet keeps the active target.
++        assert_eq!(s.position(at), v(3., 0., 0.));
++        s.interpolate_to(3, None, Some((30., 5.)), at);
++        assert_eq!(s.position(at), v(3., 0., 0.));
++    }
++
++    #[test]
++    fn zero_steps_snap() {
++        let mut s = InterpolationState::new((0., 0.));
++        assert_eq!(s.interpolate_to(0, Some(v(1., 1., 1.)), Some((1., 2.)), v(0., 0., 0.)), Interpolate::Snap);
++        assert!(!s.is_active());
++        assert_eq!(s.rot(), (1., 2.));
++    }
++
++    #[test]
++    fn a_peer_is_added_snapped_and_moves_over_three_ticks() {
++        let d = dims();
++        let mut e = PeerEntry::seed(v(0., 64., 0.), (0., 0.), &d);
++        e.on_add(v(0., 64., 0.), (0., 0.));
++        // A delta of 12288 units (3 blocks) on x.
++        e.on_move(Some(&PositionDelta8 { xa: 12288, ya: 0, za: 0 }), None);
++        e.tick(&d);
++        assert!((e.position.x - 1.0).abs() < 1e-9);
++        assert!((e.bounding_box.min.x - (1.0 - 0.3)).abs() < 1e-6, "box refreshed in the same tick");
++        e.tick(&d);
++        assert!((e.position.x - 2.0).abs() < 1e-9);
++        e.tick(&d);
++        assert!((e.position.x - 3.0).abs() < 1e-9);
++        // The next delta is relative to the decoded target, not to the smoothed position.
++        e.on_move(Some(&PositionDelta8 { xa: 4096, ya: 0, za: 0 }), None);
++        e.tick(&d);
++        assert!((e.position.x - (3.0 + 1.0 / 3.0)).abs() < 1e-9);
++    }
++
++    #[test]
++    fn a_jump_over_64_blocks_snaps() {
++        let d = dims();
++        let mut e = PeerEntry::seed(v(0., 64., 0.), (0., 0.), &d);
++        e.on_teleport(v(100., 64., 0.), (0., 0.));
++        assert_eq!(e.position.x, 100.0);
++        assert_eq!(e.steps_left(), 0);
++        e.on_position_sync(v(110., 64., 0.), (0., 0.));
++        assert_eq!(e.steps_left(), 3);
++        assert_eq!(e.position.x, 100.0);
++    }
++
++    #[test]
++    fn the_cap_keeps_the_nearest_and_the_aim_target() {
++        let d = dims();
++        let observer = Entity::from_raw_u32(1).unwrap();
++        let mut view = PeerView::default();
++        let o = v(0., 0., 0.);
++        // Fill to the cap with bots at distance 1..=32 blocks (positions are the sort keys).
++        for i in 0..PEER_CAP {
++            view.insert(
++                Entity::from_raw_u32(100 + i as u32).unwrap(),
++                PeerEntry::seed(v(1.0 + i as f64 * 0.4, 0., 0.), (0., 0.), &d),
++            );
++        }
++        assert_eq!(view.len(), PEER_CAP);
++        let far = Entity::from_raw_u32(500).unwrap();
++        // A farther bot is kept out; the cap is logged once.
++        assert!(!view.admit(observer, far, 14.0 * 14.0, o));
++        assert!(!view.admit(observer, far, 14.0 * 14.0, o));
++        assert_eq!(view.cap_hits(), 1);
++        // A nearer bot pushes the farthest out.
++        let near = Entity::from_raw_u32(501).unwrap();
++        assert!(view.admit(observer, near, 0.25, o));
++        assert_eq!(view.len(), PEER_CAP - 1);
++        view.insert(near, PeerEntry::seed(v(0.5, 0., 0.), (0., 0.), &d));
++        // The aim target gets in whatever its distance, and is never the one pushed out.
++        view.set_aim_target(far);
++        assert!(view.admit(observer, far, 15.0 * 15.0, o));
++        view.insert(far, PeerEntry::seed(v(15., 0., 0.), (0., 0.), &d));
++        assert_eq!(view.len(), PEER_CAP);
++        assert!(view.admit(observer, Entity::from_raw_u32(502).unwrap(), 0.01, o));
++        assert!(view.contains(far));
++        assert_eq!(view.peak(), PEER_CAP);
++    }
++}
+diff --git a/azalea-entity/src/lib.rs b/azalea-entity/src/lib.rs
+index 7268f17..afca2c3 100644
+--- a/azalea-entity/src/lib.rs
++++ b/azalea-entity/src/lib.rs
+@@ -7,6 +7,8 @@ pub mod dimensions;
+ mod effects;
+ pub mod inventory;
+ #[cfg(feature = "bevy_ecs")]
++pub mod interpolation;
++#[cfg(feature = "bevy_ecs")]
+ pub mod metadata;
+ pub mod mining;
+ pub mod particle;
+diff --git a/azalea-entity/src/vec_delta_codec.rs b/azalea-entity/src/vec_delta_codec.rs
+index 5221ec4..2a67805 100644
+--- a/azalea-entity/src/vec_delta_codec.rs
++++ b/azalea-entity/src/vec_delta_codec.rs
+@@ -56,6 +56,18 @@ impl VecDeltaCodec {
+     }
+ }
+ 
++/// Round a position to the 1/4096 grid the server's movement packets use.
++///
++/// Null fork (patch 31): the server position of a bot we have no packets for yet, as it would
++/// send it.
++pub fn quantise(pos: Vec3) -> Vec3 {
++    Vec3::new(
++        decode(encode(pos.x)),
++        decode(encode(pos.y)),
++        decode(encode(pos.z)),
++    )
++}
++
+ fn encode(value: f64) -> i64 {
+     (value * 4096.).round() as i64
+ }

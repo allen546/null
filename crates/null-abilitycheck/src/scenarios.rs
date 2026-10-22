@@ -239,7 +239,13 @@ impl Ctx {
         let n = self.name.clone();
         // "Found 3 matching item(s) on player X" or "No items were found ...".
         let r = self.r(&format!("clear {n} minecraft:{item} 0"));
-        r.strip_prefix("Found ").and_then(|s| s.split(' ').next()?.parse().ok()).unwrap_or(0)
+        let found = r.strip_prefix("Found ").and_then(|s| s.split(' ').next()?.parse().ok());
+        // A reply that is neither form still counts as 0, but is printed: a Pi run (pi_base, 2026-10-21)
+        // read 0 for an item the bot then placed, and the raw reply was not kept.
+        if found.is_none() && !r.starts_with("No items were found") {
+            eprintln!("count {item}: unexpected reply {r:?}");
+        }
+        found.unwrap_or(0)
     }
 
     /// Polls an RCON condition for up to `secs`; returns the seconds it took.
@@ -364,7 +370,9 @@ impl Ctx {
         for c in [
             format!("kill @e[type=minecraft:item,{}]", in_area(area)),
             format!("kill @e[type=minecraft:armor_stand,{}]", in_area(area)),
-            format!("fill {x0} {FLOOR_Y} {z0} {x1} {} {z1} minecraft:air", FLOOR_Y + 8),
+            // The floor stays: the bot may still stand on it, and Grim twice kept a removed floor
+            // under a standing bot and flagged its fall (OPEN item 4). `scene_in` relays it anyway.
+            format!("fill {x0} {} {z0} {x1} {} {z1} minecraft:air", FLOOR_Y + 1, FLOOR_Y + 8),
             format!("forceload remove {x0} {z0} {x1} {z1}"),
         ] {
             self.r(&c);

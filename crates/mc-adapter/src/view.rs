@@ -467,6 +467,15 @@ impl BotView for AzaleaView<'_, '_, '_> {
                 .collect()
         })
     }
+    // Spec: specs/F5-version-layer.md §4.6 (client refusals: elytra, riptide, item use effects)
+    fn refused_inputs(&self) -> Vec<api::InputRefusal> {
+        self.p.respawn_log.map_or_else(Vec::new, |l| {
+            l.refused_inputs
+                .iter()
+                .map(|(a, n)| api::InputRefusal { kind: a.name().to_string(), reason: a.as_str(), count: *n })
+                .collect()
+        })
+    }
     fn sent_while_dead(&self) -> Vec<(String, u32)> {
         self.p.respawn_log.map_or_else(Vec::new, |l| l.sent_while_dead.clone())
     }
@@ -497,5 +506,6 @@ pub fn map_unmodelled(u: azalea::entity::unmodelled::UnmodelledInput) -> api::Un
         U::Passenger => api::UnmodelledInput::Passenger { kind },
         U::Block(pos, block) => api::UnmodelledInput::Block { pos: api::BlockPos::new(pos.x, pos.y, pos.z), id: block.to_str().to_string(), kind },
         U::WorldBorder => api::UnmodelledInput::WorldBorder { kind },
+        U::Gliding => api::UnmodelledInput::Gliding { kind },
     }
 }

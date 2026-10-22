@@ -32,14 +32,14 @@ These move the bot even with no input, so stopping a skill does not make them sa
 
 ## Missing, group B: happens only when the bot chooses it
 
-A refusal on the client covers each one until it is modelled: the bot never starts it.
+A refusal on the client covers each one until it is modelled: the bot never starts it. Built in fork patch 34 (A20); the model itself is not built.
 
-| input | fork at `34d54a5` |
+| input | fork at `34d54a5`, and the refusal (patch 34) |
 |---|---|
-| elytra (`glider` component) | hardcoded off (`azalea-client/src/plugins/movement.rs:399`) |
-| trident riptide | none |
-| vehicles (boats, minecarts, horses) | `TODO` |
-| item-use slowdown other than 0.2 (`use_effects` component) | hardcoded 0.2 (`movement.rs:473`) |
+| elytra (`glider` component) | hardcoded off (`azalea-client/src/plugins/movement.rs:399`). Refused: a jump edge in the air with a glider worn (`client_refusals.rs`, `LocalPlayer#aiStep`). A glide set by the server is the `Gliding` disconnect entry |
+| trident riptide | none. Refused: the start of a use of a `minecraft:trident` whose spin strength may be above 0 (registry effects; unknown enchantment counts as above 0), in or out of water, because the fork has no weather |
+| vehicles (boats, minecarts, horses) | `TODO`. Refused: every right-click that mounts (`entity_actions::click_mounts`: boats, minecarts, horse family, camel, pig, strider, happy ghast, nautilus), also on the `EntityInteractEvent` path |
+| item-use slowdown other than 0.2 (`use_effects` component) | hardcoded 0.2 (`movement.rs:473`). Refused: the start of a use of a stack whose `use_effects` changes the speed or `can_sprint` |
 | Blindness stops the sprint | hardcoded to absent (`movement.rs:405`) |
 
 ## Other bot engines (2026-10-20)

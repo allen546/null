@@ -1,6 +1,6 @@
 # Implementer brief: fork patch 31, interpolation and the bot-to-bot view
 
-Written 2026-10-20 by the lead from the read-only research of that day. Launch it only when Allen's full-suite pair for patches 27–30 and the harness timing task have ended, and nothing else is building or running. Delete this file when patch 31 is committed.
+Written 2026-10-20 by the lead from the read-only research of that day. Launched 2026-10-21 after the shuffled full pair for `00fe9ce` passed. Delete this file when patch 31 is committed.
 
 ## Brief
 
@@ -8,7 +8,7 @@ You implement Azalea fork patch 31 for Null (a Minecraft bot swarm in Rust on an
 
 ### State
 
-- Fork clone ~/Desktop/null-spikes/azalea, branch null-main, head <current head; e591089 is patch 30>, pinned in Null's `Cargo.toml`. Check `git log` there first: if patches 27–30 have been pushed, work on top of the pushed head.
+- Fork clone ~/Desktop/null-spikes/azalea, branch null-main, head e591089 (patch 30, pushed), pinned in Null's `Cargo.toml`, clean. Work on top of it.
 - The Null working tree may hold uncommitted work. Do not commit, stash, reset or revert anything in the Null repo. Add your changes on top.
 
 ### Vanilla (1.21.11, Mojang names; read ~/Desktop/null-reference/vanilla-1.21.11-src/ to confirm)
@@ -37,13 +37,17 @@ You implement Azalea fork patch 31 for Null (a Minecraft bot swarm in Rust on an
 3. Null side: a few live rows (a new module, or rows in A17), each with its own test area (`Ctx::scene_in`). Examples: a mob teleported by RCON is reached by the bot's view in 3 steps (the trace of the view against the vanilla sequence); an entity click right after a mob moves uses the smoothed box; two bots near each other each see the other from server packets (the counter shows the entries; a far bot is not tracked). Recheck A8 and A10E, because entity aim now uses smoothed positions: run those two modules once per server. Every major function gets a one-line spec link (`// Spec: specs/... §...`); the verifier fails on a missing or dead link. Update F5 §4.6 and B1 §4.2 from "planned" to built for what you built.
 4. Negative-control readiness: say exactly how a verifier turns interpolation off (positions set at once) so that your new rows fail. Do not run it yourself.
 
-### Live-run rule (Allen, 2026-10-19/20)
+### Live-run rule (Allen, 2026-10-19/20/21)
 
-Live runs are slow: each runs strictly once. Run only the rows you add or change, plus A8 and A10E as named above, once on vanilla (harness/skeleton-server, 25567) and once on Paper + Grim (harness/grim-server, 25568), with a distinct `--account`. A failed row is fixed and only its module rerun, once. No full suites and no repeat runs to double-check. Do not run a heavy build while a Grim row runs. At the end, with the code final, give the full-suite command for Allen: `scripts/full_suite.sh p31_full` (or the manual commands in HANDOFF, if the script is not there).
+Live runs are slow: each runs strictly once. Selective runs: a change reruns only the modules it affects, chosen by `scripts/affected_modules.sh` from `crates/null-abilitycheck/run_map.toml` (`specs/plans/ABILITY_CHECK.md` "Which modules a change reruns"), never by guess. Add a `[[history]]` entry for patch 31 to `run_map.toml` (the modules your fork tests and live rows name), and run `scripts/affected_modules.sh --check-history`; it must pass. This patch touches the packet handlers, so the helper prints `--scenario all`: then run only your new rows plus A8 and A10E, once on vanilla (harness/skeleton-server, 25567) and once on Paper + Grim (harness/grim-server, 25568), each with a distinct `--account`. The rest is covered by the full pair, which you do not run. Both Mac servers are already up; do not restart them. A failed row is fixed and only its module rerun, once. No repeat runs to double-check. Do not run a heavy build while a Grim row runs.
+
+No polling (Allen, 2026-10-21): no sleep or wait loops. Run each selective run in the foreground with a timeout (they take minutes), and read its summary line once.
+
+The full pair runs on Allen's Pi now, not the Mac. A baseline pair (`pi_base`) is running there; do not touch the Pi, and do not run `scripts/pi/deploy.sh` (it replaces the Pi's binary). At the end, with the code final, give Allen these commands for the full pair: `scripts/pi/deploy.sh`, then `scripts/pi/launch.sh p31_full --shuffle <a new seed>`; the summary is `/mnt/pi-data/null-harness/logs/p31_full_summary.txt` on the Pi.
 
 ### Machine notes
 
-- Python, if needed: uv only (`uv run --with`), never pip.
+- Python, if needed: uv only (`uv run --with`, `uv run --no-project`), never pip or system packages.
 - `stat` is GNU coreutils: `/usr/bin/stat -f %m FILE` for BSD.
 - Bots must not be op. Grim flags clicks while moving, sprinting or sneaking.
 

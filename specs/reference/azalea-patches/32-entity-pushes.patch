@@ -1,0 +1,1623 @@
+diff --git a/azalea-client/src/plugins/mod.rs b/azalea-client/src/plugins/mod.rs
+index 2925f57..04d303f 100644
+--- a/azalea-client/src/plugins/mod.rs
++++ b/azalea-client/src/plugins/mod.rs
+@@ -25,6 +25,7 @@ pub mod mining;
+ pub mod movement;
+ pub mod packet;
+ pub mod pong;
++pub mod pushes;
+ pub mod respawn;
+ pub mod tags;
+ pub mod task_pool;
+@@ -60,6 +61,7 @@ impl PluginGroup for DefaultPlugins {
+             .add(attack::AttackPlugin)
+             .add(attackers::AttackersPlugin)
+             .add(interpolation::InterpolationPlugin)
++            .add(pushes::PushesPlugin)
+             .add(item_use::ItemUsePlugin)
+             .add(chunks::ChunksPlugin)
+             .add(block_update::BlockUpdatePlugin)
+diff --git a/azalea-client/src/plugins/packet/game/mod.rs b/azalea-client/src/plugins/packet/game/mod.rs
+index 47cf6f1..3d37d14 100644
+--- a/azalea-client/src/plugins/packet/game/mod.rs
++++ b/azalea-client/src/plugins/packet/game/mod.rs
+@@ -25,11 +25,12 @@ use azalea_protocol::{
+         game::{c_move_entity_pos_rot::CompactLookDirection, *},
+     },
+ };
++use azalea_entity::teams::{CollisionRule, Scoreboard};
+ use azalea_registry::builtin::EntityKind;
+ use azalea_world::{PartialWorld, WorldName, Worlds};
+ use bevy_ecs::{prelude::*, system::SystemState};
+ pub use events::*;
+-use tracing::{debug, error, warn};
++use tracing::{debug, error, info, warn};
+ 
+ use crate::{
+     ClientInformation,
+@@ -339,8 +340,14 @@ impl GamePacketHandler<'_> {
+                     TicksConnected(0),
+                     crate::respawn::ShowDeathScreen(p.show_death_screen),
+                     crate::respawn::IsHardcore(p.hardcore),
++                    // Patch 32: this client's own scoreboard and push evidence.
++                    azalea_entity::teams::Scoreboard::default(),
++                    azalea_entity::push::PushRecord::default(),
+                 ));
+ 
++                // Patch 32: a login starts the tick order again, with the player first
++                // (`handleLogin` adds the local player before any other entity).
++                entity_id_index.tick_order_mut().clear();
+                 azalea_entity::indexing::add_entity_to_indexes(
+                     entity_id,
+                     self.player,
+@@ -1618,6 +1625,7 @@ impl GamePacketHandler<'_> {
+                     &ClientInformation,
+                     Option<&mut WorldName>,
+                     Option<&Attributes>,
++                    &mut EntityIdIndex,
+                 ),
+                 With<LocalEntity>,
+             >,
+@@ -1627,7 +1635,7 @@ impl GamePacketHandler<'_> {
+         )>(
+             self.ecs,
+             |(mut commands, mut query, mut events, mut worlds, mut loaded_by_query)| {
+-                let Ok((mut world_holder, game_profile, client_information, world_name, old_attributes)) =
++                let Ok((mut world_holder, game_profile, client_information, world_name, old_attributes, mut entity_id_index)) =
+                     query.get_mut(self.player)
+                 else {
+                     warn!("Got respawn packet but player doesn't have the required components");
+@@ -1636,6 +1644,15 @@ impl GamePacketHandler<'_> {
+                 let old_attributes = old_attributes.cloned();
+ 
+                 let new_world_name = WorldName(p.common.dimension.clone());
++                // Patch 32, `handleRespawn`: a respawn in the same dimension adds the new local
++                // player to the same level, so it moves to the end of the tick order; another
++                // dimension builds a new level with an empty list, so the player is first again.
++                if world_name.as_deref() == Some(&new_world_name) {
++                    entity_id_index.tick_order_mut().assign(self.player);
++                } else {
++                    entity_id_index.tick_order_mut().clear();
++                    entity_id_index.tick_order_mut().assign(self.player);
++                }
+ 
+                 if let Some(mut world_name) = world_name {
+                     *world_name = new_world_name.clone();
+@@ -1860,8 +1877,28 @@ impl GamePacketHandler<'_> {
+             },
+         );
+     }
++    // Patch 32, `ClientPacketListener#handleSetPlayerTeamPacket`: this bot's own scoreboard.
++    // Add creates the team (an existing name is reused); any other action on an unknown team is
++    // ignored with a warning. Parameters (Add, Change) set the collision rule. Join moves each
++    // name to the team; Leave of a name that is not on it is ignored (vanilla throws); Remove
++    // drops the team and its members.
++    // Spec: specs/B1-movement.md §4.2 (Pushes from entities)
+     pub fn set_player_team(&mut self, p: &ClientboundSetPlayerTeam) {
+         debug!("Got set player team packet {p:?}");
++        as_system::<(Commands, Query<Option<&mut Scoreboard>>)>(self.ecs, |(mut commands, mut query)| {
++            let Ok(existing) = query.get_mut(self.player) else { return };
++            let mut fresh = Scoreboard::default();
++            let is_new = existing.is_none();
++            let mut sb = existing;
++            let board: &mut Scoreboard = match sb.as_mut() {
++                Some(b) => b,
++                None => &mut fresh,
++            };
++            apply_team_packet(board, p);
++            if is_new {
++                commands.entity(self.player).insert(fresh);
++            }
++        });
+     }
+     pub fn set_score(&mut self, _p: &ClientboundSetScore) {}
+     pub fn set_simulation_distance(&mut self, _p: &ClientboundSetSimulationDistance) {}
+@@ -2044,3 +2081,50 @@ fn move_entity(
+     });
+ }
+ 
++/// Apply one `ClientboundSetPlayerTeam` to a scoreboard (see `set_player_team`).
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++pub fn apply_team_packet(board: &mut Scoreboard, p: &ClientboundSetPlayerTeam) {
++    use azalea_protocol::packets::game::c_set_player_team::{CollisionRule as Wire, Method};
++    let rule = |r: Wire| match r {
++        Wire::Always => CollisionRule::Always,
++        Wire::Never => CollisionRule::Never,
++        Wire::PushOtherTeams => CollisionRule::PushOtherTeams,
++        Wire::PushOwnTeam => CollisionRule::PushOwnTeam,
++    };
++    match &p.method {
++        Method::Add((params, members)) => {
++            board.add_team(&p.name, rule(params.collision_rule));
++            for m in members {
++                board.join(&p.name, m);
++            }
++        }
++        Method::Change(params) => {
++            if !board.set_rule(&p.name, rule(params.collision_rule)) {
++                info!("team packet (change) for an unknown team {:?}: ignored", p.name);
++            }
++        }
++        Method::Remove => {
++            if !board.remove_team(&p.name) {
++                info!("team packet (remove) for an unknown team {:?}: ignored", p.name);
++            }
++        }
++        Method::Join(members) => {
++            for m in members {
++                if !board.join(&p.name, m) {
++                    info!("team packet (join {m:?}) for an unknown team {:?}: ignored", p.name);
++                }
++            }
++        }
++        Method::Leave(members) => {
++            if !board.has_team(&p.name) {
++                info!("team packet (leave) for an unknown team {:?}: ignored", p.name);
++                return;
++            }
++            for m in members {
++                if !board.leave(&p.name, m) {
++                    info!("team packet: {m:?} is not on team {:?}: leave ignored", p.name);
++                }
++            }
++        }
++    }
++}
+diff --git a/azalea-client/src/plugins/pushes.rs b/azalea-client/src/plugins/pushes.rs
+new file mode 100644
+index 0000000..3fd07cf
+--- /dev/null
++++ b/azalea-client/src/plugins/pushes.rs
+@@ -0,0 +1,247 @@
++//! Pushes on the bot from other entities (Null fork, patch 32).
++//!
++//! Vanilla 1.21.11: the bot is the local player. Every other living entity pushes it from the end
++//! of its own `aiStep` (`LivingEntity#pushEntities`, `Entity#push(Entity)`), a boat from
++//! `AbstractBoat#tick` (`AbstractBoat#push`), as the pure rules in `azalea_entity::push` say. The
++//! client ticks entities in the order they entered its level (`ClientLevel#tickEntities`), so an
++//! entity that ticks before the bot changes this tick's travel, and one that ticks after it
++//! changes the next tick's. One function runs twice per tick for that:
++//!
++//! - pass A, before the whole physics chain: pushers that tick before the bot. Their position is
++//!   the one after their own interpolation step of this tick (patch 31 takes that step after the
++//!   chain, so the pass peeks at it), and the bot's box is the one from the end of the last tick.
++//! - pass B, after the chain, the position packet and patch 31's interpolation: pushers that tick
++//!   after the bot, against the bot's box after this tick's move.
++//!
++//! The server never tells the bot about a push (`ServerEntity#sendChanges` sends it to the other
++//! trackers), so the bot computes it alone. Grim: `MovementTicker#handleEntityCollisions` only
++//! widens check `Simulation`'s tolerance by the pushable entities nearby; it cannot prove a push.
++//! Skipped on purpose: the pusher's own mirror velocity, cramming (server only), the
++//! frozen-entity state and the chunk-section ticking state (see `azalea_entity::push`), and
++//! passengers on the bot (only the bot riding is tracked, and that disconnects).
++//!
++//! Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++
++use azalea_core::{game_type::GameMode, position::{ChunkPos, Vec3}, tick::GameTick};
++use azalea_entity::{
++    Dead, EntityKindComponent, EntityUuid, HasClientLoaded, LocalEntity, OnClimbable, Physics,
++    Position,
++    dimensions::EntityDimensions,
++    indexing::EntityIdIndex,
++    interpolation::{EntityInterpolation, PeerView},
++    metadata::{AbstractBoat, AbstractLiving, SleepingPos},
++    push::{
++        PushRecord, PusherClass, boat_height_rule, push_box, push_velocity, pusher_class,
++        target_pushable,
++    },
++    teams::{Scoreboard, TeamRef, team_allows_push},
++    unmodelled::RidingVehicle,
++    LoadedBy,
++};
++use azalea_physics::{PhysicsSystems, collision::entity_collisions::update_last_bounding_box};
++use azalea_registry::builtin::EntityKind;
++use azalea_world::{WorldName, Worlds};
++use bevy_app::{App, Plugin};
++use bevy_ecs::{prelude::*, query::QueryData};
++
++use crate::{
++    local_player::{LocalGameMode, TabList},
++    player::GameProfileComponent,
++    unmodelled_disconnect::disconnect_on_unmodelled_movement,
++};
++
++/// How far from the bot's box the search for pushers reaches. An entity that interpolates moves
++/// at most a third of 64 blocks in one step, and the chunk index lags its position by the steps
++/// since the last `Update`, so the search looks this far to see a pusher before it arrives.
++const SEARCH_MARGIN: f64 = 22.0;
++
++/// Both push passes, so a probe or a later system can order itself after them.
++#[derive(Clone, Debug, Eq, Hash, PartialEq, SystemSet)]
++pub struct PushSystems;
++
++pub struct PushesPlugin;
++impl Plugin for PushesPlugin {
++    fn build(&self, app: &mut App) {
++        app.add_systems(
++            GameTick,
++            (
++                // Vanilla casts the ray and handles the clicks before any entity ticks
++                // (`Minecraft#tick`), so those systems come first.
++                push_pass::<false>
++                    .after(disconnect_on_unmodelled_movement)
++                    .after(crate::interact::pick::update_hit_result_component)
++                    .after(crate::entity_actions::handle_look_at_entity_queued)
++                    .after(crate::entity_actions::handle_use_entity_queued)
++                    .after(crate::mining::MiningSystems)
++                    .after(azalea_entity::update_in_loaded_chunk)
++                    .before(PhysicsSystems)
++                    .in_set(PushSystems),
++                push_pass::<true>
++                    .after(PhysicsSystems)
++                    .after(crate::movement::send_position)
++                    .after(update_last_bounding_box)
++                    .after(azalea_entity::interpolation::update_peer_views)
++                    .in_set(PushSystems),
++            ),
++        );
++    }
++}
++
++#[derive(QueryData)]
++#[query_data(mutable)]
++struct BotData {
++    entity: Entity,
++    position: &'static Position,
++    dimensions: &'static EntityDimensions,
++    physics: &'static mut Physics,
++    record: &'static mut PushRecord,
++    world: &'static WorldName,
++    ids: &'static EntityIdIndex,
++    game_mode: &'static LocalGameMode,
++    on_climbable: &'static OnClimbable,
++    sleeping: Option<&'static SleepingPos>,
++    riding: Option<&'static RidingVehicle>,
++    scoreboard: Option<&'static Scoreboard>,
++    peers: Option<&'static PeerView>,
++    tab_list: Option<&'static TabList>,
++    profile: Option<&'static GameProfileComponent>,
++}
++
++#[derive(QueryData)]
++struct PusherData {
++    position: &'static Position,
++    dimensions: &'static EntityDimensions,
++    kind: &'static EntityKindComponent,
++    uuid: &'static EntityUuid,
++    loaded_by: Option<&'static LoadedBy>,
++    interpolation: Option<&'static EntityInterpolation>,
++    profile: Option<&'static GameProfileComponent>,
++    living: Has<AbstractLiving>,
++    boat: Has<AbstractBoat>,
++    local: Has<LocalEntity>,
++}
++
++/// One pass of the push function. `AFTER` false is pass A (pushers that tick before the bot),
++/// true is pass B (pushers that tick after it).
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++#[allow(clippy::type_complexity)]
++fn push_pass<const AFTER: bool>(
++    mut bots: Query<BotData, (With<LocalEntity>, With<HasClientLoaded>, Without<Dead>)>,
++    pushers: Query<PusherData>,
++    worlds: Res<Worlds>,
++) {
++    for mut bot in &mut bots {
++        if !AFTER {
++            bot.record.begin_tick();
++        }
++        // A rider is a `Movement` entry and disconnects; a spectator or a bot on a climbable is
++        // not a target for any pusher.
++        if bot.riding.is_some()
++            || bot.game_mode.current == GameMode::Spectator
++            || **bot.on_climbable
++        {
++            continue;
++        }
++        let bot_pos: Vec3 = **bot.position;
++        let bot_box = bot.dimensions.make_bounding_box(bot_pos);
++        let sleeping = bot.sleeping.is_some_and(|s| s.0.is_some());
++        let bot_name = bot.profile.map(|p| p.name.as_str());
++        let teams = bot.scoreboard.filter(|s| !s.is_empty());
++
++        let mut hits: Vec<(Entity, (f64, f64))> = Vec::new();
++        let mut consider = |entity: Entity, pos: Vec3, data: &PusherDataItem| {
++            let Some(class) = pusher_class(data.living, data.boat, **data.kind) else { return };
++            // A pass handles the pushers on its side of the bot in the tick order.
++            let before = bot.ids.tick_order().ticks_before(entity, bot.entity);
++            if before == AFTER {
++                return;
++            }
++            let pusher_box = data.dimensions.make_bounding_box(pos);
++            if !push_box(class, &pusher_box).intersects_aabb(&bot_box) {
++                return;
++            }
++            // A spectator remote player has `noPhysics` (`Player#tick`).
++            if **data.kind == EntityKind::Player
++                && bot
++                    .tab_list
++                    .and_then(|t| t.get(&**data.uuid))
++                    .is_some_and(|i| i.gamemode == GameMode::Spectator)
++            {
++                return;
++            }
++            if class == PusherClass::Boat && !boat_height_rule(bot_box.min.y, pusher_box.min.y) {
++                return;
++            }
++            if !target_pushable(false, false, false, false, sleeping, class) {
++                return;
++            }
++            if let Some(sb) = teams {
++                let uuid_text;
++                let name = match (**data.kind == EntityKind::Player, data.profile) {
++                    (true, Some(p)) => p.name.as_str(),
++                    _ => {
++                        uuid_text = data.uuid.to_string();
++                        uuid_text.as_str()
++                    }
++                };
++                let mine: Option<TeamRef> = bot_name.and_then(|n| sb.team_ref(n));
++                if !team_allows_push(sb.team_ref(name), mine) {
++                    return;
++                }
++            }
++            if let Some(dv) = push_velocity(pos.x - bot_pos.x, pos.z - bot_pos.z) {
++                hits.push((entity, dv));
++            }
++        };
++
++        // Entities every bot shares (mobs, boats, remote players).
++        if let Some(world) = worlds.get(bot.world) {
++            let world = world.read();
++            let chunk = |v: f64| (v / 16.0).floor() as i32;
++            for cx in chunk(bot_box.min.x - SEARCH_MARGIN)..=chunk(bot_box.max.x + SEARCH_MARGIN) {
++                for cz in chunk(bot_box.min.z - SEARCH_MARGIN)..=chunk(bot_box.max.z + SEARCH_MARGIN) {
++                    let Some(in_chunk) = world.entities_by_chunk.get(&ChunkPos::new(cx, cz)) else {
++                        continue;
++                    };
++                    for &entity in in_chunk {
++                        if entity == bot.entity {
++                            continue;
++                        }
++                        let Ok(data) = pushers.get(entity) else { continue };
++                        if !data.loaded_by.is_some_and(|l| l.contains(&bot.entity))
++                            || !bot.ids.contains_ecs_entity(entity)
++                        {
++                            continue;
++                        }
++                        // Another bot is read from this bot's own view below, never from its own
++                        // exact position.
++                        if data.local {
++                            continue;
++                        }
++                        let pos: Vec3 = **data.position;
++                        let pos = match (AFTER, data.interpolation) {
++                            (false, Some(i)) => i.0.peek(pos),
++                            _ => pos,
++                        };
++                        consider(entity, pos, &data);
++                    }
++                }
++            }
++        }
++        // The other bots this bot sees (patch 31): their smoothed positions, not their own.
++        if let Some(view) = bot.peers {
++            for (peer, entry) in view.iter() {
++                let Ok(data) = pushers.get(peer) else { continue };
++                let pos = if AFTER { entry.position } else { entry.peek_position() };
++                consider(peer, pos, &data);
++            }
++        }
++
++        hits.sort_by_key(|h| h.0);
++        for (_, dv) in hits {
++            bot.physics.velocity.x += dv.0;
++            bot.physics.velocity.z += dv.1;
++            bot.record.record(dv);
++        }
++    }
++}
+diff --git a/azalea-client/tests/simulation/entity_pushes.rs b/azalea-client/tests/simulation/entity_pushes.rs
+new file mode 100644
+index 0000000..d47e5c3
+--- /dev/null
++++ b/azalea-client/tests/simulation/entity_pushes.rs
+@@ -0,0 +1,496 @@
++//! Pushes on the bot from other entities, the team store and the per-bot tick order (patch 32).
++//! The expected numbers are written from the vanilla text, not read back from the fork.
++
++use azalea_auth::game_profile::GameProfile;
++use azalea_chat::FormattedText;
++use azalea_client::{
++    local_player::{LocalGameMode, TabList},
++    player::{GameProfileComponent, PlayerInfo},
++    test_utils::prelude::*,
++};
++use azalea_core::{
++    delta::LpVec3,
++    entity_id::MinecraftEntityId,
++    game_type::GameMode,
++    position::{BlockPos, ChunkPos, Vec3},
++};
++use azalea_entity::{
++    Dead, LocalEntity, LookDirection, Physics, Position,
++    indexing::EntityIdIndex,
++    interpolation::PeerView,
++    metadata::{Health, SleepingPos},
++    push::PushRecord,
++    teams::{CollisionRule, Scoreboard},
++};
++use azalea_protocol::{
++    common::movements::{PositionMoveRotation, RelativeMovements},
++    packets::{
++        ConnectionProtocol,
++        game::{
++            ClientboundBlockUpdate, ClientboundPlayerPosition, ClientboundRemoveEntities,
++            ClientboundSetEntityMotion, ClientboundSetPlayerTeam, ClientboundTeleportEntity,
++            c_set_player_team::{self, Method, Parameters},
++        },
++    },
++};
++use azalea_registry::{DataRegistry, builtin::{BlockKind, EntityKind}, data::DimensionKind, identifier::Identifier};
++use bevy_ecs::prelude::*;
++use uuid::Uuid;
++
++/// The bot stands at (8.5, 64, 8.5) on a stone floor. A pusher at x offset `d` has its centre at
++/// 8.5 + d.
++const BX: f64 = 8.5;
++const BZ: f64 = 8.5;
++
++fn setup() -> Simulation {
++    let mut simulation = Simulation::new(ConnectionProtocol::Game);
++    simulation.receive_packet(default_login_packet());
++    simulation.receive_packet(make_basic_empty_chunk(ChunkPos::new(0, 0), (384 + 64) / 16));
++    for x in 2..=14 {
++        for z in 2..=14 {
++            simulation.receive_packet(ClientboundBlockUpdate {
++                pos: BlockPos::new(x, 63, z),
++                block_state: BlockKind::Stone.into(),
++            });
++        }
++    }
++    simulation.receive_packet(ClientboundPlayerPosition {
++        id: 1,
++        change: PositionMoveRotation {
++            pos: Vec3::new(BX, 64., BZ),
++            delta: Vec3::ZERO,
++            look_direction: LookDirection::default(),
++        },
++        relative: RelativeMovements::all_absolute(),
++    });
++    for _ in 0..4 {
++        simulation.tick();
++    }
++    simulation
++}
++
++fn add_at(simulation: &mut Simulation, kind: EntityKind, id: i32, pos: impl Into<Vec3>) -> Entity {
++    let mut p = make_basic_add_entity(kind, id, pos);
++    p.uuid = Uuid::from_u128(20_000 + id as u128);
++    simulation.receive_packet(p);
++    simulation.update();
++    entity_of(simulation, id)
++}
++
++fn entity_of(simulation: &Simulation, id: i32) -> Entity {
++    let mut found = None;
++    simulation.with_component::<EntityIdIndex>(|ids| {
++        found = ids.get_by_minecraft_entity(MinecraftEntityId(id));
++    });
++    found.expect("entity is loaded")
++}
++
++fn velocity(simulation: &Simulation) -> Vec3 {
++    simulation.component::<Physics>().velocity
++}
++fn bot_pos(simulation: &Simulation) -> Vec3 {
++    *simulation.component::<Position>()
++}
++fn record(simulation: &Simulation) -> PushRecord {
++    simulation.component::<PushRecord>()
++}
++
++/// Add an entity with the given x offset from the bot and tick once (the add and the first
++/// push, if any, share that tick). Returns the velocity change in that tick.
++fn push_dx(kind: EntityKind, id: i32, dx: f64, dz: f64) -> (f64, f64) {
++    let _lock = init();
++    let mut simulation = setup();
++    assert_eq!(velocity(&simulation).x, 0.0, "the bot is at rest");
++    add_at(&mut simulation, kind, id, (BX + dx, 64., BZ + dz));
++    simulation.tick();
++    let v = velocity(&simulation);
++    (v.x, v.z)
++}
++
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++#[test]
++fn test_a_cow_after_the_bot_pushes_after_the_bot_moved() {
++    let _lock = init();
++    let mut simulation = setup();
++    let x0 = bot_pos(&simulation).x;
++    // The cow joins after the bot, so it ticks after it: the push lands after this tick's move.
++    add_at(&mut simulation, EntityKind::Cow, 50, (BX + 0.3, 64., BZ));
++    simulation.tick();
++    let want = -(0.05f32 as f64) * 0.3f64.sqrt();
++    assert!((velocity(&simulation).x - want).abs() < 1e-9, "{}", velocity(&simulation).x);
++    assert_eq!(bot_pos(&simulation).x, x0, "no move yet: the push came after the bot's tick");
++    assert_eq!(record(&simulation).total, 1);
++    // The next tick's travel uses it.
++    simulation.tick();
++    assert!((bot_pos(&simulation).x - (x0 + want)).abs() < 1e-9, "{}", bot_pos(&simulation).x - x0);
++}
++
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++#[test]
++fn test_a_cow_before_the_bot_pushes_into_this_ticks_travel() {
++    let _lock = init();
++    let mut simulation = setup();
++    let x0 = bot_pos(&simulation).x;
++    add_at(&mut simulation, EntityKind::Cow, 50, (BX + 0.3, 64., BZ));
++    // Make the bot the last entry, as a respawn in the same dimension does.
++    let bot = simulation.entity;
++    simulation.app.world_mut().get_mut::<EntityIdIndex>(bot).unwrap().tick_order_mut().assign(bot);
++    simulation.tick();
++    let want = -(0.05f32 as f64) * 0.3f64.sqrt();
++    assert!((bot_pos(&simulation).x - (x0 + want)).abs() < 1e-9, "moved in the same tick: {}", bot_pos(&simulation).x - x0);
++}
++
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++#[test]
++fn test_push_amount_bands_through_the_whole_stack() {
++    // Offsets 0.005 (nothing), 0.01, 0.3, 0.74 with a cow (strict box test: 0.75 is the edge);
++    // 1.0 and 2.2 with a ghast (4 blocks wide).
++    let a = (0.05f32 as f64, 0.01f32 as f64);
++    let cases = [
++        (EntityKind::Cow, 0.005, 0.0),
++        (EntityKind::Cow, 0.01, -0.1 * a.0),
++        (EntityKind::Cow, 0.3, -a.0 * 0.3f64.sqrt()),
++        (EntityKind::Cow, 0.74, -a.0 * 0.74f64.sqrt()),
++        (EntityKind::Ghast, 1.0, -a.0),
++        (EntityKind::Ghast, 2.2, -a.0),
++    ];
++    for (i, (kind, dx, want)) in cases.into_iter().enumerate() {
++        let (vx, vz) = push_dx(kind, 60 + i as i32, dx, 0.0);
++        assert!((vx - want).abs() < 1e-9, "{kind:?} at {dx}: {vx}, wanted {want}");
++        assert_eq!(vz, 0.0);
++    }
++    // Each axis and a diagonal: away from the pusher, the larger axis sets the scale.
++    let (vx, vz) = push_dx(EntityKind::Cow, 70, 0.0, -0.3);
++    assert_eq!(vx, 0.0);
++    assert!((vz - a.0 * 0.3f64.sqrt()).abs() < 1e-9, "{vz}");
++    let (vx, vz) = push_dx(EntityKind::Cow, 71, 0.4, -0.2);
++    let s = a.0 / 0.4f64.sqrt();
++    assert!((vx + 0.4 * s).abs() < 1e-9 && (vz - 0.2 * s).abs() < 1e-9, "{vx} {vz}");
++}
++
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++#[test]
++fn test_exceptions_and_non_pushers() {
++    let none = [
++        EntityKind::ArmorStand,
++        EntityKind::Bat,
++        EntityKind::Parrot,
++        EntityKind::Vex,
++        EntityKind::EnderDragon,
++        EntityKind::Minecart,
++        EntityKind::Item,
++        EntityKind::Arrow,
++        EntityKind::ItemFrame,
++    ];
++    for (i, kind) in none.into_iter().enumerate() {
++        let (vx, _) = push_dx(kind, 80 + i as i32, 0.3, 0.0);
++        assert_eq!(vx, 0.0, "{kind:?} must not push");
++    }
++    // A horse (ridden or not: the rider is not tracked) and a shulker push like any living entity.
++    for (i, kind) in [EntityKind::Horse, EntityKind::Shulker, EntityKind::Player].into_iter().enumerate() {
++        let (vx, _) = push_dx(kind, 100 + i as i32, 0.3, 0.0);
++        assert!(vx < -0.02, "{kind:?} pushes: {vx}");
++    }
++}
++
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++#[test]
++fn test_a_dying_mob_still_pushes_and_a_spectator_remote_player_does_not() {
++    let _lock = init();
++    let mut simulation = setup();
++    let cow = add_at(&mut simulation, EntityKind::Cow, 110, (BX + 0.3, 64., BZ));
++    simulation.app.world_mut().entity_mut(cow).insert((Health(0.0), Dead));
++    simulation.tick();
++    assert!(velocity(&simulation).x < -0.02, "a dying mob pushes until the server removes it");
++
++    // A remote player in spectator mode has noPhysics.
++    let _lock2 = ();
++    let mut simulation = setup();
++    let uuid = Uuid::from_u128(20_111);
++    simulation.with_component_mut::<TabList>(|t| {
++        t.insert(
++            uuid,
++            PlayerInfo {
++                profile: GameProfile::new(uuid, "ghost".to_owned()),
++                uuid,
++                gamemode: GameMode::Spectator,
++                latency: 0,
++                display_name: None::<Box<FormattedText>>,
++            },
++        );
++    });
++    add_at(&mut simulation, EntityKind::Player, 111, (BX + 0.3, 64., BZ));
++    simulation.tick();
++    assert_eq!(velocity(&simulation).x, 0.0);
++}
++
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++#[test]
++fn test_target_conditions_spectator_dead_climbable_sleeping() {
++    // The bot is a spectator.
++    let _lock = init();
++    let mut simulation = setup();
++    simulation.with_component_mut::<LocalGameMode>(|g| g.current = GameMode::Spectator);
++    add_at(&mut simulation, EntityKind::Cow, 120, (BX + 0.3, 64., BZ));
++    simulation.tick();
++    assert_eq!(velocity(&simulation).x, 0.0, "spectator");
++
++    // Sleeping: not pushed by a living entity, pushed by a boat.
++    let mut simulation = setup();
++    simulation.app.world_mut().entity_mut(simulation.entity).insert(SleepingPos(Some(BlockPos::new(8, 64, 8))));
++    add_at(&mut simulation, EntityKind::Cow, 121, (BX + 0.3, 64., BZ));
++    simulation.tick();
++    assert_eq!(velocity(&simulation).x, 0.0, "sleeping vs a living pusher");
++    let mut simulation = setup();
++    simulation.app.world_mut().entity_mut(simulation.entity).insert(SleepingPos(Some(BlockPos::new(8, 64, 8))));
++    add_at(&mut simulation, EntityKind::OakBoat, 122, (BX + 1.0, 64., BZ));
++    simulation.tick();
++    assert!(velocity(&simulation).x < 0.0, "sleeping vs a boat: {}", velocity(&simulation).x);
++
++    // On a climbable: a ladder where the bot stands.
++    let mut simulation = setup();
++    simulation.receive_packet(ClientboundBlockUpdate {
++        pos: BlockPos::new(8, 64, 8),
++        block_state: BlockKind::Ladder.into(),
++    });
++    simulation.tick();
++    add_at(&mut simulation, EntityKind::Cow, 123, (BX + 0.3, 64., BZ));
++    simulation.tick();
++    assert_eq!(velocity(&simulation).x, 0.0, "on a climbable");
++}
++
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities: boats)
++#[test]
++fn test_boat_band_and_height_rule() {
++    // Boat half-width 0.6875; the bot's box ends at x = 8.8. A gap of g puts the boat centre at
++    // 8.8 + g + 0.6875.
++    let at = |gap: f64| BX + 0.3 + gap + 0.6875;
++    let run = |id: i32, gap: f64, y: f64| {
++        let _lock = init();
++        let mut simulation = setup();
++        add_at(&mut simulation, EntityKind::OakBoat, id, (at(gap), y, BZ));
++        simulation.tick();
++        velocity(&simulation).x
++    };
++    // Away from the boat means -x, since the boat is at +x.
++    assert!(run(131, 0.15, 64.0) < -0.02, "gap 0.15: pushed");
++    assert_eq!(run(132, 0.25, 64.0), 0.0, "gap 0.25: outside the band");
++    assert!(run(133, -0.1, 64.0) < -0.02, "overlap: pushed");
++    assert!(run(134, 0.1, 64.2) < -0.02, "boat bottom above the bot's feet: pushed");
++    assert_eq!(run(135, 0.1, 63.5), 0.0, "bot's feet above the boat's bottom: not pushed");
++}
++
++fn team_packet(name: &str, method: Method) -> ClientboundSetPlayerTeam {
++    ClientboundSetPlayerTeam { name: name.to_owned(), method }
++}
++fn params(rule: c_set_player_team::CollisionRule) -> Parameters {
++    Parameters {
++        display_name: FormattedText::default(),
++        options: 0,
++        nametag_visibility: c_set_player_team::NameTagVisibility::Always,
++        collision_rule: rule,
++        color: azalea_chat::style::ChatFormatting::White,
++        player_prefix: FormattedText::default(),
++        player_suffix: FormattedText::default(),
++    }
++}
++
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities: teams)
++#[test]
++fn test_team_packets_fill_the_scoreboard() {
++    use c_set_player_team::CollisionRule as W;
++    let _lock = init();
++    let mut simulation = setup();
++    let board = |s: &Simulation| s.component::<Scoreboard>();
++
++    // An action on an unknown team is ignored.
++    simulation.receive_packet(team_packet("t", Method::Join(vec!["a".into()])));
++    simulation.receive_packet(team_packet("t", Method::Change(params(W::Never))));
++    simulation.receive_packet(team_packet("t", Method::Remove));
++    simulation.update();
++    assert!(board(&simulation).is_empty());
++
++    simulation.receive_packet(team_packet("t", Method::Add((params(W::PushOwnTeam), vec!["a".into()]))));
++    simulation.receive_packet(team_packet("u", Method::Add((params(W::Always), vec![]))));
++    simulation.update();
++    assert_eq!(board(&simulation).team_ref("a").unwrap().rule, CollisionRule::PushOwnTeam);
++    // Join replaces the old team.
++    simulation.receive_packet(team_packet("u", Method::Join(vec!["a".into()])));
++    simulation.update();
++    assert_eq!(board(&simulation).team_of("a"), Some("u"));
++    assert_eq!(board(&simulation).members_of("t"), 0);
++    // Leave of a name that is on another team is ignored.
++    simulation.receive_packet(team_packet("t", Method::Leave(vec!["a".into()])));
++    simulation.update();
++    assert_eq!(board(&simulation).team_of("a"), Some("u"));
++    simulation.receive_packet(team_packet("u", Method::Leave(vec!["a".into()])));
++    simulation.update();
++    assert_eq!(board(&simulation).team_of("a"), None);
++    // Change sets the rule, Remove drops the team and its members.
++    simulation.receive_packet(team_packet("u", Method::Join(vec!["b".into()])));
++    simulation.receive_packet(team_packet("u", Method::Change(params(W::Never))));
++    simulation.update();
++    assert_eq!(board(&simulation).team_ref("b").unwrap().rule, CollisionRule::Never);
++    simulation.receive_packet(team_packet("u", Method::Remove));
++    simulation.update();
++    assert_eq!(board(&simulation).team_of("b"), None);
++    assert!(!board(&simulation).has_team("u"));
++}
++
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities: teams)
++#[test]
++fn test_collision_rules_decide_who_pushes_the_bot() {
++    use c_set_player_team::CollisionRule as W;
++    let _lock = init();
++    let mut simulation = setup();
++    let cow_name = Uuid::from_u128(20_140).to_string();
++    // The cow is in a team that never collides: no push. Mobs are keyed by UUID text.
++    simulation.receive_packet(team_packet("t", Method::Add((params(W::Never), vec![cow_name.clone()]))));
++    add_at(&mut simulation, EntityKind::Cow, 140, (BX + 0.3, 64., BZ));
++    simulation.tick();
++    assert_eq!(velocity(&simulation).x, 0.0, "pusher on a never team");
++    // Leave: pushes resume.
++    simulation.receive_packet(team_packet("t", Method::Leave(vec![cow_name.clone()])));
++    simulation.tick();
++    assert!(velocity(&simulation).x < -0.02, "after leave");
++
++    // Only the bot (keyed by name) on a never team: no push either.
++    let mut simulation = setup();
++    simulation.receive_packet(team_packet("t", Method::Add((params(W::Never), vec!["azalea".into()]))));
++    add_at(&mut simulation, EntityKind::Cow, 141, (BX + 0.3, 64., BZ));
++    simulation.tick();
++    assert_eq!(velocity(&simulation).x, 0.0, "target on a never team");
++
++    // Both in one pushOwnTeam team: allied, no push. In two teams of that rule: they push.
++    let mut simulation = setup();
++    let cow2 = Uuid::from_u128(20_142).to_string();
++    simulation.receive_packet(team_packet("t", Method::Add((params(W::PushOwnTeam), vec!["azalea".into(), cow2.clone()]))));
++    add_at(&mut simulation, EntityKind::Cow, 142, (BX + 0.3, 64., BZ));
++    simulation.tick();
++    assert_eq!(velocity(&simulation).x, 0.0, "allied and pushOwnTeam");
++    simulation.receive_packet(team_packet("t", Method::Leave(vec![cow2.clone()])));
++    simulation.receive_packet(team_packet("v", Method::Add((params(W::PushOwnTeam), vec![cow2]))));
++    simulation.tick();
++    assert!(velocity(&simulation).x < -0.02, "different teams, pushOwnTeam only blocks allies");
++}
++
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities: tick order)
++#[test]
++fn test_tick_order_respawn_dimension_change_and_re_add() {
++    let _lock = init();
++    let mut simulation = setup();
++    let bot = simulation.entity;
++    let cow = add_at(&mut simulation, EntityKind::Cow, 150, (BX + 3., 64., BZ));
++    let order = |s: &Simulation, e: Entity| -> Option<u64> {
++        s.app.world().get::<EntityIdIndex>(s.entity).unwrap().tick_order().number(e)
++    };
++    assert_eq!(order(&simulation, bot), Some(0), "the bot is first at login");
++    assert!(order(&simulation, cow).unwrap() > 0);
++
++    // Remove and add again: the cow moves to the end.
++    let other = add_at(&mut simulation, EntityKind::Pig, 151, (BX + 4., 64., BZ));
++    let before = order(&simulation, cow).unwrap();
++    assert!(order(&simulation, other).unwrap() > before);
++    simulation.receive_packet(ClientboundRemoveEntities { entity_ids: vec![MinecraftEntityId(150)] });
++    simulation.update();
++    assert_eq!(order(&simulation, cow), None);
++    let cow = add_at(&mut simulation, EntityKind::Cow, 150, (BX + 3., 64., BZ));
++    assert!(order(&simulation, cow).unwrap() > order(&simulation, other).unwrap());
++
++    // A respawn in the same dimension: the bot goes to the end of the numbers given so far. (The
++    // fork unloads every entity at a respawn and the server sends them again afterwards, so
++    // they come after the bot.)
++    let newest = order(&simulation, cow).unwrap().max(order(&simulation, other).unwrap());
++    simulation.receive_packet(make_basic_respawn_packet(
++        DimensionKind::new_raw(0),
++        Identifier::new("minecraft:overworld"),
++    ));
++    simulation.update();
++    assert!(order(&simulation, bot).unwrap() > newest);
++    let cow = add_at(&mut simulation, EntityKind::Cow, 150, (BX + 3., 64., BZ));
++    assert!(order(&simulation, cow).unwrap() > order(&simulation, bot).unwrap(), "re-sent after the bot");
++
++    // Another dimension: a new level with an empty list, the bot first again.
++    simulation.receive_packet(make_basic_respawn_packet(
++        DimensionKind::new_raw(0),
++        Identifier::new("azalea:b"),
++    ));
++    simulation.update();
++    assert_eq!(order(&simulation, bot), Some(0));
++    assert_eq!(order(&simulation, cow), None);
++}
++
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities: velocity packets)
++#[test]
++fn test_a_motion_packet_overwrites_an_earlier_push_and_two_pushers_add_up() {
++    let _lock = init();
++    let mut simulation = setup();
++    add_at(&mut simulation, EntityKind::Cow, 160, (BX + 0.3, 64., BZ));
++    add_at(&mut simulation, EntityKind::Pig, 161, (BX + 0.4, 64., BZ));
++    simulation.tick();
++    let want = -(0.05f32 as f64) * (0.3f64.sqrt() + 0.4f64.sqrt());
++    assert!((velocity(&simulation).x - want).abs() < 1e-9, "two pushers add: {}", velocity(&simulation).x);
++    assert_eq!(record(&simulation).max_in_tick, 2);
++
++    // The packet is applied before the tick, so the earlier push is gone.
++    simulation.receive_packet(ClientboundSetEntityMotion {
++        id: simulation.minecraft_entity_id(),
++        delta: LpVec3::from(Vec3::new(0.5, 0., 0.)),
++    });
++    simulation.update();
++    assert!((velocity(&simulation).x - 0.5).abs() < 1e-3, "{}", velocity(&simulation).x);
++}
++
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities: the pusher's step in this tick)
++#[test]
++fn test_a_pusher_before_the_bot_is_taken_after_its_own_interpolation_step() {
++    let _lock = init();
++    let mut simulation = setup();
++    // A cow 2 blocks away does not touch the bot; the server moves it to -2.5, so its first step
++    // (1/3 of the way) ends 0.5 from the bot, in contact.
++    let cow = add_at(&mut simulation, EntityKind::Cow, 170, (BX + 2.0, 64., BZ));
++    simulation.tick();
++    assert_eq!(velocity(&simulation).x, 0.0);
++    let bot = simulation.entity;
++    simulation.app.world_mut().get_mut::<EntityIdIndex>(bot).unwrap().tick_order_mut().assign(bot);
++    simulation.receive_packet(ClientboundTeleportEntity {
++        id: MinecraftEntityId(170),
++        change: PositionMoveRotation {
++            pos: Vec3::new(BX - 2.5, 64., BZ),
++            delta: Vec3::ZERO,
++            look_direction: Default::default(),
++        },
++        relative: RelativeMovements::all_absolute(),
++        on_ground: true,
++    });
++    let x0 = bot_pos(&simulation).x;
++    simulation.tick();
++    let cow_x = simulation.app.world().get::<Position>(cow).unwrap().x;
++    assert!((cow_x - (BX + 0.5)).abs() < 1e-9, "cow at {cow_x}");
++    // The bot felt the push in this tick's travel: the cow, 0.5 away on +x, pushes it to -x.
++    assert!(bot_pos(&simulation).x < x0 - 0.02, "moved {}", bot_pos(&simulation).x - x0);
++}
++
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities: the bot-to-bot case)
++#[test]
++fn test_another_bot_pushes_from_this_bots_view_of_it() {
++    let _lock = init();
++    let mut simulation = setup();
++    let mut p = make_basic_add_entity(EntityKind::Player, 180, (BX + 0.3, 64., BZ));
++    p.uuid = Uuid::from_u128(20_180);
++    simulation.receive_packet(p);
++    simulation.update();
++    let peer = entity_of(&simulation, 180);
++    simulation.app.world_mut().entity_mut(peer).insert(LocalEntity);
++    simulation.tick();
++    let mut seen = Vec3::ZERO;
++    simulation.with_component::<PeerView>(|v| seen = v.get(peer).expect("in the view").position);
++    // The other bot's own position moves away; the push reads this bot's view of it.
++    simulation.app.world_mut().entity_mut(peer).insert(Position::new(Vec3::new(BX + 9., 64., BZ)));
++    let before = record(&simulation).total;
++    simulation.tick();
++    assert!(record(&simulation).total > before, "pushed by the view of the other bot");
++    let (want, _) = azalea_entity::push::push_velocity(seen.x - bot_pos(&simulation).x, seen.z - bot_pos(&simulation).z).unwrap();
++    assert!(want < -0.02);
++    assert!((record(&simulation).tick_delta.0 - want).abs() < 1e-12, "{} vs {want}", record(&simulation).tick_delta.0);
++}
+diff --git a/azalea-client/tests/simulation/mod.rs b/azalea-client/tests/simulation/mod.rs
+index 564e923..94c6a89 100644
+--- a/azalea-client/tests/simulation/mod.rs
++++ b/azalea-client/tests/simulation/mod.rs
+@@ -11,6 +11,7 @@ mod correct_sprint_sneak_movement;
+ mod despawn_entities_when_changing_dimension;
+ mod enchantments;
+ mod entity_interpolation;
++mod entity_pushes;
+ mod fast_login;
+ mod item_use_hold_and_release;
+ mod login_to_dimension_with_same_name;
+diff --git a/azalea-entity/src/interpolation.rs b/azalea-entity/src/interpolation.rs
+index 6462373..ef70b33 100644
+--- a/azalea-entity/src/interpolation.rs
++++ b/azalea-entity/src/interpolation.rs
+@@ -117,6 +117,22 @@ impl InterpolationState {
+         Interpolate::Started
+     }
+ 
++    /// The position the next [`step`](Self::step) would give, without taking it. The pushes use
++    /// it for entities that tick before the local player: vanilla has already taken their step
++    /// in this tick (patch 32).
++    pub fn peek(&self, current: Vec3) -> Vec3 {
++        if !self.is_active() {
++            return current;
++        }
++        let d = 1.0 / self.left as f64;
++        let lerp = |a: f64, b: f64| a + d * (b - a);
++        Vec3::new(
++            lerp(current.x, self.target.x),
++            lerp(current.y, self.target.y),
++            lerp(current.z, self.target.z),
++        )
++    }
++
+     /// `InterpolationHandler#interpolate`, once per tick: move `1 / steps left` of the way to the
+     /// target on each axis, then count one step off. The displacement shift for riders and
+     /// carried entities is not modelled. Returns the new position, or `None` when idle.
+@@ -297,6 +313,11 @@ impl PeerEntry {
+         self.state.steps_left()
+     }
+ 
++    /// The position this entry takes in the next [`tick`](Self::tick), without taking it.
++    pub fn peek_position(&self) -> Vec3 {
++        self.state.peek(self.position)
++    }
++
+     /// One tick: an interpolation step, then the box at the new position.
+     pub fn tick(&mut self, dimensions: &EntityDimensions) {
+         if let Some(next) = self.state.step(self.position) {
+@@ -486,6 +507,24 @@ mod tests {
+         assert!(s.step(at).is_none());
+     }
+ 
++    #[test]
++    fn peek_shows_the_next_step_without_taking_it() {
++        let mut s = InterpolationState::new((0., 0.));
++        let at = v(0., 0., 0.);
++        assert_eq!(s.peek(at), at, "idle: where it is");
++        s.interpolate_to(3, Some(v(9., 0., 0.)), None, at);
++        assert_eq!(s.peek(at), v(3., 0., 0.));
++        assert_eq!(s.steps_left(), 3, "peeking takes no step");
++        let next = s.step(at).unwrap();
++        assert_eq!(next, v(3., 0., 0.));
++        assert_eq!(s.peek(next), v(6., 0., 0.));
++        let d = dims();
++        let mut e = PeerEntry::seed(v(0., 64., 0.), (0., 0.), &d);
++        e.on_move(Some(&PositionDelta8 { xa: 12288, ya: 0, za: 0 }), None);
++        assert!((e.peek_position().x - 1.0).abs() < 1e-9);
++        assert!(e.position.x.abs() < 1e-9);
++    }
++
+     #[test]
+     fn an_equal_target_is_ignored_and_a_new_one_restarts() {
+         let mut s = InterpolationState::new((10., 5.));
+diff --git a/azalea-entity/src/lib.rs b/azalea-entity/src/lib.rs
+index afca2c3..1b955cc 100644
+--- a/azalea-entity/src/lib.rs
++++ b/azalea-entity/src/lib.rs
+@@ -12,6 +12,10 @@ pub mod interpolation;
+ pub mod metadata;
+ pub mod mining;
+ pub mod particle;
++#[cfg(feature = "bevy_ecs")]
++pub mod push;
++#[cfg(feature = "bevy_ecs")]
++pub mod teams;
+ pub mod unmodelled;
+ #[cfg(feature = "bevy_ecs")]
+ mod plugin;
+diff --git a/azalea-entity/src/plugin/indexing.rs b/azalea-entity/src/plugin/indexing.rs
+index 9e539c2..68a689a 100644
+--- a/azalea-entity/src/plugin/indexing.rs
++++ b/azalea-entity/src/plugin/indexing.rs
+@@ -57,6 +57,54 @@ pub struct EntityIdIndex {
+     /// An index of entities by their MinecraftEntityId
+     entity_by_id: IntMap<MinecraftEntityId, Entity>,
+     id_by_entity: HashMap<Entity, MinecraftEntityId>,
++    /// Null fork, patch 32: the order this client ticks its entities in.
++    tick_order: TickOrder,
++}
++
++/// The order in which one client ticks the entities it knows (Null fork, patch 32).
++///
++/// Vanilla `ClientLevel#tickEntities` walks `EntityTickList`, a map in insertion order: an
++/// entity joins it when it is added to the level and leaves on removal, so removing and adding
++/// it again puts it at the end. The local player is one entry, added at login (first), and again
++/// at a respawn in the same dimension (`ClientLevel#addEntity` removes the old entry first, so
++/// the player moves to the end); a respawn into another dimension builds a new level with an
++/// empty list. The swarm shares one ECS world and its hash maps keep no order, so each client
++/// keeps its own sequence numbers here. An entity with no number counts as ticking after the
++/// player. Not modelled: the chunk-section ticking state (an entity in a chunk that loads later
++/// ticks later in vanilla).
++///
++/// Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++#[derive(Clone, Debug, Default)]
++pub struct TickOrder {
++    next: u64,
++    seq: HashMap<Entity, u64>,
++}
++
++impl TickOrder {
++    /// Give `entity` the next number (a new entry, or the old one moved to the end).
++    pub fn assign(&mut self, entity: Entity) -> u64 {
++        let n = self.next;
++        self.next += 1;
++        self.seq.insert(entity, n);
++        n
++    }
++    pub fn drop_entity(&mut self, entity: Entity) {
++        self.seq.remove(&entity);
++    }
++    pub fn clear(&mut self) {
++        self.next = 0;
++        self.seq.clear();
++    }
++    pub fn number(&self, entity: Entity) -> Option<u64> {
++        self.seq.get(&entity).copied()
++    }
++    /// Does `entity` tick before `local` (the local player)? An entity with no number does not.
++    pub fn ticks_before(&self, entity: Entity, local: Entity) -> bool {
++        match (self.number(entity), self.number(local)) {
++            (Some(a), Some(b)) => a < b,
++            _ => false,
++        }
++    }
+ }
+ 
+ impl EntityIdIndex {
+@@ -67,6 +115,14 @@ impl EntityIdIndex {
+         self.id_by_entity.get(&entity).copied()
+     }
+ 
++    /// The order this client ticks its entities in (patch 32).
++    pub fn tick_order(&self) -> &TickOrder {
++        &self.tick_order
++    }
++    pub fn tick_order_mut(&mut self) -> &mut TickOrder {
++        &mut self.tick_order
++    }
++
+     pub fn contains_minecraft_entity(&self, id: MinecraftEntityId) -> bool {
+         self.entity_by_id.contains_key(&id)
+     }
+@@ -77,6 +133,7 @@ impl EntityIdIndex {
+     pub fn insert(&mut self, id: MinecraftEntityId, entity: Entity) {
+         self.entity_by_id.insert(id, entity);
+         self.id_by_entity.insert(entity, id);
++        self.tick_order.assign(entity);
+         trace!("Inserted {id} -> {entity:?} into a client's EntityIdIndex");
+     }
+ 
+@@ -86,6 +143,7 @@ impl EntityIdIndex {
+                 "Removed {id} -> {entity:?} from a client's EntityIdIndex (using EntityIdIndex::remove)"
+             );
+             self.id_by_entity.remove(&entity);
++            self.tick_order.drop_entity(entity);
+             Some(entity)
+         } else {
+             trace!(
+@@ -101,6 +159,7 @@ impl EntityIdIndex {
+                 "Removed {id} -> {entity:?} from a client's EntityIdIndex (using EntityIdIndex::remove_by_ecs_entity)."
+             );
+             self.entity_by_id.remove(&id);
++            self.tick_order.drop_entity(entity);
+             Some(id)
+         } else {
+             // this is expected to happen when despawning entities if it was already
+diff --git a/azalea-entity/src/push.rs b/azalea-entity/src/push.rs
+new file mode 100644
+index 0000000..45bf991
+--- /dev/null
++++ b/azalea-entity/src/push.rs
+@@ -0,0 +1,268 @@
++//! Pushes on the local player from other entities (Null fork, patch 32): the pure rules.
++//!
++//! Vanilla 1.21.11, Mojang names. On the client, `LivingEntity#pushEntities` runs at the end of
++//! every living entity's `aiStep`; `ClientLevel#getPushableEntities` offers only the local
++//! player, and only when its box strictly intersects the caller's box. `EntitySelector#pushableBy`
++//! gates the target (`LivingEntity#isPushable`: alive, not a spectator, not on a climbable;
++//! the team table in [`crate::teams`]). `LivingEntity#push(Entity)` adds "a sleeping target is
++//! not pushed", `Entity#push(Entity)` adds "neither has `noPhysics`, the target has no
++//! passengers" and holds the arithmetic. `AbstractBoat#tick` pushes with a box inflated sideways,
++//! and `AbstractBoat#push` adds a height rule.
++//!
++//! Skipped on purpose, and written down here: the pusher's own mirror push (`Entity#push` also
++//! changes the pusher's velocity; nothing in the fork reads another entity's velocity),
++//! cramming damage (server only), the frozen-entity state (`TickRateManager#isEntityFrozen`:
++//! the fork has no frozen-entity state, so mobs and boats keep pushing while the server freezes
++//! ticks), and the chunk-section ticking state (an entity in a chunk that loads later ticks
++//! later in vanilla; the fork treats every loaded entity as ticking).
++//!
++//! Grim does not compute the push. `MovementTicker#handleEntityCollisions` counts the pushable
++//! entities near the player and widens the horizontal tolerance of check `Simulation` by 0.08
++//! each, so only an exact model, not Grim, proves the push.
++//!
++//! Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++
++use azalea_core::{aabb::Aabb, position::Vec3};
++use azalea_registry::builtin::EntityKind;
++use bevy_ecs::component::Component;
++
++/// `0.05F` of `Entity#push(Entity)`, widened as the float constant is.
++pub const PUSH_SCALE: f64 = 0.05f32 as f64;
++/// `0.01F`: an offset under this pushes nothing.
++pub const PUSH_MIN_OFFSET: f64 = 0.01f32 as f64;
++/// The sideways inflation of a boat's push box (`inflate(0.2F, -0.01F, 0.2F)`).
++pub const BOAT_BAND_XZ: f64 = 0.2f32 as f64;
++/// The vertical inflation of a boat's push box.
++pub const BOAT_BAND_Y: f64 = -0.01f32 as f64;
++
++/// The velocity `Entity#push(Entity)` adds to the target for a pusher at `(dx, dz)` from the
++/// target (pusher minus target, horizontal), or `None` under the 0.01 limit. The sign is away
++/// from the pusher; the vertical part is 0.
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++pub fn push_velocity(dx: f64, dz: f64) -> Option<(f64, f64)> {
++    let mut f = dx.abs().max(dz.abs());
++    if f < PUSH_MIN_OFFSET {
++        return None;
++    }
++    f = f.sqrt();
++    let mut d = dx / f;
++    let mut e = dz / f;
++    let mut g = 1.0 / f;
++    if g > 1.0 {
++        g = 1.0;
++    }
++    d *= g;
++    e *= g;
++    d *= PUSH_SCALE;
++    e *= PUSH_SCALE;
++    Some((-d, -e))
++}
++
++/// How an entity pushes the local player.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum PusherClass {
++    /// `LivingEntity#pushEntities`: its own box, strict intersection.
++    Living,
++    /// `AbstractBoat#tick`: the box inflated by [`BOAT_BAND_XZ`]/[`BOAT_BAND_Y`], plus the height
++    /// rule of `AbstractBoat#push`.
++    Boat,
++}
++
++/// Which way an entity pushes a player, or `None` when it never does. `living` is the living
++/// marker, `boat` the boat marker. Items, arrows, item frames and minecarts never push on the
++/// client (both minecart behaviours push on the server only). An armor stand (`ArmorStand#doPush`
++/// is empty) and a bat push nothing; a parrot skips players (`Parrot#doPush`); a Vex and the
++/// Ender Dragon have `noPhysics` set where their `aiStep` runs. A dying mob and a ridden horse
++/// still push: their own health and pushability are not checked.
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++pub fn pusher_class(living: bool, boat: bool, kind: EntityKind) -> Option<PusherClass> {
++    if boat {
++        return Some(PusherClass::Boat);
++    }
++    if !living {
++        return None;
++    }
++    match kind {
++        EntityKind::ArmorStand
++        | EntityKind::Bat
++        | EntityKind::Parrot
++        | EntityKind::Vex
++        | EntityKind::EnderDragon => None,
++        _ => Some(PusherClass::Living),
++    }
++}
++
++/// `AbstractBoat#push`: a bot is pushed by a boat only when its box bottom is at or below the
++/// boat's box bottom.
++pub fn boat_height_rule(target_min_y: f64, boat_min_y: f64) -> bool {
++    target_min_y <= boat_min_y
++}
++
++/// The box a pusher searches for the local player: its own for a living entity, the inflated
++/// one for a boat.
++pub fn push_box(class: PusherClass, pusher_box: &Aabb) -> Aabb {
++    match class {
++        PusherClass::Living => *pusher_box,
++        PusherClass::Boat => pusher_box.inflate(Vec3::new(BOAT_BAND_XZ, BOAT_BAND_Y, BOAT_BAND_XZ)),
++    }
++}
++
++/// The local player as a push target: `LivingEntity#isPushable` (alive, not a spectator, not on
++/// a climbable), no passengers and no `noPhysics` (`Entity#push`; a spectator has `noPhysics`).
++/// `sleeping` only blocks pushes by living pushers (`LivingEntity#push`), not boats.
++pub fn target_pushable(
++    spectator: bool,
++    dead: bool,
++    on_climbable: bool,
++    has_passengers: bool,
++    sleeping: bool,
++    class: PusherClass,
++) -> bool {
++    if spectator || dead || on_climbable || has_passengers {
++        return false;
++    }
++    !(sleeping && class == PusherClass::Living)
++}
++
++/// Pushes the local player received, for evidence (rows and load tests read it). A "tick" is the
++/// bot's own game tick as counted by the first pass.
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++#[derive(Clone, Component, Debug, Default, PartialEq)]
++pub struct PushRecord {
++    /// Game ticks the push passes have seen.
++    pub ticks: u64,
++    /// Pushes applied, ever.
++    pub total: u64,
++    /// The tick of the last push (`ticks` then), if any.
++    pub last_tick: Option<u64>,
++    /// Pushes applied in the current tick.
++    pub in_tick: u32,
++    /// The most pushes applied in one tick.
++    pub max_in_tick: u32,
++    /// Velocity added in the current tick (both passes), for the trace.
++    pub tick_delta: (f64, f64),
++}
++
++impl PushRecord {
++    pub fn begin_tick(&mut self) {
++        self.ticks += 1;
++        self.in_tick = 0;
++        self.tick_delta = (0.0, 0.0);
++    }
++    pub fn record(&mut self, dv: (f64, f64)) {
++        self.total += 1;
++        self.in_tick += 1;
++        self.max_in_tick = self.max_in_tick.max(self.in_tick);
++        self.last_tick = Some(self.ticks);
++        self.tick_delta.0 += dv.0;
++        self.tick_delta.1 += dv.1;
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn close(a: f64, b: f64) -> bool {
++        (a - b).abs() < 1e-12
++    }
++
++    #[test]
++    fn below_the_limit_nothing_happens_and_at_it_a_push_starts() {
++        assert_eq!(push_velocity(0.005, 0.0), None);
++        assert_eq!(push_velocity(0.0, -0.0099), None);
++        let (x, z) = push_velocity(0.01, 0.0).unwrap();
++        // f = 0.01, sqrt = 0.1, d = 0.1, g = 1 -> 0.1 * 0.05 = 0.005, away from the pusher.
++        assert!(close(x, -0.1 * PUSH_SCALE), "{x}");
++        assert_eq!(z, 0.0);
++    }
++
++    #[test]
++    fn bands_follow_the_worked_check() {
++        // f < 1: the larger axis gets 0.05 * sqrt(f). f >= 1: exactly 0.05.
++        let (x, _) = push_velocity(0.3, 0.0).unwrap();
++        assert!(close(x, -(0.05f32 as f64) * 0.3f64.sqrt()), "{x}");
++        assert!((x + 0.0274).abs() < 1e-4);
++        let (x, _) = push_velocity(0.75, 0.0).unwrap();
++        assert!(close(x, -(0.05f32 as f64) * 0.75f64.sqrt()));
++        let (x, _) = push_velocity(1.0, 0.0).unwrap();
++        assert!(close(x, -(0.05f32 as f64)));
++        let (x, _) = push_velocity(3.5, 0.0).unwrap();
++        assert!(close(x, -(0.05f32 as f64)));
++    }
++
++    #[test]
++    fn each_axis_and_the_diagonal() {
++        let (x, z) = push_velocity(0.0, -0.3).unwrap();
++        assert_eq!(x, 0.0);
++        assert!(close(z, 0.05f32 as f64 * 0.3f64.sqrt()), "away from a pusher at -z is +z");
++        // Diagonal: the larger axis decides the scale for both; the smaller axis is scaled alike.
++        let (x, z) = push_velocity(0.3, 0.3).unwrap();
++        assert!(close(x, z));
++        assert!(close(x, -(0.05f32 as f64) * 0.3f64.sqrt()));
++        let (x, z) = push_velocity(0.4, -0.2).unwrap();
++        let s = 0.05f32 as f64 / 0.4f64.sqrt();
++        assert!(close(x, -0.4 * s) && close(z, 0.2 * s));
++        // Large diagonal: scale = 0.05 / f for f >= 1 (divide by sqrt, then by sqrt again).
++        let (x, z) = push_velocity(4.0, 2.0).unwrap();
++        assert!(close(x, -(0.05f32 as f64)) && close(z, -(0.05f32 as f64) * 0.5));
++    }
++
++    #[test]
++    fn exceptions_by_kind() {
++        use EntityKind::*;
++        assert_eq!(pusher_class(true, false, Cow), Some(PusherClass::Living));
++        assert_eq!(pusher_class(true, false, Player), Some(PusherClass::Living));
++        assert_eq!(pusher_class(true, false, Shulker), Some(PusherClass::Living));
++        for k in [ArmorStand, Bat, Parrot, Vex, EnderDragon] {
++            assert_eq!(pusher_class(true, false, k), None, "{k:?}");
++        }
++        assert_eq!(pusher_class(false, true, OakBoat), Some(PusherClass::Boat));
++        // Minecart, item, arrow: neither living nor boat.
++        for k in [Minecart, Item, Arrow, ItemFrame] {
++            assert_eq!(pusher_class(false, false, k), None, "{k:?}");
++        }
++    }
++
++    #[test]
++    fn target_conditions() {
++        let l = PusherClass::Living;
++        let b = PusherClass::Boat;
++        assert!(target_pushable(false, false, false, false, false, l));
++        assert!(!target_pushable(true, false, false, false, false, l), "spectator");
++        assert!(!target_pushable(false, true, false, false, false, l), "dead");
++        assert!(!target_pushable(false, false, true, false, false, l), "climbable");
++        assert!(!target_pushable(false, false, false, true, false, l), "passenger");
++        assert!(!target_pushable(false, false, false, false, true, l), "sleeping vs living");
++        assert!(target_pushable(false, false, false, false, true, b), "sleeping vs boat");
++    }
++
++    #[test]
++    fn the_boat_band_and_height_rule() {
++        let boat = Aabb { min: Vec3::new(0.0, 64.0, 0.0), max: Vec3::new(1.0, 64.5, 1.0) };
++        let band = push_box(PusherClass::Boat, &boat);
++        assert!(close(band.min.x, -BOAT_BAND_XZ) && close(band.max.z, 1.0 + BOAT_BAND_XZ));
++        assert!(close(band.min.y, 64.0 + 0.01f32 as f64) && close(band.max.y, 64.5 - 0.01f32 as f64));
++        assert_eq!(push_box(PusherClass::Living, &boat), boat);
++        // A bot 0.15 from the boat side (a gap) is inside the band; 0.25 is not.
++        let near = Aabb { min: Vec3::new(-0.75, 64.0, 0.2), max: Vec3::new(-0.15, 65.8, 0.8) };
++        let far = Aabb { min: Vec3::new(-0.85, 64.0, 0.2), max: Vec3::new(-0.25, 65.8, 0.8) };
++        assert!(band.intersects_aabb(&near));
++        assert!(!band.intersects_aabb(&far));
++        assert!(boat_height_rule(64.0, 64.0));
++        assert!(boat_height_rule(63.9, 64.0));
++        assert!(!boat_height_rule(64.1, 64.0));
++    }
++
++    #[test]
++    fn the_record_counts_pushes_per_tick() {
++        let mut r = PushRecord::default();
++        r.begin_tick();
++        r.record((0.1, 0.0));
++        r.record((0.0, 0.2));
++        r.begin_tick();
++        r.record((0.5, 0.5));
++        assert_eq!((r.total, r.max_in_tick, r.in_tick, r.last_tick), (3, 2, 1, Some(2)));
++        assert_eq!(r.tick_delta, (0.5, 0.5));
++    }
++}
+diff --git a/azalea-entity/src/teams.rs b/azalea-entity/src/teams.rs
+new file mode 100644
+index 0000000..fafdfa8
+--- /dev/null
++++ b/azalea-entity/src/teams.rs
+@@ -0,0 +1,233 @@
++//! The client's scoreboard teams and the collision-rule table (Null fork, patch 32).
++//!
++//! A vanilla client keeps its own scoreboard, filled by `ClientboundSetPlayerTeam`
++//! (`ClientPacketListener#handleSetPlayerTeamPacket`, `Scoreboard#addPlayerToTeam`,
++//! `#removePlayerFromTeam`, `#removePlayerTeam`). Who may push whom reads it
++//! (`EntitySelector#pushableBy`, `Team#isAlliedTo`). The server can send different teams to
++//! different players, so each bot keeps its own [`Scoreboard`].
++//!
++//! Grim holds the same table (`EntityPredicates#canBePushedBy`, check `Simulation` through
++//! `MovementTicker#handleEntityCollisions`).
++//!
++//! Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++
++use std::collections::HashMap;
++
++use bevy_ecs::component::Component;
++
++/// `Team.CollisionRule`.
++#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
++pub enum CollisionRule {
++    Always,
++    Never,
++    PushOtherTeams,
++    PushOwnTeam,
++}
++
++/// One team: its collision rule. Membership is kept in [`Scoreboard::team_of`].
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct Team {
++    pub collision_rule: CollisionRule,
++}
++
++/// A team as the push rule sees it: the team's name (for the "same team" test) and its rule.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct TeamRef<'a> {
++    pub name: &'a str,
++    pub rule: CollisionRule,
++}
++
++/// One bot's scoreboard: the teams by name, and the team of each member name. A member name is
++/// the profile name for a player and the UUID as text for every other entity
++/// (`Entity#getScoreboardName`).
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++#[derive(Clone, Component, Debug, Default)]
++pub struct Scoreboard {
++    teams: HashMap<String, Team>,
++    team_of: HashMap<String, String>,
++}
++
++impl Scoreboard {
++    /// `Scoreboard#addPlayerTeam` for an Add packet: an existing name is reused.
++    pub fn add_team(&mut self, name: &str, rule: CollisionRule) {
++        self.teams
++            .entry(name.to_owned())
++            .and_modify(|t| t.collision_rule = rule)
++            .or_insert(Team { collision_rule: rule });
++    }
++
++    /// Change packet. Returns false when the team is unknown (vanilla ignores it with a warning).
++    pub fn set_rule(&mut self, name: &str, rule: CollisionRule) -> bool {
++        match self.teams.get_mut(name) {
++            Some(t) => {
++                t.collision_rule = rule;
++                true
++            }
++            None => false,
++        }
++    }
++
++    /// Remove packet: the team goes and so does every membership. False when unknown.
++    pub fn remove_team(&mut self, name: &str) -> bool {
++        if self.teams.remove(name).is_none() {
++            return false;
++        }
++        self.team_of.retain(|_, t| t != name);
++        true
++    }
++
++    /// Join packet, one name: `Scoreboard#addPlayerToTeam` takes the name off its old team first.
++    /// False when the team is unknown.
++    pub fn join(&mut self, team: &str, member: &str) -> bool {
++        if !self.teams.contains_key(team) {
++            return false;
++        }
++        self.team_of.insert(member.to_owned(), team.to_owned());
++        true
++    }
++
++    /// Leave packet, one name. Vanilla throws when the name is on another team; the fork ignores
++    /// it. Returns whether the name was on that team.
++    pub fn leave(&mut self, team: &str, member: &str) -> bool {
++        if self.team_of.get(member).is_some_and(|t| t == team) {
++            self.team_of.remove(member);
++            true
++        } else {
++            false
++        }
++    }
++
++    pub fn has_team(&self, name: &str) -> bool {
++        self.teams.contains_key(name)
++    }
++    pub fn rule_of_team(&self, name: &str) -> Option<CollisionRule> {
++        self.teams.get(name).map(|t| t.collision_rule)
++    }
++    /// The team a member name is on.
++    pub fn team_of(&self, member: &str) -> Option<&str> {
++        self.team_of.get(member).map(String::as_str)
++    }
++    /// The member's team with its rule (`Entity#getTeam`).
++    pub fn team_ref(&self, member: &str) -> Option<TeamRef<'_>> {
++        let name = self.team_of.get(member)?;
++        let team = self.teams.get(name)?;
++        Some(TeamRef { name, rule: team.collision_rule })
++    }
++    /// No teams at all: every pair is `Always`, so a caller can skip the name lookup.
++    pub fn is_empty(&self) -> bool {
++        self.teams.is_empty()
++    }
++    pub fn team_count(&self) -> usize {
++        self.teams.len()
++    }
++    pub fn members_of(&self, team: &str) -> usize {
++        self.team_of.values().filter(|t| *t == team).count()
++    }
++}
++
++/// `EntitySelector#pushableBy`, team part: may `pusher` push `target`? No team counts as
++/// `Always`. `Team#isAlliedTo` compares team identity, so a missing team is never allied.
++// Spec: specs/B1-movement.md §4.2 (Pushes from entities)
++pub fn team_allows_push(pusher: Option<TeamRef<'_>>, target: Option<TeamRef<'_>>) -> bool {
++    let rule_a = pusher.map_or(CollisionRule::Always, |t| t.rule);
++    let rule_b = target.map_or(CollisionRule::Always, |t| t.rule);
++    if rule_a == CollisionRule::Never || rule_b == CollisionRule::Never {
++        return false;
++    }
++    let allied = matches!((pusher, target), (Some(a), Some(b)) if a.name == b.name);
++    if allied && (rule_a == CollisionRule::PushOwnTeam || rule_b == CollisionRule::PushOwnTeam) {
++        return false;
++    }
++    let other_teams = rule_a == CollisionRule::PushOtherTeams || rule_b == CollisionRule::PushOtherTeams;
++    !other_teams || allied
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use CollisionRule::*;
++
++    const ALL: [CollisionRule; 4] = [Always, Never, PushOtherTeams, PushOwnTeam];
++
++    /// The expected answer written as a case list from the vanilla text, not from the function:
++    /// never on either side blocks; allied teams push unless one is push-own-team; teams that
++    /// are not allied push unless one is push-other-teams.
++    fn expected(a: CollisionRule, b: CollisionRule, allied: bool) -> bool {
++        if a == Never || b == Never {
++            return false;
++        }
++        if allied {
++            return a != PushOwnTeam && b != PushOwnTeam;
++        }
++        a != PushOtherTeams && b != PushOtherTeams
++    }
++
++    #[test]
++    fn the_table_holds_for_all_32_cases() {
++        let mut n = 0;
++        for a in ALL {
++            for b in ALL {
++                for allied in [false, true] {
++                    let ta = TeamRef { name: "t1", rule: a };
++                    let tb = TeamRef { name: if allied { "t1" } else { "t2" }, rule: b };
++                    assert_eq!(team_allows_push(Some(ta), Some(tb)), expected(a, b, allied), "{a:?} {b:?} allied {allied}");
++                    n += 1;
++                }
++            }
++        }
++        assert_eq!(n, 32);
++    }
++
++    #[test]
++    fn a_missing_team_is_always_and_never_allied() {
++        for r in ALL {
++            let t = Some(TeamRef { name: "t", rule: r });
++            assert_eq!(team_allows_push(None, t), expected(Always, r, false));
++            assert_eq!(team_allows_push(t, None), expected(r, Always, false));
++        }
++        assert!(team_allows_push(None, None));
++    }
++
++    #[test]
++    fn join_replaces_the_old_team_and_leave_of_a_non_member_is_ignored() {
++        let mut sb = Scoreboard::default();
++        sb.add_team("a", Always);
++        sb.add_team("b", Never);
++        assert!(sb.join("a", "x"));
++        assert_eq!(sb.team_of("x"), Some("a"));
++        assert!(sb.join("b", "x"));
++        assert_eq!(sb.team_of("x"), Some("b"));
++        assert_eq!(sb.members_of("a"), 0);
++        assert!(!sb.leave("a", "x"), "x is on b");
++        assert_eq!(sb.team_of("x"), Some("b"));
++        assert!(sb.leave("b", "x"));
++        assert_eq!(sb.team_of("x"), None);
++        assert!(!sb.join("nope", "x"), "unknown team");
++    }
++
++    #[test]
++    fn remove_clears_members_and_unknown_teams_are_ignored() {
++        let mut sb = Scoreboard::default();
++        sb.add_team("a", PushOwnTeam);
++        sb.join("a", "x");
++        sb.join("a", "y");
++        assert!(!sb.set_rule("zzz", Never));
++        assert!(!sb.remove_team("zzz"));
++        assert!(sb.set_rule("a", Never));
++        assert_eq!(sb.team_ref("x").unwrap().rule, Never);
++        assert!(sb.remove_team("a"));
++        assert_eq!(sb.team_of("x"), None);
++        assert_eq!(sb.team_of("y"), None);
++        assert!(sb.is_empty());
++    }
++
++    #[test]
++    fn add_reuses_an_existing_team() {
++        let mut sb = Scoreboard::default();
++        sb.add_team("a", Always);
++        sb.join("a", "x");
++        sb.add_team("a", Never);
++        assert_eq!(sb.team_count(), 1);
++        assert_eq!(sb.team_ref("x").unwrap().rule, Never);
++    }
++}
