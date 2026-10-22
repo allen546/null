@@ -57,6 +57,19 @@ pub fn d_name(k: u32) -> String {
     format!("null_d{}_{k}", std::process::id() % 100_000)
 }
 
+// Spec: specs/F5-version-layer.md §4.6 (patch 30: outside the world border is a disconnect)
+/// Before a row shrinks the world border: bring the other bots (A8/A18/A19's second account,
+/// A16/A17's spares) inside it, 2 blocks apart from `at` so none pushes another. Outside the
+/// border patch 30 disconnects them for good, so later rows that need them fail (found by the
+/// Pi pairs p33_full for A22 and p36_full for A21). An offline name only gets a "no player" reply.
+pub fn bring_others_inside(cx: &mut Ctx, at: (i32, i32)) {
+    let others = std::iter::once(format!("{}2", cx.name)).chain((1..=SPARES).map(d_name));
+    for (k, name) in others.enumerate() {
+        let (x, z) = (at.0 + 2 * (k as i32 % 2), at.1 + 2 * (k as i32 / 2));
+        cx.r(&format!("execute in minecraft:overworld run tp {name} {x}.5 {}.0 {z}.5 0 0", FLOOR_Y + 1));
+    }
+}
+
 /// One tick of the bot as it ended: the probe copies it from the ECS after the physics.
 #[derive(Clone, Debug)]
 pub struct TraceTick {

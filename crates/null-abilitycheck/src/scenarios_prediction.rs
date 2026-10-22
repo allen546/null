@@ -216,14 +216,7 @@ fn rejected_place_rolls_back(cx: &mut Ctx) -> Outcome {
     // the server refuses the use (`ServerLevel#mayInteract`) and resends the two cells.
     // (the command puts a whole-number centre at the block's middle: x 1046.5, so the border
     // is x 1042 to 1051 and the cell x 1051 is outside)
-    // The other bots (A8/A18/A19's second account, A16/A17's spares) wait elsewhere; outside the
-    // border patch 30 disconnects them for good, so later rows that need them fail. Bring them
-    // inside first, 2 blocks apart so none pushes another. An offline name only gets a "no player" reply.
-    let others = std::iter::once(format!("{}2", cx.name)).chain((1..=crate::scenarios_envelope::SPARES).map(crate::scenarios_envelope::d_name));
-    for (k, name) in others.enumerate() {
-        let (x, z) = (COL.0 - 7 + 2 * (k as i32 % 2), COL.1 - 3 + 2 * (k as i32 / 2));
-        cx.r(&format!("execute in minecraft:overworld run tp {name} {}.5 {}.0 {}.5 0 0", x, FLOOR_Y + 1, z));
-    }
+    crate::scenarios_envelope::bring_others_inside(cx, (COL.0 - 7, COL.1 - 3));
     cx.r(&format!("worldborder center {} {}", COL.0 - 4, COL.1));
     cx.r("worldborder set 9");
     std::thread::sleep(std::time::Duration::from_millis(400));

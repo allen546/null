@@ -12,7 +12,7 @@
 # - A path that matches no entry and no ignore pattern makes the helper print `all` and name it.
 # - A pattern in `ignore` ending in `/` is a prefix; any other pattern is a glob over the whole path.
 #
-# Module ids (25): A1 A2 A3 A4 A2S A4S A4C A5 A6 A7 A8 A9 A10 A10E A11 A12 A13 A14 A15 A16 A17 A18 A19 A20 A22 AT.
+# Module ids (26): A1 A2 A3 A4 A2S A4S A4C A5 A6 A7 A8 A9 A10 A10E A11 A12 A13 A14 A15 A16 A17 A18 A19 A20 A21 A22 AT.
 #
 # Reach in one line each (what the ops go through):
 #   block ops (Break, Place*, BreakAim, BreakSpam, Mail, Gather): block_actions, mining, interact/pick
@@ -237,6 +237,11 @@ why = "own rows; the packet probe (RefusalProbe) is added for every bot but reco
 path = "crates/null-abilitycheck/src/scenarios_prediction.rs"
 modules = ["A22"]
 why = "own rows; the cell probe (PredictionProbe) is added for every bot but reads only when A22 turns it on"
+
+[[entry]]
+path = "crates/null-abilitycheck/src/scenarios_walls.rs"
+modules = ["A21"]
+why = "own rows (pathfinder walls for unmodelled blocks)"
 
 [[entry]]
 path = "crates/null-abilitycheck/src/scenarios_tick.rs"
@@ -576,3 +581,12 @@ modules = ["A4", "A4C", "A4S", "A13", "A22"]
 [[history]]
 patch = 34
 modules = ["A10E", "A12", "A20"]
+
+[[history]]
+patch = 35
+modules = []
+# tests: the mc-adapter sim tests (25/25); no live module
+
+[[history]]
+patch = 36
+modules = ["A14", "A15", "A21"]
