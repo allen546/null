@@ -16,7 +16,7 @@ use std::{
 
 use crate::{
     scenarios::{Ctx, FLOOR_Y, Outcome, pos},
-    scenarios_block_effects::bot_pos,
+    scenarios_block_effects::{bot_pos, try_bot_pos},
     scenarios_envelope::seen,
     skill::{Info, Op},
 };
@@ -87,7 +87,12 @@ fn wall_row(cx: &mut Ctx, name: &str, setup: &[String], present: (i32, i32, i32,
             if t.elapsed() > Duration::from_secs(40) {
                 return (false, "the goto did not finish in 40 s".into());
             }
-            let p = bot_pos(cx);
+            // Touching the wall makes patch 30 disconnect the bot: the row fails here, and `a21`
+            // runs no more rows (so a negative control shows one row live).
+            let Some(p) = try_bot_pos(cx) else {
+                let d = seen(&cx.name).and_then(|s| s.disconnect);
+                return (false, format!("the bot left the server during the goto after {samples} samples (first touch: {}); disconnect record: {d:?}", first_touch.unwrap_or_else(|| "none".into())));
+            };
             samples += 1;
             for d in dangers {
                 if touches(p, d) {
@@ -276,15 +281,15 @@ fn world_border(cx: &mut Ctx) -> Outcome {
 
 // Spec: specs/B1-movement.md §4.3
 pub fn a21(cx: &mut Ctx) -> Vec<Outcome> {
-    let out = vec![
-        bubble_column(cx),
-        slime_floor(cx),
-        bed(cx),
-        honey_wall(cx),
-        scaffolding(cx),
-        piston_face(cx),
-        world_border(cx),
-    ];
+    let rows: [fn(&mut Ctx) -> Outcome; 7] = [bubble_column, slime_floor, bed, honey_wall, scaffolding, piston_face, world_border];
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row(cx));
+        // A disconnected bot cannot run the rest; its rows are not run, and the next module fails.
+        if try_bot_pos(cx).is_none() {
+            break;
+        }
+    }
     cx.clean_in(AREA);
     out
 }

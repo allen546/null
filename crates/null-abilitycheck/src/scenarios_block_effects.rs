@@ -111,10 +111,15 @@ pub(crate) fn floats(s: &str) -> Vec<f64> {
 
 /// The server's position of the bot.
 pub(crate) fn bot_pos(cx: &mut Ctx) -> [f64; 3] {
+    try_bot_pos(cx).expect("the bot is not on the server")
+}
+
+/// The server's position of the bot, or `None` when it is not online (patch 30 disconnected it).
+pub(crate) fn try_bot_pos(cx: &mut Ctx) -> Option<[f64; 3]> {
     let n = cx.name.clone();
     let f = floats(&cx.r(&format!("data get entity {n} Pos")));
-    let k = f.len().saturating_sub(3);
-    [f[k], f[k + 1], f[k + 2]]
+    let k = f.len().checked_sub(3)?;
+    Some([f[k], f[k + 1], f[k + 2]])
 }
 
 fn walk(cx: &mut Ctx, ticks: u32) {
