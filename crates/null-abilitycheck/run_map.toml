@@ -12,7 +12,7 @@
 # - A path that matches no entry and no ignore pattern makes the helper print `all` and name it.
 # - A pattern in `ignore` ending in `/` is a prefix; any other pattern is a glob over the whole path.
 #
-# Module ids (26): A1 A2 A3 A4 A2S A4S A4C A5 A6 A7 A8 A9 A10 A10E A11 A12 A13 A14 A15 A16 A17 A18 A19 A20 A21 A22 AT.
+# Module ids (27): A1 A2 A3 A4 A2S A4S A4C A5 A6 A7 A8 A9 A10 A10E A11 A12 A13 A14 A15 A16 A17 A18 A19 A20 A21 A22 A23 AT.
 #
 # Reach in one line each (what the ops go through):
 #   block ops (Break, Place*, BreakAim, BreakSpam, Mail, Gather): block_actions, mining, interact/pick
@@ -244,6 +244,11 @@ modules = ["A21"]
 why = "own rows (pathfinder walls for unmodelled blocks)"
 
 [[entry]]
+path = "crates/null-abilitycheck/src/scenarios_unloaded.rs"
+modules = ["A23"]
+why = "own row (fall into an unsent chunk, patch 38)"
+
+[[entry]]
 path = "crates/null-abilitycheck/src/scenarios_tick.rs"
 modules = ["AT"]
 why = "own rows"
@@ -463,7 +468,7 @@ why = "physics tick, jump, fall, inside-block effects: every module that walks, 
 
 [[entry]]
 path = "azalea:azalea-physics/src/travel.rs"
-modules = ["A3", "A4C", "A4S", "A2S", "A5", "A6", "A7", "A8", "A10", "A10E", "A12", "A14", "A15", "A16", "A17", "AT"]
+modules = ["A3", "A4C", "A4S", "A2S", "A5", "A6", "A7", "A8", "A10", "A10E", "A12", "A14", "A15", "A16", "A17", "A23", "AT"]
 why = "travel in air, water and lava: as lib.rs"
 
 [[entry]]
@@ -590,3 +595,12 @@ modules = []
 [[history]]
 patch = 36
 modules = ["A14", "A15", "A21"]
+
+[[history]]
+patch = 37
+modules = []
+# tests: azalea lib walls tests only; no live module
+
+[[history]]
+patch = 38
+modules = ["A3", "A4C", "A4S", "A2S", "A5", "A6", "A7", "A8", "A10", "A10E", "A12", "A14", "A15", "A16", "A17", "A23", "AT"]
