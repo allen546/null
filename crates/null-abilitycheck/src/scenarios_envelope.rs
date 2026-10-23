@@ -26,7 +26,7 @@ use azalea::{
     app::{App, Plugin, Update},
     core::tick::GameTick,
     ecs::prelude::*,
-    entity::{ActiveEffects, HasClientLoaded, LocalEntity, Physics, Position},
+    entity::{ActiveEffects, EntityKindComponent, HasClientLoaded, LocalEntity, Physics, Position, metadata::Health},
     physics::PhysicsSystems,
     tick_counter::TicksConnected,
     unmodelled_disconnect::{PacketsAfterUnmodelledDisconnect, UnmodelledDisconnect},
@@ -80,6 +80,11 @@ pub struct TraceTick {
     /// Levitation's amplifier while the bot knows the effect.
     pub lev: Option<i32>,
     pub slow: bool,
+    /// The bot's position (x, z) and health as its client holds them (A17 miss trace).
+    pub xz: (f64, f64),
+    pub hp: Option<f32>,
+    /// Arrows in the client's entity view this tick: (position, velocity).
+    pub arrows: Vec<([f64; 3], [f64; 3])>,
 }
 
 pub static TRACE_ON: AtomicBool = AtomicBool::new(false);
@@ -110,11 +115,12 @@ impl Plugin for EnvelopeProbe {
         let main = self.main.clone();
         app.add_systems(
             GameTick,
-            (move |q: Query<(&Account, &Position, &Physics, &ActiveEffects, &TicksConnected), (With<LocalEntity>, With<HasClientLoaded>)>| {
+            (move |q: Query<(&Account, &Position, &Physics, &ActiveEffects, &TicksConnected, Option<&Health>), (With<LocalEntity>, With<HasClientLoaded>)>,
+                   others: Query<(&EntityKindComponent, &Position, Option<&Physics>), Without<LocalEntity>>| {
                 if !TRACE_ON.load(Ordering::Relaxed) {
                     return;
                 }
-                for (a, p, ph, fx, t) in &q {
+                for (a, p, ph, fx, t, hp) in &q {
                     if a.username() == main {
                         TRACE.lock().unwrap().push(TraceTick {
                             tick: t.0,
@@ -123,6 +129,13 @@ impl Plugin for EnvelopeProbe {
                             on_ground: ph.on_ground(),
                             lev: fx.get_level(azalea::registry::builtin::MobEffect::Levitation),
                             slow: fx.get(azalea::registry::builtin::MobEffect::SlowFalling).is_some(),
+                            xz: (p.x, p.z),
+                            hp: hp.map(|h| h.0),
+                            arrows: others
+                                .iter()
+                                .filter(|(k, ..)| k.0 == azalea::registry::builtin::EntityKind::Arrow)
+                                .map(|(_, ap, aph)| ([ap.x, ap.y, ap.z], aph.map_or([0.0; 3], |v| [v.velocity.x, v.velocity.y, v.velocity.z])))
+                                .collect(),
                         });
                     }
                 }
@@ -385,6 +398,35 @@ fn slow_falling_fall(cx: &mut Ctx) -> Outcome {
 }
 
 // Spec: specs/B1-movement.md §4.2 (Slow Falling from a tipped arrow, the case AD-F5.5 names)
+/// Prints, for a missed attempt, one line per client tick from the summon: the arrow as the
+/// bot's client sees it, the bot's position and health, then the RCON samples. Evidence only.
+fn miss_trace(trace: &[TraceTick], from: Option<u64>, attempt: u32, rcon: &[String]) {
+    println!("A17 slow_falling_arrow attempt {attempt} MISSED; per-tick trace from the summon (client view):");
+    let mut last_arrow = None;
+    for (i, t) in trace.iter().enumerate() {
+        if from.is_some_and(|f| t.tick < f) {
+            continue;
+        }
+        if !t.arrows.is_empty() {
+            last_arrow = Some(i);
+        } else if last_arrow.is_some_and(|l| i > l + 5) {
+            break;
+        }
+        let arrows: Vec<String> = t
+            .arrows
+            .iter()
+            .map(|(p, v)| format!("arrow ({:.3},{:.3},{:.3}) v ({:.3},{:.3},{:.3})", p[0], p[1], p[2], v[0], v[1], v[2]))
+            .collect();
+        println!(
+            "  t{} bot ({:.3},{:.3},{:.3}) vy {:.3} ground {} hp {:?} | {}",
+            t.tick, t.xz.0, t.y, t.xz.1, t.vy, t.on_ground, t.hp, if arrows.is_empty() { "no arrow".into() } else { arrows.join(" ") }
+        );
+    }
+    for r in rcon {
+        println!("{r}");
+    }
+}
+
 fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
     stand(cx, 8);
     cx.run("A17", "slow_falling_arrow", |cx| {
@@ -416,10 +458,27 @@ fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
                 "summon minecraft:arrow {} {} {} {{item:{{id:\"minecraft:tipped_arrow\",count:1,components:{{\"minecraft:potion_contents\":{{potion:\"minecraft:slow_falling\"}}}}}},Motion:[0.0,-0.6,0.0]}}",
                 p[0], p[1] + 2.4, p[2]
             ));
-            sleep(Duration::from_millis(150));
+            // Every attempt keeps RCON samples of the server's arrow and the bot's HurtTime (taken
+            // in place of the old 150 ms sleep); they are printed only if the attempt misses.
+            let summon_tick = TRACE.lock().unwrap().last().map(|t| t.tick);
+            let mut rcon = Vec::new();
+            let t_sum = Instant::now();
+            while t_sum.elapsed() < Duration::from_millis(150) {
+                let at = TRACE.lock().unwrap().last().map(|t| t.tick);
+                let sel = format!("@e[type=minecraft:arrow,x={},y={},z={},distance=..8,limit=1,sort=nearest]", p[0], p[1], p[2]);
+                let tail = |s: String| s.trim().split(" has the following entity data: ").last().unwrap_or("").trim().to_string();
+                let m = tail(cx.r(&format!("data get entity {sel} Motion")));
+                let ps = tail(cx.r(&format!("data get entity {sel} Pos")));
+                let g = tail(cx.r(&format!("data get entity {sel} inGround")));
+                let h = tail(cx.r(&format!("data get entity {n} HurtTime")));
+                rcon.push(format!("  rcon@t{at:?} arrow Pos {ps} Motion {m} inGround {g}; bot HurtTime {h}"));
+            }
             let arrow = cx.r(&format!("data get entity @e[type=minecraft:arrow,x={},y={},z={},distance=..8,limit=1,sort=nearest] Pos", p[0], p[1], p[2]));
             let on_server = wait_until(2, || cx.r(&format!("data get entity {n} active_effects")).contains("slow_falling"));
             got = on_server && wait_until(2, || TRACE.lock().unwrap().iter().any(|t| t.slow));
+            if !got {
+                miss_trace(&TRACE.lock().unwrap(), summon_tick, attempts, &rcon);
+            }
             hits.push(format!("#{attempts}: server pos {}, bot pos y {:.2}, server effect {on_server}, health {hp_before} -> {}, arrow after 150 ms {}", srv.trim().rsplit(':').next().unwrap_or("").trim(), p[1], health(cx), arrow.trim()));
             let _ = cx.recv(jump, Duration::from_secs(3));
             if !got {

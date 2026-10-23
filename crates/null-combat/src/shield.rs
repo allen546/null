@@ -120,7 +120,7 @@ mod tests {
         v.shield_hits = vec![hit(10, 22, false, 3.0, "minecraft:player_attack"), hit(30, 25, true, 0.0, "")];
         sd.update(&v);
         let b = sd.belief().unwrap();
-        assert_eq!((b.ticks(), b.bounds(), b.observed()), (22, (22, Some(26)), 2));
+        assert_eq!((b.ticks(), b.bounds(), b.observed()), (24, (24, Some(26)), 2));
         sd.update(&v);
         assert_eq!(sd.belief().unwrap().observed(), 2, "each hit is used once");
     }

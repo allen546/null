@@ -98,10 +98,12 @@ fn server_drops(cx: &mut Ctx) -> String {
         if at.contains("No entity") {
             break;
         }
-        let what = cx.r(&format!("data get entity {sel} Item"));
+        // Paper cuts a long `Item` reply short, so read the two fields apart.
+        let id = tail(cx.r(&format!("data get entity {sel} Item.id")));
+        let count = tail(cx.r(&format!("data get entity {sel} Item.count")));
         let delay = cx.r(&format!("data get entity {sel} PickupDelay"));
         cx.r(&format!("tag {sel} add a14seen"));
-        seen.push(format!("{} {} delay {}", tail(at), tail(what), tail(delay)));
+        seen.push(format!("{} {id} x{count} delay {}", tail(at), tail(delay)));
     }
     format!("server: bot at {bot}, items on the ground {seen:?}")
 }

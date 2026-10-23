@@ -427,8 +427,8 @@ fn shield_sweep(cx: &mut Ctx, want: u32, waits: &[u64]) -> (bool, String) {
     let end = items(cx, ItemOp::Status);
     let b = end.shield;
     let belief_ok = b.is_some_and(|b| {
-        // An unblocked hit read one tick high can raise the belief to `want + 1`; never below `want`.
-        b.prior() == want && (want..=want + 1).contains(&b.ticks()) && b.observed().saturating_sub(observed0) == waits.len() as u32
+        // An unblocked hit at true tick `want - 1` read one high gives `lo = want + 2`; never below `want`.
+        b.prior() == want && (want..=want + 2).contains(&b.ticks()) && b.observed().saturating_sub(observed0) == waits.len() as u32
     });
     // Both sides of the delay seen, or the bracket proves little.
     let both = hurt > 0 && hi != u32::MAX;

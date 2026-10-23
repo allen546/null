@@ -42,21 +42,26 @@ impl BlockDelayBelief {
         self.observed += 1;
         if blocked {
             let hi = k + SLACK;
-            if hi < self.lo {
+            // `lo` carries the unblocked margin (`SLACK + 1`); compare the raw reading, so only
+            // a real contradiction counts.
+            if hi < self.lo.saturating_sub(SLACK + 1) {
                 self.conflicts += 1;
             }
             self.hi = Some(self.hi.map_or(hi, |h| h.min(hi)));
         } else {
+            // Conflict on the raw reading (`d >= k` at the least), without the `lo` margin.
             if self.hi.is_some_and(|h| k > h) {
                 self.conflicts += 1;
             }
-            self.lo = self.lo.max(k);
+            // The true count is at most `k + SLACK` and the delay is above it: the strongest
+            // floor the reading can mean, so a low reading never leaves `lo` short.
+            self.lo = self.lo.max(k + SLACK + 1);
         }
     }
 
     /// Safe estimate: the larger of the prior and what unblocked hits prove. An unblocked hit read
-    /// at `k` means the delay is above the true tick count, which is at most about `k + SLACK`, so
-    /// `lo` can only make this longer (the allowed direction). `hi` never lowers it.
+    /// at `k` means the delay is above the true tick count, which is at most `k + SLACK`, so `lo` is
+    /// `k + SLACK + 1` and can only make this longer (the allowed direction). `hi` never lowers it.
     pub fn ticks(&self) -> u32 {
         self.prior.max(self.lo)
     }
@@ -85,7 +90,7 @@ mod tests {
         let mut b = BlockDelayBelief::new(5);
         b.observe(3, false);
         b.observe(7, true);
-        assert_eq!((b.ticks(), b.bounds()), (5, (3, Some(8))));
+        assert_eq!((b.ticks(), b.bounds()), (5, (5, Some(8))));
     }
 
     #[test]
@@ -93,10 +98,10 @@ mod tests {
         // The item says 5; the server lets hits through until 19: a different delay.
         let mut b = BlockDelayBelief::new(5);
         b.observe(12, false);
-        assert_eq!(b.ticks(), 12);
+        assert_eq!(b.ticks(), 14);
         b.observe(19, false);
         b.observe(21, true);
-        assert_eq!((b.ticks(), b.bounds()), (19, (19, Some(22))));
+        assert_eq!((b.ticks(), b.bounds()), (21, (21, Some(22))));
     }
 
     #[test]
@@ -115,12 +120,20 @@ mod tests {
     }
 
     #[test]
+    fn an_unblocked_hit_read_one_tick_low_is_not_short() {
+        // Real delay 10; the hit came at true tick 9 but read 8. The estimate stays >= 10.
+        let mut b = BlockDelayBelief::new(5);
+        b.observe(8, false);
+        assert!(b.ticks() >= 10, "{}", b.ticks());
+    }
+
+    #[test]
     fn a_conflict_keeps_the_longer_estimate() {
         let mut b = BlockDelayBelief::new(5);
         b.observe(30, false); // something we can't see let it through
         b.observe(6, true);
-        assert_eq!((b.ticks(), b.bounds(), b.conflicts()), (30, (30, Some(7)), 1));
+        assert_eq!((b.ticks(), b.bounds(), b.conflicts()), (32, (32, Some(7)), 1));
         b.observe(40, false);
-        assert_eq!((b.conflicts(), b.ticks()), (2, 40));
+        assert_eq!((b.conflicts(), b.ticks()), (2, 42));
     }
 }
