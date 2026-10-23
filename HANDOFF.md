@@ -1,6 +1,6 @@
-# Hand-off: S5, skills and belief (2026-10-21)
+# Hand-off: S5 closed (2026-10-23)
 
-The next session starts here. The plan, status table and to-do list for S5 are in [specs/plans/BUILD_PLAN.md](specs/plans/BUILD_PLAN.md) S5; the skill design is B4 §3, §4.3, §4.10–4.13; the mailbox is B6 §4.6. The fork's patches are in [specs/reference/AZALEA_PATCHES.md](specs/reference/AZALEA_PATCHES.md). SA (the ability check) is closed: its record and its per-ability gaps are in [specs/plans/ABILITY_CHECK.md](specs/plans/ABILITY_CHECK.md), "SA closing record". Older combat leads stay in `specs/plans/COMBAT_SCAFFOLD.md`.
+**S5 closed 2026-10-23** (fork `4ee1f8a`, patches up to 38; current state and open items: OPEN item 0). The notes below are the S5 record as of 2026-10-21. The next session starts here. The plan, status table and to-do list for S5 are in [specs/plans/BUILD_PLAN.md](specs/plans/BUILD_PLAN.md) S5; the skill design is B4 §3, §4.3, §4.10–4.13; the mailbox is B6 §4.6. The fork's patches are in [specs/reference/AZALEA_PATCHES.md](specs/reference/AZALEA_PATCHES.md). SA (the ability check) is closed: its record and its per-ability gaps are in [specs/plans/ABILITY_CHECK.md](specs/plans/ABILITY_CHECK.md), "SA closing record". Older combat leads stay in `specs/plans/COMBAT_SCAFFOLD.md`.
 
 ## Where things stand
 
