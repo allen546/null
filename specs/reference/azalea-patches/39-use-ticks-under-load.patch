@@ -1,0 +1,285 @@
+From f05a9233bbc1ecec9e0ee6a8923dd721b59aa48d Mon Sep 17 00:00:00 2001
+From: Allen Sun <allensun0426@gmail.com>
+Date: Sat, 24 Oct 2026 00:27:47 +0800
+Subject: [PATCH] null patch: 39-use-ticks-under-load
+
+---
+ Cargo.lock                                    | 23 ++++++++++------
+ azalea-client/src/client.rs                   |  1 +
+ azalea-client/src/plugins/item_use.rs         | 12 +++++++++
+ azalea-client/src/plugins/movement.rs         | 13 ++++++++--
+ azalea-client/src/plugins/tick_clock.rs       |  6 +++++
+ .../simulation/item_use_hold_and_release.rs   | 26 +++++++++++++++++++
+ azalea/src/pathfinder/moves/basic.rs          |  2 +-
+ azalea/src/pathfinder/world.rs                | 26 +++++++++++++++++++
+ 8 files changed, 98 insertions(+), 11 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 0a86343..8892d13 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -213,9 +213,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+ 
+ [[package]]
+ name = "aws-lc-rs"
+-version = "1.16.2"
++version = "1.18.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "a054912289d18629dc78375ba2c3726a3afe3ff71b4edba9dedfca0e3446d1fc"
++checksum = "faac5829c2b74c28f830747e7818ccfb684261b5f48a1118b1e2a13d36dfab13"
+ dependencies = [
+  "aws-lc-sys",
+  "zeroize",
+@@ -223,14 +223,15 @@ dependencies = [
+ 
+ [[package]]
+ name = "aws-lc-sys"
+-version = "0.39.0"
++version = "0.46.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1fa7e52a4c5c547c741610a2c6f123f3881e409b714cd27e6798ef020c514f0a"
++checksum = "f1622d8446a2d4b2ce0c7eefc73dd43a99779028d5ee5c2dd8073a658ba8a2bc"
+ dependencies = [
+  "cc",
+  "cmake",
+  "dunce",
+  "fs_extra",
++ "pkg-config",
+ ]
+ 
+ [[package]]
+@@ -2678,6 +2679,12 @@ dependencies = [
+  "spki",
+ ]
+ 
++[[package]]
++name = "pkg-config"
++version = "0.3.34"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
++
+ [[package]]
+ name = "plotters"
+ version = "0.3.7"
+@@ -3149,9 +3156,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
+ 
+ [[package]]
+ name = "rustls-webpki"
+-version = "0.103.10"
++version = "0.103.16"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "df33b2b81ac578cabaf06b89b0631153a3f416b0a886e8a7a1707fb51abbd1ef"
++checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
+ dependencies = [
+  "aws-lc-rs",
+  "ring",
+@@ -4094,9 +4101,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "webpki-root-certs"
+-version = "1.0.6"
++version = "1.0.10"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "804f18a4ac2676ffb4e8b5b5fa9ae38af06df08162314f96a68d2a363e21a8ca"
++checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
+ dependencies = [
+  "rustls-pki-types",
+ ]
+diff --git a/azalea-client/src/client.rs b/azalea-client/src/client.rs
+index c5ad9a5..26f1938 100644
+--- a/azalea-client/src/client.rs
++++ b/azalea-client/src/client.rs
+@@ -219,6 +219,7 @@ async fn run_schedule_loop(
+         }
+         if due > 0 {
+             if due > ran {
++                ecs.get_resource_or_init::<crate::tick_clock::DroppedTicks>().0 += u64::from(due - ran);
+                 warn!("{due} ticks due, running {ran} and dropping {} like the vanilla client", due - ran);
+             }
+             let ends = crate::tick_clock::CLIENT_TICK_ENDS.load(std::sync::atomic::Ordering::Relaxed) - ends_before;
+diff --git a/azalea-client/src/plugins/item_use.rs b/azalea-client/src/plugins/item_use.rs
+index ddb74ce..ec530ca 100644
+--- a/azalea-client/src/plugins/item_use.rs
++++ b/azalea-client/src/plugins/item_use.rs
+@@ -36,6 +36,7 @@ use crate::{
+     respawn::RespawnLog,
+     movement::ItemInUse,
+     packet::game::SendGamePacketEvent,
++    tick_clock::DroppedTicks,
+ };
+ 
+ /// A use the server never flags within this many ticks was refused (food that cannot be eaten,
+@@ -129,6 +130,7 @@ pub fn handle_use_item_queued(
+         &WorldHolder,
+         Option<&mut RespawnLog>,
+     )>,
++    dropped: Option<Res<DroppedTicks>>,
+ ) {
+     for (entity, queued, mut prediction, look, inventory, hunger, abilities, mode, in_use, world, log) in
+         &mut query
+@@ -166,6 +168,8 @@ pub fn handle_use_item_queued(
+                 ticks: 0,
+                 confirmed: false,
+                 confirmed_at: None,
++                dropped_seen: dropped.as_deref().map_or(0, |d| d.0),
++                lost: 0,
+             });
+         }
+     }
+@@ -215,8 +219,16 @@ fn send_player_action(commands: &mut Commands, entity: Entity, action: Action) {
+ pub fn tick_item_in_use(
+     mut commands: Commands,
+     mut query: Query<(Entity, &mut ItemInUse, &Inventory, Option<&AbstractLivingUsingItem>, Has<Dead>)>,
++    dropped: Option<Res<DroppedTicks>>,
+ ) {
++    let dropped_now = dropped.as_deref().map_or(0, |d| d.0);
+     for (entity, mut item, inventory, flag, dead) in &mut query {
++        // Ticks dropped before this one, once the flag was known, were server ticks of the use
++        // (the server's `LivingEntity#updatingUsingItem` runs on its own clock).
++        if item.confirmed {
++            item.lost += u32::try_from(dropped_now.saturating_sub(item.dropped_seen)).unwrap_or(u32::MAX);
++        }
++        item.dropped_seen = dropped_now;
+         let flagged = flag.is_some_and(|f| f.0);
+         if flagged && !item.confirmed {
+             item.confirmed = true;
+diff --git a/azalea-client/src/plugins/movement.rs b/azalea-client/src/plugins/movement.rs
+index 9643cb1..5c13862 100644
+--- a/azalea-client/src/plugins/movement.rs
++++ b/azalea-client/src/plugins/movement.rs
+@@ -302,12 +302,21 @@ pub struct ItemInUse {
+     /// ticks of the use (vanilla `getUseDuration - useItemRemaining`) to about one tick, since
+     /// the flag and later packets come down the same lag.
+     pub confirmed_at: Option<u32>,
++    /// The [`DroppedTicks`](crate::tick_clock::DroppedTicks) total at the last tick; the rise
++    /// since then is what the next tick adds to `lost`.
++    pub dropped_seen: u64,
++    /// Client ticks dropped since the flag arrived. The server ran them, so they count as server
++    /// ticks (patch 39).
++    pub lost: u32,
+ }
+ 
+ impl ItemInUse {
+-    /// Server ticks of this use so far, once the server has confirmed it.
++    /// Server ticks of this use so far, once the server has confirmed it. A belief, not a fact
++    /// (F5 §4.6): the flag and a later packet are each read up to a frame late, so it can be off
++    /// by a tick either way; a stall that drops client ticks no longer makes it read low.
++    // Spec: specs/F5-version-layer.md §4.6 (hidden server state is a belief)
+     pub fn server_ticks(&self) -> Option<u32> {
+-        self.confirmed_at.map(|c| self.ticks.saturating_sub(c))
++        self.confirmed_at.map(|c| self.ticks.saturating_sub(c) + self.lost)
+     }
+ }
+ 
+diff --git a/azalea-client/src/plugins/tick_clock.rs b/azalea-client/src/plugins/tick_clock.rs
+index 5d86b1c..9f7e18e 100644
+--- a/azalea-client/src/plugins/tick_clock.rs
++++ b/azalea-client/src/plugins/tick_clock.rs
+@@ -79,6 +79,12 @@ impl TickClock {
+     }
+ }
+ 
++/// Client ticks this client dropped in all (`due` beyond 10 in one frame). The server's ticks go
++/// on while the client drops them, so a count of server ticks from client ticks adds them back
++/// (`ItemInUse::server_ticks`, patch 39).
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Resource)]
++pub struct DroppedTicks(pub u64);
++
+ /// Counters for the loop, read by the ability check: the update that had the most ticks due,
+ /// what it ran and sent, and the ticks dropped in all. Reset with [`reset_loop_stats`].
+ pub static MAX_DUE: AtomicU64 = AtomicU64::new(0);
+diff --git a/azalea-client/tests/simulation/item_use_hold_and_release.rs b/azalea-client/tests/simulation/item_use_hold_and_release.rs
+index dd9b8e3..e511349 100644
+--- a/azalea-client/tests/simulation/item_use_hold_and_release.rs
++++ b/azalea-client/tests/simulation/item_use_hold_and_release.rs
+@@ -1,6 +1,7 @@
+ use azalea_client::{
+     ItemInUse,
+     item_use::{ReleaseUseItemQueued, UseItemQueued},
++    tick_clock::DroppedTicks,
+     test_utils::prelude::*,
+ };
+ use azalea_entity::{EntityDataItem, EntityDataValue, EntityMetadataItems};
+@@ -78,6 +79,31 @@ fn hungry_player_eats_until_the_server_clears_the_flag() {
+     assert!(!s.has_component::<ItemInUse>());
+ }
+ 
++// Patch 39: client ticks dropped after the flag arrived are server ticks of the use; dropped
++// ticks before the flag are not.
++#[test]
++fn dropped_client_ticks_count_as_server_ticks_of_the_use() {
++    let _lock = init();
++    let (mut s, _sent) = setup(10);
++    insert(&mut s, UseItemQueued { hand: InteractionHand::MainHand });
++    s.tick();
++    assert_eq!(s.component::<ItemInUse>().server_ticks(), None);
++    s.app.world_mut().insert_resource(DroppedTicks(4));
++    using_flag(&mut s, true);
++    // The 4 ticks dropped before the flag do not count; the tick that sees the flag counts as 1.
++    assert_eq!(s.component::<ItemInUse>().server_ticks(), Some(1));
++    for _ in 0..3 {
++        s.tick();
++    }
++    assert_eq!(s.component::<ItemInUse>().server_ticks(), Some(4));
++    // A stall: 5 ticks were due and not run.
++    s.app.world_mut().resource_mut::<DroppedTicks>().0 += 5;
++    s.tick();
++    assert_eq!(s.component::<ItemInUse>().server_ticks(), Some(5 + 5));
++    s.tick();
++    assert_eq!(s.component::<ItemInUse>().server_ticks(), Some(6 + 5));
++}
++
+ #[test]
+ fn full_player_does_not_start_eating_and_release_sends_one_packet() {
+     let _lock = init();
+diff --git a/azalea/src/pathfinder/moves/basic.rs b/azalea/src/pathfinder/moves/basic.rs
+index df4c2e9..d372a19 100644
+--- a/azalea/src/pathfinder/moves/basic.rs
++++ b/azalea/src/pathfinder/moves/basic.rs
+@@ -416,7 +416,7 @@ fn has_movement_effect_block(ctx: &MovesCtx, pos: RelBlockPos) -> bool {
+ /// face, which patch 30's gate counts as touching it (`SlimeBlock#stepOn`). Parkour and diagonal
+ /// moves therefore never cross one (patch 36).
+ // Spec: specs/B1-movement.md §4.3
+-pub(super) fn unmodelled_floor(ctx: &MovesCtx, pos: RelBlockPos) -> bool {
++pub(in crate::pathfinder) fn unmodelled_floor(ctx: &MovesCtx, pos: RelBlockPos) -> bool {
+     ctx.world.is_block_unmodelled(pos.down(1))
+ }
+ 
+diff --git a/azalea/src/pathfinder/world.rs b/azalea/src/pathfinder/world.rs
+index 36f2734..f8425c4 100644
+--- a/azalea/src/pathfinder/world.rs
++++ b/azalea/src/pathfinder/world.rs
+@@ -1512,4 +1512,30 @@ mod tests {
+             );
+         }
+     }
++
++    // Patch 39: the rule itself, with no planner around it. It is true for a cell whose floor
++    // (the block one below) is slime, false over stone, over air, and when the slime is in the
++    // cell itself or two below.
++    #[test]
++    fn unmodelled_floor_looks_one_block_below() {
++        use crate::pathfinder::{moves::{MovesCtx, basic::unmodelled_floor}, positions::RelBlockPos};
++        let origin = BlockPos::new(5, 1, 8);
++        let world = cached_at(
++            floor_world(&[
++                (BlockPos::new(6, 0, 8), BlockKind::SlimeBlock.into()),
++                (BlockPos::new(7, 1, 8), BlockKind::SlimeBlock.into()),
++                (BlockPos::new(8, 0, 8), BlockKind::SlimeBlock.into()),
++                (BlockPos::new(9, 0, 8), BlockKind::Air.into()),
++            ]),
++            origin,
++        );
++        let (mining, custom) = (MiningCache::new(None), CustomPathfinderStateRef::default());
++        let mut edges = Vec::new();
++        let ctx = MovesCtx { edges: &mut edges, world: &world, mining_cache: &mining, custom_state: &custom };
++        assert!(unmodelled_floor(&ctx, RelBlockPos::new(1, 1, 0)), "slime under the cell");
++        assert!(!unmodelled_floor(&ctx, RelBlockPos::new(0, 1, 0)), "stone under the cell");
++        assert!(!unmodelled_floor(&ctx, RelBlockPos::new(2, 1, 0)), "slime in the cell, not under it");
++        assert!(!unmodelled_floor(&ctx, RelBlockPos::new(3, 2, 0)), "slime two below");
++        assert!(!unmodelled_floor(&ctx, RelBlockPos::new(4, 1, 0)), "air under the cell");
++    }
+ }
+-- 
+2.56.0
+

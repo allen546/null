@@ -604,3 +604,8 @@ modules = []
 [[history]]
 patch = 38
 modules = ["A3", "A4C", "A4S", "A2S", "A5", "A6", "A7", "A8", "A10", "A10E", "A12", "A14", "A15", "A16", "A17", "A23", "AT"]
+
+[[history]]
+patch = 39
+modules = ["A5", "A6", "A7", "A8", "A12", "A22"]
+# server_ticks (item_use.rs, ItemInUse) and the new A22 row; the pathfinder change is a visibility change and a test

@@ -26,6 +26,7 @@ use azalea::{
     core::tick::GameTick,
     ecs::prelude::*,
     entity::{HasClientLoaded, LocalEntity},
+    interact::BlockStatePredictionHandler,
     local_player::WorldHolder,
     physics::PhysicsSystems,
     registry::builtin::BlockKind,
@@ -50,6 +51,9 @@ pub static CELLS: Mutex<Vec<(i32, i32, i32)>> = Mutex::new(Vec::new());
 pub static PROBE_ON: AtomicBool = AtomicBool::new(false);
 /// Per tick, after the physics: the name of each watched cell as the bot's world holds it.
 pub static TRACE: Mutex<Vec<Vec<String>>> = Mutex::new(Vec::new());
+/// Per tick, before the physics step and after the place click: the first watched cell's name
+/// and whether a place is still unacked.
+pub static PRE_TRACE: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
 
 // Spec: specs/B6-placement-breaking.md §4.10 (place prediction: the bot's world after each tick)
 /// Adds the probe to the bot's app. `main` is the runner's account.
@@ -85,12 +89,39 @@ impl Plugin for PredictionProbe {
             .after(PhysicsSystems)
             .ambiguous_with_all(),
         );
+        // The same cell the moment before the physics step, after the tick's place click: the
+        // name, and whether a prediction is still unacked (`seq` above `acked_seq`).
+        let main = self.main.clone();
+        app.add_systems(
+            GameTick,
+            (move |q: Query<(&Account, &WorldHolder, &BlockStatePredictionHandler), (With<LocalEntity>, With<HasClientLoaded>)>| {
+                if !PROBE_ON.load(Ordering::Relaxed) {
+                    return;
+                }
+                for (a, w, p) in &q {
+                    if a.username() == main
+                        && let Some(&(x, y, z)) = CELLS.lock().unwrap().first()
+                    {
+                        let name = w
+                            .shared
+                            .read()
+                            .get_block_state(azalea::BlockPos::new(x, y, z))
+                            .map_or("unloaded".to_string(), |s| BlockKind::from(s).to_str().trim_start_matches("minecraft:").to_string());
+                        PRE_TRACE.lock().unwrap().push((name, p.seq() > p.acked_seq()));
+                    }
+                }
+            })
+            .after(azalea::block_actions::handle_place_block_queued)
+            .before(PhysicsSystems)
+            .ambiguous_with_all(),
+        );
     }
 }
 
 fn watch(cells: &[(i32, i32, i32)]) {
     *CELLS.lock().unwrap() = cells.to_vec();
     TRACE.lock().unwrap().clear();
+    PRE_TRACE.lock().unwrap().clear();
     PROBE_ON.store(true, Ordering::Relaxed);
     std::thread::sleep(std::time::Duration::from_millis(150));
 }
@@ -202,6 +233,41 @@ fn bridge(cx: &mut Ctx) -> Outcome {
                 (edge_z - 1) as f64 - 0.3,
                 pi.gave_up,
                 pi.note
+            ),
+        )
+    })
+}
+
+// Spec: specs/B6-placement-breaking.md §4.10 (the write comes before the physics step of the click tick)
+/// The pillar and bridge rows also pass with prediction off, since the server's update lands
+/// before the bot reaches the block. This row looks at the moment itself: after the tick's click
+/// and before its physics step, the bot's world already holds the block while the place is still
+/// unacked. A server update cannot be that early (the ack and the update come together, one
+/// round trip after the click), so only the client's own write can make the cell dirt there.
+fn write_before_physics(cx: &mut Ctx) -> Outcome {
+    cx.scene_in(AREA, &[(0, "dirt", 8)], STAND);
+    let clicked = pos(COL.0 + 1, FLOOR_Y, COL.1);
+    let target = (COL.0 + 1, FLOOR_Y + 1, COL.1);
+    cx.run("A22", "write_precedes_the_physics_step", |cx| {
+        watch(&[target]);
+        let a = placed(cx, clicked, Face::Up);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let post = unwatch(0);
+        let pre = std::mem::take(&mut *PRE_TRACE.lock().unwrap());
+        let a = match a {
+            Ok(a) => a,
+            Err(e) => return (false, e),
+        };
+        // the first tick the place was unacked: the click tick
+        let first_unacked = pre.iter().position(|(_, unacked)| *unacked);
+        let early = first_unacked.map(|i| pre[i].0.clone());
+        let post_same_tick = first_unacked.and_then(|i| post.get(i).cloned());
+        let dirt = cx.block_is(pos(target.0, target.1, target.2), "dirt");
+        (
+            a.outcome == BlockOutcome::Done && early.as_deref() == Some("dirt") && post_same_tick.as_deref() == Some("dirt") && dirt,
+            format!(
+                "dirt placed beside the feet; on the first tick with the place unacked, the cell before the physics step is {early:?} and after it {post_same_tick:?} (want dirt both: written by the client at the click, the ack not yet in); outcome {:?}; server: dirt at the target {dirt}; before-physics trace {pre:?}",
+                a.outcome
             ),
         )
     })
@@ -334,6 +400,7 @@ pub fn a22(cx: &mut Ctx) -> Vec<Outcome> {
     let out = vec![
         pillar_jump(cx),
         bridge(cx),
+        write_before_physics(cx),
         rejected_place_rolls_back(cx),
         unknown_family_in_zone_refused(cx),
         unknown_family_outside_zone_sent(cx),

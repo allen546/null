@@ -84,6 +84,28 @@ fn times_line(g: &GatherInfo) -> String {
     format!("{} steps, p50 {} us, p99 {} us, max {} us (at op tick {}), {} over 2 ms", t.steps, t.p50, t.p99, t.max, t.max_at_age, t.over_2ms)
 }
 
+/// Where the server holds the item entities still on the ground near the trees, and the bot, for a
+/// short row: a drop that stays needs its server position next to the bot's (the view lags it).
+// Spec: specs/B4-gathering.md §4.9 (drops: walk to item entities near what was broken)
+fn server_drops(cx: &mut Ctx) -> String {
+    let n = cx.name.clone();
+    let tail = |s: String| s.trim().rsplit(':').next().unwrap_or("").trim().to_string();
+    let bot = tail(cx.r(&format!("data get entity {n} Pos")));
+    let mut seen = Vec::new();
+    for _ in 0..8 {
+        let sel = format!("@e[type=minecraft:item,tag=!a14seen,x={OAK_X},y={},z={OAK_Z},distance=..14,limit=1,sort=nearest]", FLOOR_Y + 2);
+        let at = cx.r(&format!("data get entity {sel} Pos"));
+        if at.contains("No entity") {
+            break;
+        }
+        let what = cx.r(&format!("data get entity {sel} Item"));
+        let delay = cx.r(&format!("data get entity {sel} PickupDelay"));
+        cx.r(&format!("tag {sel} add a14seen"));
+        seen.push(format!("{} {} delay {}", tail(at), tail(what), tail(delay)));
+    }
+    format!("server: bot at {bot}, items on the ground {seen:?}")
+}
+
 fn result_line(g: &GatherInfo) -> String {
     let r = &g.result;
     let leaves = r.changed.len() as u32 - r.gathered;
@@ -117,8 +139,9 @@ fn fell_tree(cx: &mut Ctx, name: &str, kind: &'static str, h: i32, hotbar: &[(u8
         let air = all_are(cx, &logs, "air");
         let got = cx.count(&log);
         let r = &g.result;
+        let drops = if got < want || !r.drops_left.is_empty() { format!("; {}", server_drops(cx)) } else { String::new() };
         let ok = g.status == "Done" && r.gathered == want && r.failure.is_none() && air && got == want && r.left.is_empty() && !r.short_of_quota && belief_air(&g, &who, &format!("minecraft:{log}")) && g.kinds.contains("minecraft:item");
-        (ok, format!("{h}-log {kind}; server: all {h} log cells air {air}, {log} in the inventory {got} (want {want}); belief at the cells air, observed by {who}, changed from {log}: {}; {}", belief_air(&g, &who, &format!("minecraft:{log}")), result_line(&g)))
+        (ok, format!("{h}-log {kind}; server: all {h} log cells air {air}, {log} in the inventory {got} (want {want}); belief at the cells air, observed by {who}, changed from {log}: {}; {}", belief_air(&g, &who, &format!("minecraft:{log}")), result_line(&g) + &drops))
     })
 }
 
@@ -166,9 +189,10 @@ fn log_behind_natural_leaves(cx: &mut Ctx) -> Outcome {
         let cleared_air = all_are(cx, &cleared, "air");
         // Most of the canopy is left to decay on its own.
         let few = !cleared.is_empty() && cleared.len() < canopy / 2;
+        let drops = if got < 3 || !r.drops_left.is_empty() { format!("; view drops {:?}; {}", r.drops_left, server_drops(cx)) } else { String::new() };
         (
             g.status == "Done" && r.gathered == 3 && air && got == 3 && cleared_air && few && r.left.is_empty() && belief_air(&g, &who, "minecraft:oak_log"),
-            format!("server: 3 log cells air {air}, oak logs in the inventory {got} (want 3), the {} cleared leaf cells air {cleared_air} (want 1 or more, under {}: {few}); {}", cleared.len(), canopy / 2, result_line(&g)),
+            format!("server: 3 log cells air {air}, oak logs in the inventory {got} (want 3), the {} cleared leaf cells air {cleared_air} (want 1 or more, under {}: {few}); {}", cleared.len(), canopy / 2, result_line(&g) + &drops),
         )
     })
 }

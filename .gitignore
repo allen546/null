@@ -9,3 +9,4 @@ harness/skeleton-server/server/
 harness/skeleton-server/runs/
 harness/grim-server/server/
 harness/grim-server/runs/
+.claude/worktrees/
