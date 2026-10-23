@@ -3,10 +3,15 @@
 /// Packet arrival vs server tick: an observed tick count can be one off either way.
 const SLACK: u32 = 1;
 
-// Spec: specs/F5-version-layer.md §4.6 (server-changeable timings are beliefs)
+// Spec: specs/F5-version-layer.md §4.6 (server-changeable timings are beliefs; err long, never short)
 /// The raise-to-block delay `d` of a `blocks_attacks` item, in server ticks: a hit `k` server
 /// ticks into the use is blocked when `k >= d` (vanilla `LivingEntity#getItemBlockingWith`).
 /// The prior is the held item's `block_delay_seconds` (vanilla `BlocksAttacks#blockDelayTicks`).
+///
+/// A belief shorter than the real delay is unsafe (the bot expects a block, the shield is not up
+/// yet). The observed `k` can be off by a tick or more (the fork counts its own ticks), so
+/// `ticks()` is never below the prior and never below what unblocked hits prove; blocked hits
+/// only narrow `bounds()`, and a conflict keeps the longer estimate (Allen, 2026-10-23).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockDelayBelief {
     prior: u32,
@@ -15,13 +20,13 @@ pub struct BlockDelayBelief {
     /// `d` is at most this, once a blocked hit was seen.
     hi: Option<u32>,
     observed: u32,
-    /// Unblocked hits that contradicted a blocked one and were ignored.
-    ignored: u32,
+    /// Hits that contradicted an earlier hit of the other kind (diagnostics).
+    conflicts: u32,
 }
 
 impl BlockDelayBelief {
     pub fn new(prior: u32) -> Self {
-        Self { prior, lo: 0, hi: None, observed: 0, ignored: 0 }
+        Self { prior, lo: 0, hi: None, observed: 0, conflicts: 0 }
     }
 
     pub fn prior(&self) -> u32 {
@@ -31,33 +36,33 @@ impl BlockDelayBelief {
     /// A hit that this item blocks once raised (from the front, a blockable damage type),
     /// `k` server ticks into the use.
     ///
-    /// A blocked hit is proof the item was up, so it wins a conflict; an unblocked one can have a
-    /// cause we can't see (a piercing arrow, a plugin), so it is ignored on conflict.
+    /// A conflict (an unblocked hit later in the use than a blocked one) keeps the longer
+    /// estimate: either hit's tick count can be off, and a belief may err long, never short.
     pub fn observe(&mut self, k: u32, blocked: bool) {
         self.observed += 1;
         if blocked {
             let hi = k + SLACK;
             if hi < self.lo {
-                self.lo = 0;
+                self.conflicts += 1;
             }
             self.hi = Some(self.hi.map_or(hi, |h| h.min(hi)));
         } else {
-            let lo = k;
-            if self.hi.is_some_and(|h| lo > h) {
-                self.ignored += 1;
-                return;
+            if self.hi.is_some_and(|h| k > h) {
+                self.conflicts += 1;
             }
-            self.lo = self.lo.max(lo);
+            self.lo = self.lo.max(k);
         }
     }
 
-    /// Best estimate: the prior when the observations allow it, else the nearest bound.
+    /// Safe estimate: the larger of the prior and what unblocked hits prove. An unblocked hit read
+    /// at `k` means the delay is above the true tick count, which is at most about `k + SLACK`, so
+    /// `lo` can only make this longer (the allowed direction). `hi` never lowers it.
     pub fn ticks(&self) -> u32 {
-        let p = self.prior.max(self.lo);
-        self.hi.map_or(p, |h| p.min(h))
+        self.prior.max(self.lo)
     }
 
-    /// What the observations allow: `d` in `lo..=hi` (`hi` None: no blocked hit yet).
+    /// What the observations allow: `d` in `lo..=hi` (`hi` None: no blocked hit yet). For
+    /// diagnostics: `ticks()` does not follow `hi`.
     pub fn bounds(&self) -> (u32, Option<u32>) {
         (self.lo, self.hi)
     }
@@ -66,8 +71,8 @@ impl BlockDelayBelief {
         self.observed
     }
 
-    pub fn ignored(&self) -> u32 {
-        self.ignored
+    pub fn conflicts(&self) -> u32 {
+        self.conflicts
     }
 }
 
@@ -95,19 +100,27 @@ mod tests {
     }
 
     #[test]
-    fn a_block_before_the_prior_lowers_the_estimate() {
+    fn a_block_before_the_prior_does_not_lower_the_estimate() {
         let mut b = BlockDelayBelief::new(20);
         b.observe(6, true);
-        assert_eq!(b.ticks(), 7);
+        assert_eq!((b.ticks(), b.bounds()), (20, (0, Some(7))));
     }
 
     #[test]
-    fn a_blocked_hit_wins_a_conflict() {
+    fn a_low_tick_count_on_a_loaded_host_keeps_the_prior() {
+        // Pi case: the real delay is 5; the count reads 3 at a blocked hit.
+        let mut b = BlockDelayBelief::new(5);
+        b.observe(3, true);
+        assert_eq!((b.ticks(), b.bounds()), (5, (0, Some(4))));
+    }
+
+    #[test]
+    fn a_conflict_keeps_the_longer_estimate() {
         let mut b = BlockDelayBelief::new(5);
         b.observe(30, false); // something we can't see let it through
         b.observe(6, true);
-        assert_eq!((b.ticks(), b.bounds()), (5, (0, Some(7))));
+        assert_eq!((b.ticks(), b.bounds(), b.conflicts()), (30, (30, Some(7)), 1));
         b.observe(40, false);
-        assert_eq!((b.ignored(), b.ticks()), (1, 5));
+        assert_eq!((b.conflicts(), b.ticks()), (2, 40));
     }
 }

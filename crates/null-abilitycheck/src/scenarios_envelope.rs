@@ -390,25 +390,37 @@ fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
     cx.run("A17", "slow_falling_arrow", |cx| {
         let n = cx.name.clone();
         let hp0 = health(cx);
-        trace_start();
         // A hit knocks the bot sideways and a miss is possible (the bot moves while the arrow
-        // falls), so a miss is tried again from a new jump, up to three times.
-        let (mut got, mut attempts, mut p, mut arrow) = (false, 0, [0.0; 3], String::new());
+        // falls), so a miss is tried again from a new jump, up to three times. A hit counts only
+        // when the server itself holds the effect (RCON), not on the bot's trace alone.
+        let (mut got, mut attempts, mut p) = (false, 0, [0.0; 3]);
+        let mut hits = Vec::new();
         while !got && attempts < 3 {
             attempts += 1;
+            // Restart the trace per attempt: the final trace must hold only the attempt that hit
+            // (a missed attempt's take-off tick has no jump model in `compare`).
+            if attempts > 1 {
+                trace_stop();
+            }
+            trace_start();
+            let hp_before = health(cx);
             let jump = cx.send(Op::Items(ItemOp::Jump));
             sleep(Duration::from_millis(220));
             p = bot_pos(cx);
-            // The arrow starts above the bot's head and moves down fast enough to deal damage (a
-            // player is not hurt by 0 damage and then no effect is applied). One that starts
-            // inside the box flew through it without a hit.
+            // The arrow starts 0.6 above the head (box top 1.8) and moves down 0.6 a tick: it
+            // enters the box in the first tick, so the bot's rise barely matters, and it still
+            // deals damage (a player is not hurt by 0 damage and then no effect is applied).
+            // where the server holds the bot at the summon (a miss on Grim needs this to be told apart)
+            let srv = cx.r(&format!("data get entity {n} Pos"));
             cx.r(&format!(
-                "summon minecraft:arrow {} {} {} {{item:{{id:\"minecraft:tipped_arrow\",count:1,components:{{\"minecraft:potion_contents\":{{potion:\"minecraft:slow_falling\"}}}}}},Motion:[0.0,-1.0,0.0]}}",
-                p[0], p[1] + 3.0, p[2]
+                "summon minecraft:arrow {} {} {} {{item:{{id:\"minecraft:tipped_arrow\",count:1,components:{{\"minecraft:potion_contents\":{{potion:\"minecraft:slow_falling\"}}}}}},Motion:[0.0,-0.6,0.0]}}",
+                p[0], p[1] + 2.4, p[2]
             ));
             sleep(Duration::from_millis(150));
-            arrow = cx.r(&format!("data get entity @e[type=minecraft:arrow,x={},y={},z={},distance=..8,limit=1,sort=nearest] Pos", p[0], p[1], p[2]));
-            got = wait_until(2, || TRACE.lock().unwrap().iter().any(|t| t.slow));
+            let arrow = cx.r(&format!("data get entity @e[type=minecraft:arrow,x={},y={},z={},distance=..8,limit=1,sort=nearest] Pos", p[0], p[1], p[2]));
+            let on_server = wait_until(2, || cx.r(&format!("data get entity {n} active_effects")).contains("slow_falling"));
+            got = on_server && wait_until(2, || TRACE.lock().unwrap().iter().any(|t| t.slow));
+            hits.push(format!("#{attempts}: server pos {}, bot pos y {:.2}, server effect {on_server}, health {hp_before} -> {}, arrow after 150 ms {}", srv.trim().rsplit(':').next().unwrap_or("").trim(), p[1], health(cx), arrow.trim()));
             let _ = cx.recv(jump, Duration::from_secs(3));
             if !got {
                 wait_until(5, landed);
@@ -429,8 +441,8 @@ fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
         (
             got && down && airborne_at_hit && slow_ticks_in_air >= 3 && miss.is_none() && checked >= 8,
             format!(
-                "an arrow tipped with slow_falling hit the bot at y {:.2} in a jump; the bot knew the effect from tick {:?} (in the air: {airborne_at_hit}), {slow_ticks_in_air} airborne ticks with it; {checked} airborne ticks match the formula (worst error {worst:.2e}; {resets} started from the speed the server sent with the hit){}; health {hp0} to {hp1}; clear said {:?}; arrow 150 ms after the summon: {:?}; {attempts} attempt(s)",
-                p[1], first_slow.map(|i| trace[i].tick), miss.map(|m| format!(", FIRST MISS {m}")).unwrap_or_default(), effect.trim(), arrow.trim()
+                "an arrow tipped with slow_falling hit the bot at y {:.2} in a jump; the bot knew the effect from tick {:?} (in the air: {airborne_at_hit}), {slow_ticks_in_air} airborne ticks with it; {checked} airborne ticks match the formula (worst error {worst:.2e}; {resets} started from the speed the server sent with the hit){}; health {hp0} to {hp1}; clear said {:?}; {attempts} attempt(s): {}",
+                p[1], first_slow.map(|i| trace[i].tick), miss.map(|m| format!(", FIRST MISS {m}")).unwrap_or_default(), effect.trim(), hits.join("; ")
             ),
         )
     })

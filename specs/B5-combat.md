@@ -68,6 +68,7 @@ Ballistic aim with gravity and drag from game data, leading moving targets, cros
 ### 4.5 Shields, totems and retreat
 
 - Shield up against incoming melee and projectiles when the reflex is on.
+- **Raise-to-block delay is a belief that errs long (Allen, 2026-10-23):** `BlockDelayBelief::ticks()` is never below the item's `block_delay_seconds` prior or below what unblocked hits prove; blocked hits only narrow diagnostic bounds, and a conflict between hits keeps the longer estimate, because the observed tick count can read a tick or two low.
 - Totem in the offhand when health drops below a threshold (or always, per role).
 - Retreat when health or gear falls below policy thresholds, to a rally point (an annotation or the squad's), not just away.
 - **Dropping onto an enemy (Allen, 2026-10-16):** a fighter may walk off an edge onto a target below only if it survives the fall and lands with more health than the target has. Otherwise the drop guard holds. No MLG bucket for these drops: placing and picking up the water costs the time for the enemy to land one or two hits. A bot trapped below (a pit) is solved when the pathfinder may break and place blocks (B1), not by combat code.

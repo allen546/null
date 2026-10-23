@@ -396,12 +396,13 @@ impl Ctx {
 
     /// Runs a scenario body and appends the log verdict.
     pub(crate) fn run(&mut self, id: &'static str, name: &str, body: impl FnOnce(&mut Self) -> (bool, String)) -> Outcome {
-        self.run_allowing(id, name, &[], body)
+        self.run_allowing(id, name, &[], "", body)
     }
 
     /// As `run`, but Grim alerts of the checks whose name starts with one of `allowed` are listed
-    /// in the evidence and do not fail the row (AT: a forced stall draws `Timer`, AD-F5.3).
-    pub(crate) fn run_allowing(&mut self, id: &'static str, name: &str, allowed: &[&str], body: impl FnOnce(&mut Self) -> (bool, String)) -> Outcome {
+    /// in the evidence and do not fail the row: alerts a vanilla client would draw too (F5 §4.6),
+    /// `why` names the cause (AT: a forced stall draws `Timer`, AD-F5.3).
+    pub(crate) fn run_allowing(&mut self, id: &'static str, name: &str, allowed: &[&str], why: &str, body: impl FnOnce(&mut Self) -> (bool, String)) -> Outcome {
         let started = std::time::Instant::now();
         let mark = self.log_len();
         sleep(Duration::from_millis(100));
@@ -417,7 +418,7 @@ impl Ctx {
         let (bad, grim) = self.log_problems(mark);
         let (expected, grim): (Vec<String>, Vec<String>) = grim.into_iter().partition(|g| allowed.iter().any(|a| g.starts_with(a)));
         if !expected.is_empty() {
-            evidence += &format!("; expected Grim alerts from the forced stall (AD-F5.3, vanilla would draw them too): {}", expected.join(", "));
+            evidence += &format!("; expected Grim alerts from {why} (vanilla would draw them too): {}", expected.join(", "));
         }
         if bad.is_empty() && grim.is_empty() {
             evidence += if expected.is_empty() { "; server log: no warnings, no Grim alerts" } else { "; server log: no warnings, no other Grim alerts" };

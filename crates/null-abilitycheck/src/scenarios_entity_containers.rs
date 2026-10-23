@@ -175,7 +175,15 @@ fn refused(cx: &mut Ctx, e: &Ent, i: &InvInfo, why: &str, ev: &mut Vec<String>) 
     let o = i.open.clone();
     ev.push(format!("{o:?}"));
     let said = o.as_ref().is_some_and(|o| o.outcome == OpenOutcome::Refused && o.refused.is_some_and(|r| r.contains(why)));
-    let same = server_container(cx, &e.src()) == e.slots() && !has_passenger(cx);
+    let (held, rode) = (server_container(cx, &e.src()), has_passenger(cx));
+    let same = held == e.slots() && !rode;
+    // one line per term, so a failed row names the term (A10E, Pi pair p39_full)
+    if !(said && i.window.is_none() && same) {
+        ev.push(format!("refusal terms: said {said}, window {:?}, container unchanged {}, passenger {rode}", i.window.as_ref().map(|w| w.kind), held == e.slots()));
+        if held != e.slots() {
+            ev.push(format!("server container {held:?}, wanted {:?}", e.slots()));
+        }
+    }
     said && i.window.is_none() && same
 }
 

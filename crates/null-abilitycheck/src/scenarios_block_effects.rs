@@ -115,11 +115,29 @@ pub(crate) fn bot_pos(cx: &mut Ctx) -> [f64; 3] {
 }
 
 /// The server's position of the bot, or `None` when it is not online (patch 30 disconnected it).
+/// An online bot whose reply does not parse is retried, then panics with the raw replies (p38_full
+/// stopped A16 on such a reply with no text kept).
+// Spec: specs/plans/ABILITY_CHECK.md "Which modules a change reruns"
 pub(crate) fn try_bot_pos(cx: &mut Ctx) -> Option<[f64; 3]> {
     let n = cx.name.clone();
-    let f = floats(&cx.r(&format!("data get entity {n} Pos")));
-    let k = f.len().checked_sub(3)?;
-    Some([f[k], f[k + 1], f[k + 2]])
+    let mut replies = Vec::new();
+    for attempt in 0..4 {
+        let reply = cx.r(&format!("data get entity {n} Pos"));
+        let f = floats(&reply);
+        if let Some(k) = f.len().checked_sub(3).filter(|_| reply.contains('[')) {
+            return Some([f[k], f[k + 1], f[k + 2]]);
+        }
+        let list = cx.r("list");
+        let online = list.split(':').nth(1).is_some_and(|l| l.split(',').any(|x| x.trim() == n));
+        replies.push(format!("pos reply {reply:?}, list reply {list:?}"));
+        if !online {
+            return None;
+        }
+        if attempt < 3 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+    panic!("the bot {n} is online but its Pos reply does not parse after 4 tries: {}", replies.join("; "))
 }
 
 fn walk(cx: &mut Ctx, ticks: u32) {

@@ -30,7 +30,7 @@ fn online(cx: &mut Ctx) -> u64 {
 // Spec: specs/F5-version-layer.md §4.6 (tick catch-up like vanilla)
 fn row(cx: &mut Ctx, ms: u64, bots: u64, to_x: i32, slot: u8) -> Outcome {
     let n = cx.name.clone();
-    cx.run_allowing("AT", &format!("stall_{ms}_ms_runs_vanillas_count_and_drops_the_rest"), &["Timer"], |cx| {
+    cx.run_allowing("AT", &format!("stall_{ms}_ms_runs_vanillas_count_and_drops_the_rest"), &["Timer"], "the forced stall (AD-F5.3)", |cx| {
         sleep(Duration::from_millis(300));
         tc::reset_loop_stats();
         cx.call(Op::Stall(ms));
@@ -75,7 +75,7 @@ fn click_row(cx: &mut Ctx, ms: u64, x: i32, z: i32) -> Outcome {
     cx.r(&format!("setblock {x} {} {z} minecraft:air", FLOOR_Y + 1));
     cx.r(&format!("item replace entity {n} hotbar.0 with minecraft:stone 8"));
     sleep(Duration::from_millis(400));
-    cx.run_allowing("AT", &format!("stall_{ms}_ms_then_look_and_click_in_one_update_places_at_the_new_look"), &["Timer"], |cx| {
+    cx.run_allowing("AT", &format!("stall_{ms}_ms_then_look_and_click_in_one_update_places_at_the_new_look"), &["Timer"], "the forced stall (AD-F5.3)", |cx| {
         tc::reset_loop_stats();
         let rep = cx.call(Op::PlaceAimStall { pos: floor, face: Face::Up, ms });
         let Info::Action(a) = rep.info else { return (false, format!("bot reported {:?}", rep.info)) };

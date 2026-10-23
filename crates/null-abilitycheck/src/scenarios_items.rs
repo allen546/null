@@ -337,6 +337,12 @@ pub fn a6(cx: &mut Ctx) -> Vec<Outcome> {
     out
 }
 
+/// The server's game time in ticks, by RCON.
+fn gametime(cx: &mut Ctx) -> i64 {
+    let r = cx.r("time query gametime");
+    floats(&r).last().map_or(0, |t| *t as i64)
+}
+
 /// A shield whose `blocks_attacks` says 1.0 s (20 ticks); the rest as vanilla's shield.
 const SLOW_SHIELD: &str = "shield[minecraft:blocks_attacks={block_delay_seconds:1.0f,\
 block_sound:\"minecraft:item.shield.block\",disabled_sound:\"minecraft:item.shield.break\",\
@@ -345,8 +351,10 @@ bypassed_by:\"#minecraft:bypasses_shield\",item_damage:{threshold:3.0f,base:1.0f
 // Spec: specs/F5-version-layer.md §4.6 (the shield delay is a belief: prior from the item, refined by hits)
 /// Raise, wait `waits[i]` ms after the server confirms, hit from the front, lower. The server's
 /// reply says whether each hit was blocked; the bot's own reading must agree. The server's delay
-/// is then bracketed by the use ticks of its unblocked and blocked hits, and must hold the item's
-/// value `want`; the bot's belief must start from `want` and end on it.
+/// is then bracketed by the server's own game time (RCON `time query gametime`, taken before the
+/// use, after the bot saw it confirmed, and around the hit), which does not depend on how the
+/// bot's ticks line up with the server's, and must hold the item's value `want`; the bot's belief
+/// must start from `want` and end at `want` or one above (a hit's tick count can read one high).
 fn shield_sweep(cx: &mut Ctx, want: u32, waits: &[u64]) -> (bool, String) {
     let n = cx.name.clone();
     let mut ok = true;
@@ -360,6 +368,7 @@ fn shield_sweep(cx: &mut Ctx, want: u32, waits: &[u64]) -> (bool, String) {
         // Each hit that gets through knocks the bot back; start every hit from the spawn point.
         cx.r(&format!("tp {n} {} {} {} 0 0", SPAWN.0, SPAWN.1, SPAWN.2));
         sleep(Duration::from_millis(400));
+        let g_before_use = gametime(cx);
         if let Err(e) = start(cx, ItemOp::Use(Hand::Main)) {
             return (false, e);
         }
@@ -372,9 +381,17 @@ fn shield_sweep(cx: &mut Ctx, want: u32, waits: &[u64]) -> (bool, String) {
         }
         prior_seen = prior_seen.or(st.shield.map(|b| b.prior()));
         let t0 = st.tick;
+        // The server began the use before this read and after `g_before_use`.
+        let g_confirmed = gametime(cx);
         sleep(Duration::from_millis(wait));
+        let g_before_hit = gametime(cx);
         let reply = cx.r(&format!("damage {n} 6 minecraft:player_attack at {} {} {}", SPAWN.0, SPAWN.1, SPAWN.2 + 4.0));
+        let g_after_hit = gametime(cx);
         let server_blocked = !reply.contains("Applied");
+        // Server ticks the use had run at the hit: at least `g_before_hit - g_confirmed` and at
+        // most `g_after_hit - g_before_use`, each widened by one tick for where in a tick RCON
+        // and the network read the clock.
+        let (e_min, e_max) = ((g_before_hit - g_confirmed - 1).max(0) as u32, (g_after_hit - g_before_use + 1).max(0) as u32);
         sleep(Duration::from_millis(200));
         let after = items(cx, ItemOp::Status);
         items(cx, ItemOp::Release);
@@ -384,14 +401,15 @@ fn shield_sweep(cx: &mut Ctx, want: u32, waits: &[u64]) -> (bool, String) {
                 if h.blocked != server_blocked {
                     ok = false;
                 }
+                // blocked at e ticks: delay <= e; hurt at e ticks: delay > e
                 if server_blocked {
-                    hi = hi.min(h.use_ticks + 1);
+                    hi = hi.min(e_max);
                 } else {
-                    lo = lo.max(h.use_ticks);
+                    lo = lo.max(e_min + 1);
                     hurt += 1;
                 }
                 lines.push(format!(
-                    "wait {wait} ms: server {}, bot {} at use tick {}",
+                    "wait {wait} ms: server {}, bot {} at bot use tick {}; server use ticks {e_min}..={e_max}",
                     if server_blocked { "blocked" } else { "hurt" },
                     if h.blocked { "blocked" } else { "hurt" },
                     h.use_ticks
@@ -409,7 +427,8 @@ fn shield_sweep(cx: &mut Ctx, want: u32, waits: &[u64]) -> (bool, String) {
     let end = items(cx, ItemOp::Status);
     let b = end.shield;
     let belief_ok = b.is_some_and(|b| {
-        b.prior() == want && b.ticks() == want && b.observed().saturating_sub(observed0) == waits.len() as u32
+        // An unblocked hit read one tick high can raise the belief to `want + 1`; never below `want`.
+        b.prior() == want && (want..=want + 1).contains(&b.ticks()) && b.observed().saturating_sub(observed0) == waits.len() as u32
     });
     // Both sides of the delay seen, or the bracket proves little.
     let both = hurt > 0 && hi != u32::MAX;
@@ -420,7 +439,7 @@ fn shield_sweep(cx: &mut Ctx, want: u32, waits: &[u64]) -> (bool, String) {
             "item says {want} ticks (bot reads {:?}); server delay from its replies in {lo}..={} (must hold {want}); bot belief {:?} (prior at the first raise {prior_seen:?}); {}",
             end.held_delay,
             if hi == u32::MAX { "?".into() } else { hi.to_string() },
-            b.map(|b| (b.ticks(), b.bounds(), b.observed() - observed0, b.ignored())),
+            b.map(|b| (b.ticks(), b.bounds(), b.observed() - observed0, b.conflicts())),
             lines.join("; ")
         ),
     )
