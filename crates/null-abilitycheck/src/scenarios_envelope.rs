@@ -397,7 +397,7 @@ fn slow_falling_fall(cx: &mut Ctx) -> Outcome {
     })
 }
 
-// Spec: specs/B1-movement.md §4.2 (Slow Falling from a tipped arrow, the case AD-F5.5 names)
+// Spec: specs/B1-movement.md §4.2 (evidence for a missed Slow Falling arrow)
 /// Prints, for a missed attempt, one line per client tick from the summon: the arrow as the
 /// bot's client sees it, the bot's position and health, then the RCON samples. Evidence only.
 fn miss_trace(trace: &[TraceTick], from: Option<u64>, attempt: u32, rcon: &[String]) {
@@ -427,6 +427,7 @@ fn miss_trace(trace: &[TraceTick], from: Option<u64>, attempt: u32, rcon: &[Stri
     }
 }
 
+// Spec: specs/B1-movement.md §4.2 (Slow Falling from a tipped arrow, the case AD-F5.5 names)
 fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
     stand(cx, 8);
     cx.run("A17", "slow_falling_arrow", |cx| {

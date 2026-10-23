@@ -53,15 +53,15 @@ impl BlockDelayBelief {
             if self.hi.is_some_and(|h| k > h) {
                 self.conflicts += 1;
             }
-            // The true count is at most `k + SLACK` and the delay is above it: the strongest
-            // floor the reading can mean, so a low reading never leaves `lo` short.
+            // The hit proves only `d >= k` (the reading may be `SLACK` high). To err long, take the
+            // highest floor the reading allows (true count `k + SLACK`, delay above it): a policy, not a proof.
             self.lo = self.lo.max(k + SLACK + 1);
         }
     }
 
-    /// Safe estimate: the larger of the prior and what unblocked hits prove. An unblocked hit read
-    /// at `k` means the delay is above the true tick count, which is at most `k + SLACK`, so `lo` is
-    /// `k + SLACK + 1` and can only make this longer (the allowed direction). `hi` never lowers it.
+    /// Safe estimate: the larger of the prior and the highest floor any unblocked hit's reading
+    /// allows (`k + SLACK + 1`; the hit itself proves only `d >= k`). Unblocked hits never bound `d`
+    /// from above, so the prior is what keeps this from being short. `hi` never lowers it.
     pub fn ticks(&self) -> u32 {
         self.prior.max(self.lo)
     }
