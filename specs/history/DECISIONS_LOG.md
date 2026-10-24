@@ -2,6 +2,10 @@
 
 **Historical.** Moved from `OPEN.md` on 2026-10-19 so that OPEN stays a short start page. Each entry is a one-line record; the full reasoning is in `DECISIONS.md` and the specs each entry names. Paths are relative to the repo root unless they start with `specs/`.
 
+## Decided 2026-10-24
+
+- A14: a drop that lands on canopy leaves out of reach is reported as left, not chased (`gather` unchanged). The A14 log-count rows accept it only with server proof (item entity of that log on leaves, counts add up). B4 §4.9.
+
 ## Decided 2026-10-20
 
 - Long suites (the full ability check on each server) are run by Allen offline from commands the agents give; no agent runs them. CLAUDE.md "Subagents".

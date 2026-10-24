@@ -427,6 +427,9 @@ fn miss_trace(trace: &[TraceTick], from: Option<u64>, attempt: u32, rcon: &[Stri
     }
 }
 
+/// Arrow start height above the server's feet: over the inflated box top (2.1) plus one tick of rise (0.42).
+const ARROW_DY: f64 = 2.6;
+
 // Spec: specs/B1-movement.md §4.2 (Slow Falling from a tipped arrow, the case AD-F5.5 names)
 fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
     stand(cx, 8);
@@ -450,14 +453,18 @@ fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
             let jump = cx.send(Op::Items(ItemOp::Jump));
             sleep(Duration::from_millis(220));
             p = bot_pos(cx);
-            // The arrow starts 0.6 above the head (box top 1.8) and moves down 0.6 a tick: it
-            // enters the box in the first tick, so the bot's rise barely matters, and it still
-            // deals damage (a player is not hurt by 0 damage and then no effect is applied).
+            // The server's own position of the bot decides the hit, and it can lead or lag the
+            // client view `p` by a tick or more of the jump. The arrow's hit test
+            // (`AABB#clip` on the box inflated by 0.3, top at feet + 2.1) finds only a box the
+            // path enters from outside; an arrow that starts inside it passes through (q1 repro:
+            // 39 missed arrows, 7 of 30 Grim runs failed). So the arrow is summoned `~ ~ARROW_DY` from the bot as the server
+            // holds it at that moment: above feet + 2.1 + the largest one-tick rise (about 0.42),
+            // and with Motion -0.6 it crosses the top face in its first tick. It still deals
+            // damage (a player is not hurt by 0 damage and then no effect is applied).
             // where the server holds the bot at the summon (a miss on Grim needs this to be told apart)
             let srv = cx.r(&format!("data get entity {n} Pos"));
             cx.r(&format!(
-                "summon minecraft:arrow {} {} {} {{item:{{id:\"minecraft:tipped_arrow\",count:1,components:{{\"minecraft:potion_contents\":{{potion:\"minecraft:slow_falling\"}}}}}},Motion:[0.0,-0.6,0.0]}}",
-                p[0], p[1] + 2.4, p[2]
+                "execute at {n} run summon minecraft:arrow ~ ~{ARROW_DY} ~ {{item:{{id:\"minecraft:tipped_arrow\",count:1,components:{{\"minecraft:potion_contents\":{{potion:\"minecraft:slow_falling\"}}}}}},Motion:[0.0,-0.6,0.0]}}"
             ));
             // Every attempt keeps RCON samples of the server's arrow and the bot's HurtTime (taken
             // in place of the old 150 ms sleep); they are printed only if the attempt misses.
@@ -480,7 +487,7 @@ fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
             if !got {
                 miss_trace(&TRACE.lock().unwrap(), summon_tick, attempts, &rcon);
             }
-            hits.push(format!("#{attempts}: server pos {}, bot pos y {:.2}, server effect {on_server}, health {hp_before} -> {}, arrow after 150 ms {}", srv.trim().rsplit(':').next().unwrap_or("").trim(), p[1], health(cx), arrow.trim()));
+            hits.push(format!("#{attempts}: arrow start +{ARROW_DY} above the server's feet, server pos {}, bot pos y {:.2}, server effect {on_server}, health {hp_before} -> {}, arrow after 150 ms {}", srv.trim().rsplit(':').next().unwrap_or("").trim(), p[1], health(cx), arrow.trim()));
             let _ = cx.recv(jump, Duration::from_secs(3));
             if !got {
                 wait_until(5, landed);
@@ -489,9 +496,15 @@ fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
         }
         let down = wait_until(15, landed);
         sleep(Duration::from_millis(300));
+        // The bot ends its skill when it sees the effect leave (an unmodelled input). On Grim that
+        // packet can arrive after `revive` put a new skill in, and the next call then waits 60 s
+        // for a skill that is gone (seen once, 2026-10-24). So clear the effect first and wait
+        // until the bot's own trace shows it gone; only then stop the trace and revive.
+        let effect = cx.r(&format!("effect clear {n} minecraft:slow_falling"));
+        let gone = wait_until(5, || TRACE.lock().unwrap().last().is_some_and(|t| !t.slow));
+        sleep(Duration::from_millis(300));
         let trace = trace_stop();
         let hp1 = health(cx);
-        let effect = cx.r(&format!("effect clear {n} minecraft:slow_falling"));
         cx.r(&format!("kill @e[type=minecraft:arrow,x={},y={FLOOR_Y},z={},dx=21,dy=10,dz=21]", AREA.0, AREA.1));
         let first_slow = trace.iter().position(|t| t.slow);
         let airborne_at_hit = first_slow.is_some_and(|i| !trace[i].on_ground);
@@ -499,9 +512,9 @@ fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
         let (checked, worst, miss, resets) = compare(&trace, true);
         revive(cx);
         (
-            got && down && airborne_at_hit && slow_ticks_in_air >= 3 && miss.is_none() && checked >= 8,
+            got && down && gone && airborne_at_hit && slow_ticks_in_air >= 3 && miss.is_none() && checked >= 8,
             format!(
-                "an arrow tipped with slow_falling hit the bot at y {:.2} in a jump; the bot knew the effect from tick {:?} (in the air: {airborne_at_hit}), {slow_ticks_in_air} airborne ticks with it; {checked} airborne ticks match the formula (worst error {worst:.2e}; {resets} started from the speed the server sent with the hit){}; health {hp0} to {hp1}; clear said {:?}; {attempts} attempt(s): {}",
+                "an arrow tipped with slow_falling hit the bot at y {:.2} in a jump; the bot knew the effect from tick {:?} (in the air: {airborne_at_hit}), {slow_ticks_in_air} airborne ticks with it; {checked} airborne ticks match the formula (worst error {worst:.2e}; {resets} started from the speed the server sent with the hit){}; health {hp0} to {hp1}; clear said {:?} (bot saw it gone: {gone}); {attempts} attempt(s): {}",
                 p[1], first_slow.map(|i| trace[i].tick), miss.map(|m| format!(", FIRST MISS {m}")).unwrap_or_default(), effect.trim(), hits.join("; ")
             ),
         )

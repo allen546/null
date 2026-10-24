@@ -108,6 +108,8 @@ Kill the target mob through B5's PvE skills, collect drops. Looting tools where 
 
 Collect every drop within reach, report items gathered and items left (inventory full), and the cells changed.
 
+A drop that rests on leaves out of reach is reported in drops left. `gather` does not chase it or clear for it: the leaves decay, the drop falls within reach, and a later pass picks it up (Allen, 2026-10-24).
+
 ### 4.10 Gather core and policies
 
 Decided by Allen, 2026-10-19. `gather` is one generic skill; what to take is a policy.

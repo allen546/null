@@ -99,13 +99,70 @@ fn server_drops(cx: &mut Ctx) -> String {
             break;
         }
         // Paper cuts a long `Item` reply short, so read the two fields apart.
-        let id = tail(cx.r(&format!("data get entity {sel} Item.id")));
+        let id = entity_data(&cx.r(&format!("data get entity {sel} Item.id")));
         let count = tail(cx.r(&format!("data get entity {sel} Item.count")));
         let delay = cx.r(&format!("data get entity {sel} PickupDelay"));
         cx.r(&format!("tag {sel} add a14seen"));
         seen.push(format!("{} {id} x{count} delay {}", tail(at), tail(delay)));
     }
     format!("server: bot at {bot}, items on the ground {seen:?}")
+}
+
+/// One item entity the server holds near the tree: its item, count, and whether the block under it
+/// is a leaf block (the drop rests on the canopy).
+#[derive(Debug, Clone, PartialEq)]
+struct ServerDrop {
+    id: String,
+    count: u32,
+    on_leaves: bool,
+}
+
+/// Whether a row that ended short of `want` logs may pass: `gather` reports a drop that rests on
+/// leaves out of reach as left (it does not chase or clear for it; the leaves decay, then a later
+/// pass picks it up). Accepted only with server proof: every drop on the server is this log, rests
+/// on a leaf block, and the inventory plus those drops adds up to `want`.
+// Spec: specs/B4-gathering.md §4.9 (a drop on leaves out of reach is reported as left, Allen 2026-10-24)
+fn left_on_leaves_ok(want: u32, inv: u32, log_id: &str, drops: &[ServerDrop]) -> bool {
+    !drops.is_empty() && drops.iter().all(|d| d.id == log_id && d.on_leaves) && inv + drops.iter().map(|d| d.count).sum::<u32>() == want
+}
+
+/// The value in a `data get entity` reply, quotes removed. Split on the reply's own words, not on
+/// the last colon: an id such as `minecraft:birch_log` holds one.
+fn entity_data(reply: &str) -> String {
+    reply.trim().split(" has the following entity data: ").last().unwrap_or("").trim().trim_matches('"').to_string()
+}
+
+/// The item entities of `log_id` the server holds near the tree, read field by field (Paper cuts a
+/// long `Item` reply short), each with a leaf test on the block under it.
+// Spec: specs/B4-gathering.md §4.9 (server proof for a drop left on leaves)
+fn server_log_drops(cx: &mut Ctx) -> Vec<ServerDrop> {
+    let tail = |s: String| entity_data(&s);
+    let mut out = Vec::new();
+    for _ in 0..16 {
+        let sel = format!("@e[type=minecraft:item,tag=!a14left,x={OAK_X},y={},z={OAK_Z},distance=..14,limit=1,sort=nearest]", FLOOR_Y + 2);
+        if cx.r(&format!("data get entity {sel} Pos")).contains("No entity") {
+            break;
+        }
+        let id = tail(cx.r(&format!("data get entity {sel} Item.id")));
+        let count = tail(cx.r(&format!("data get entity {sel} Item.count"))).trim_end_matches(|c: char| !c.is_ascii_digit()).parse().unwrap_or(0);
+        // The item rests on the block's top face, so look 0.2 below its feet.
+        let on_leaves = cx.r(&format!("execute as {sel} at @s if block ~ ~-0.2 ~ #minecraft:leaves")).contains("passed");
+        cx.r(&format!("tag {sel} add a14left"));
+        out.push(ServerDrop { id, count, on_leaves });
+    }
+    out
+}
+
+/// Whether the log count is right: all `want` in the inventory, or (proven on the server) the
+/// rest left on leaves and reported in `drops_left`. Returns the verdict and a detail note.
+// Spec: specs/B4-gathering.md §4.9
+fn logs_accounted(cx: &mut Ctx, want: u32, got: u32, log: &str, view_left: usize) -> (bool, String) {
+    if got == want {
+        return (true, String::new());
+    }
+    let drops = server_log_drops(cx);
+    let ok = view_left == drops.len() && left_on_leaves_ok(want, got, &format!("minecraft:{log}"), &drops);
+    (ok, if ok { format!("; PASSED WITH A DROP LEFT ON LEAVES (inventory {got}, server drops {drops:?})") } else { format!("; short of {want}, server drops {drops:?}") })
 }
 
 fn result_line(g: &GatherInfo) -> String {
@@ -142,8 +199,9 @@ fn fell_tree(cx: &mut Ctx, name: &str, kind: &'static str, h: i32, hotbar: &[(u8
         let got = cx.count(&log);
         let r = &g.result;
         let drops = if got < want || !r.drops_left.is_empty() { format!("; {}", server_drops(cx)) } else { String::new() };
-        let ok = g.status == "Done" && r.gathered == want && r.failure.is_none() && air && got == want && r.left.is_empty() && !r.short_of_quota && belief_air(&g, &who, &format!("minecraft:{log}")) && g.kinds.contains("minecraft:item");
-        (ok, format!("{h}-log {kind}; server: all {h} log cells air {air}, {log} in the inventory {got} (want {want}); belief at the cells air, observed by {who}, changed from {log}: {}; {}", belief_air(&g, &who, &format!("minecraft:{log}")), result_line(&g) + &drops))
+        let (logs_ok, left_note) = logs_accounted(cx, want, got, &log, r.drops_left.len());
+        let ok = g.status == "Done" && r.gathered == want && r.failure.is_none() && air && logs_ok && r.left.is_empty() && !r.short_of_quota && belief_air(&g, &who, &format!("minecraft:{log}")) && g.kinds.contains("minecraft:item");
+        (ok, format!("{h}-log {kind}; server: all {h} log cells air {air}, {log} in the inventory {got} (want {want}); belief at the cells air, observed by {who}, changed from {log}: {}; {}", belief_air(&g, &who, &format!("minecraft:{log}")), result_line(&g) + &drops + &left_note))
     })
 }
 
@@ -191,9 +249,10 @@ fn log_behind_natural_leaves(cx: &mut Ctx) -> Outcome {
         let cleared_air = all_are(cx, &cleared, "air");
         // Most of the canopy is left to decay on its own.
         let few = !cleared.is_empty() && cleared.len() < canopy / 2;
-        let drops = if got < 3 || !r.drops_left.is_empty() { format!("; view drops {:?}; {}", r.drops_left, server_drops(cx)) } else { String::new() };
+        let (logs_ok, left_note) = logs_accounted(cx, 3, got, "oak_log", r.drops_left.len());
+        let drops = if got < 3 || !r.drops_left.is_empty() { format!("; view drops {:?}; {}{left_note}", r.drops_left, server_drops(cx)) } else { String::new() };
         (
-            g.status == "Done" && r.gathered == 3 && air && got == 3 && cleared_air && few && r.left.is_empty() && belief_air(&g, &who, "minecraft:oak_log"),
+            g.status == "Done" && r.gathered == 3 && air && logs_ok && cleared_air && few && r.left.is_empty() && belief_air(&g, &who, "minecraft:oak_log"),
             format!("server: 3 log cells air {air}, oak logs in the inventory {got} (want 3), the {} cleared leaf cells air {cleared_air} (want 1 or more, under {}: {few}); {}", cleared.len(), canopy / 2, result_line(&g) + &drops),
         )
     })
@@ -373,4 +432,46 @@ pub fn a14(cx: &mut Ctx) -> Vec<Outcome> {
     cx.r(&format!("fill {} {} {} {} {CLEAR_Y} {} minecraft:air", AREA.0, FLOOR_Y + 1, AREA.1, AREA.0 + 20, AREA.1 + 20));
     cx.clean_in(AREA);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn drop(id: &str, count: u32, on_leaves: bool) -> ServerDrop {
+        ServerDrop { id: id.into(), count, on_leaves }
+    }
+
+    #[test]
+    fn q1_case_passes() {
+        assert!(left_on_leaves_ok(6, 5, "minecraft:birch_log", &[drop("minecraft:birch_log", 1, true)]));
+    }
+
+    #[test]
+    fn drop_missing_on_server_fails() {
+        assert!(!left_on_leaves_ok(6, 5, "minecraft:birch_log", &[]));
+    }
+
+    #[test]
+    fn drop_on_a_non_leaf_block_fails() {
+        assert!(!left_on_leaves_ok(6, 5, "minecraft:birch_log", &[drop("minecraft:birch_log", 1, false)]));
+    }
+
+    #[test]
+    fn count_that_does_not_add_up_fails() {
+        assert!(!left_on_leaves_ok(6, 4, "minecraft:birch_log", &[drop("minecraft:birch_log", 1, true)]));
+        assert!(!left_on_leaves_ok(6, 5, "minecraft:birch_log", &[drop("minecraft:birch_log", 2, true)]));
+    }
+
+    #[test]
+    fn other_item_fails_and_split_stacks_add_up() {
+        assert!(!left_on_leaves_ok(6, 5, "minecraft:birch_log", &[drop("minecraft:stick", 1, true)]));
+        assert!(left_on_leaves_ok(6, 3, "minecraft:birch_log", &[drop("minecraft:birch_log", 2, true), drop("minecraft:birch_log", 1, true)]));
+    }
+
+    #[test]
+    fn entity_data_keeps_the_namespace() {
+        assert_eq!(entity_data("Item has the following entity data: \"minecraft:birch_log\""), "minecraft:birch_log");
+        assert_eq!(entity_data("Item has the following entity data: 1"), "1");
+    }
 }
