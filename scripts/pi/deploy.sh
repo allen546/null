@@ -10,7 +10,7 @@ cargo zigbuild --release -p null-abilitycheck --target $T.2.36
 bin=target/$T/release/null-abilitycheck
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 zstd -q -19 "$bin" -o "$tmp/nac.zst"
-scp -q "$tmp/nac.zst" scripts/pi/run_server_suite.py scripts/pi/full_suite.sh "$PI":/mnt/pi-data/null-harness/
-ssh -n "$PI" 'cd /mnt/pi-data/null-harness && chmod +x full_suite.sh && mv -f bin/null-abilitycheck bin/null-abilitycheck.prev &&
+scp -q "$tmp/nac.zst" scripts/pi/run_server_suite.py scripts/pi/full_suite.sh scripts/pi/queue.sh "$PI":/mnt/pi-data/null-harness/
+ssh -n "$PI" 'cd /mnt/pi-data/null-harness && chmod +x full_suite.sh queue.sh && mv -f bin/null-abilitycheck bin/null-abilitycheck.prev &&
   zstd -q -d nac.zst -o bin/null-abilitycheck && chmod +x bin/null-abilitycheck && rm nac.zst && sha256sum bin/null-abilitycheck' | cut -d' ' -f1 > "$tmp/remote"
 [ "$(cat "$tmp/remote")" = "$(shasum -a 256 "$bin" | cut -d' ' -f1)" ] && echo "deployed $(git rev-parse --short HEAD), checksum ok" || { echo "CHECKSUM MISMATCH" >&2; exit 1; }

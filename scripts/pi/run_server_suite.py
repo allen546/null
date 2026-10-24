@@ -1,14 +1,18 @@
 #!/usr/bin/env -S uv run --no-project python
 # Runs the ability check on the Pi against one server it starts and stops itself, with a 10 s monitor
 # (tick query, load, memory, server CPU) beside the run. Stdlib only; full_suite.sh runs it with uv (/home/allen/.local/bin/uv, not on the SSH PATH).
-# Usage: run_server_suite.py vanilla|grim <prefix> [null-abilitycheck args, default --scenario all]
+# Usage: run_server_suite.py vanilla|grim <prefix> [--repeat N] [null-abilitycheck args, default --scenario all]
+# --repeat N runs the check N times on one server start (repro runs of a flaky module); the run log holds all N.
 # Logs: logs/<prefix>_<kind>_run.log and _monitor.log. Spec: specs/plans/ABILITY_CHECK.md §How to run
 import os, re, resource, subprocess, sys, threading, time
 H = '/mnt/pi-data/null-harness'
 sys.path.insert(0, H + '/skeleton-server/scripts')
 import rcon
 
-kind, prefix, extra = sys.argv[1], sys.argv[2], sys.argv[3:] or ['--scenario', 'all']
+kind, prefix, extra = sys.argv[1], sys.argv[2], sys.argv[3:]
+repeat = 1
+if extra[:1] == ['--repeat']: repeat, extra = int(extra[1]), extra[2:]
+extra = extra or ['--scenario', 'all']
 cfg = {'vanilla': dict(dir=H + '/skeleton-server/server', jar='server.jar', port=25567, rc=25577),
        'grim': dict(dir=H + '/grim-server/server', jar='paper.jar', port=25568, rc=25578)}[kind]
 L = H + '/logs/'
@@ -52,10 +56,10 @@ def monitor():
         stop.wait(10)
 th = threading.Thread(target=monitor); th.start()
 
-def check(account, log, args):
+def check(account, log, args, mode='w'):
     return subprocess.Popen([H + '/bin/null-abilitycheck', '--server', f'127.0.0.1:{cfg["port"]}', '--rcon-port', str(cfg['rc']),
                              '--server-log', slog, '--account', account, *args],
-                            cwd=H, stdout=open(L + f'{prefix}_{kind}_{log}.log', 'w'), stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+                            cwd=H, stdout=open(L + f'{prefix}_{kind}_{log}.log', mode), stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
 # Warm-up: a fresh server lags when the first players join (cold JIT, chunk loads), and every account
 # online then draws Grim TimerLimit alerts (pi_base, 2026-10-21: 37 in 18 s, all before the first row).
 # Three short modules on their own account take that lag; the suite's alerts are counted after it.
@@ -66,7 +70,10 @@ mon.write(f'{ts()} WARMUP exit {wrc} wall {time.time() - W:.1f}s\n')
 mark = os.path.getsize(slog)
 r0 = resource.getrusage(resource.RUSAGE_CHILDREN)
 T = time.time()
-rc = check('null_pi', 'run', extra).wait()
+rc = 0
+for i in range(repeat):
+    if repeat > 1: mon.write(f'{ts()} REPEAT {i + 1}/{repeat}\n')
+    rc = check('null_pi', 'run', extra, 'w' if i == 0 else 'a').wait() or rc
 r = resource.getrusage(resource.RUSAGE_CHILDREN)  # minus r0: the warm-up run is reaped too
 mon.write(f'{ts()} BOT exit {rc} wall {time.time() - T:.1f}s botcpu user {r.ru_utime - r0.ru_utime:.1f} '
           f'sys {r.ru_stime - r0.ru_stime:.1f} maxrss_MB {r.ru_maxrss / 1024:.0f} (max over both runs)\n')
