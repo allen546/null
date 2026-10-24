@@ -58,6 +58,10 @@ pub enum OpEvent {
     State {
         state: OpState,
     },
+    /// The squad's list of bots it cannot use; the headcount counts the rest (K6 §5).
+    Roster {
+        lost: Vec<BotId>,
+    },
 }
 
 impl OpEvent {
@@ -79,6 +83,7 @@ impl OpEvent {
             OpEvent::Requeued { .. } => "requeued",
             OpEvent::JobDead { .. } => "job_dead",
             OpEvent::State { .. } => "state",
+            OpEvent::Roster { .. } => "roster",
         }
     }
 }

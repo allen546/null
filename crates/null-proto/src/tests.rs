@@ -194,6 +194,8 @@ fn commands_and_bodies() {
         IntentBody::Allocation(Allocation { op: OperationId::new("op1"), bots: vec![BotId::new("Bot1")] }),
         IntentBody::JobBatch { squad: SquadId::new("s1"), jobs: vec![job()] },
         IntentBody::Command(Command::Status),
+        IntentBody::Lease(Lease { bot: BotId::new("b1"), job: JobId::new("j1"), attempt: 2, claim: ClaimId::new("c1"), expires_at: Gt(100) }),
+        IntentBody::Roster { squad: SquadId::new("s1"), lost: vec![BotId::new("b2")] },
     ] {
         rt(Intent { key: "k".into(), body });
     }

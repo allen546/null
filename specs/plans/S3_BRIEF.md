@@ -1,6 +1,6 @@
 # S3 brief: control spine on simulated bots
 
-Implementer briefs for two Sonnet agents, run one after the other (written 2026-10-24; S2 notes added; S3a done 2026-10-24, its notes added; S3b not started). Milestone: `BUILD_PLAN.md` S3. It needs S2 done first (`specs/plans/S2_BRIEF.md`: `null-proto`, `null-bus`). Next after it: S6 (the skeleton live).
+Implementer briefs for two Sonnet agents, run one after the other (written 2026-10-24; S2 notes added; S3a done 2026-10-24, its notes added; S3b done 2026-10-24, choices and open items in BUILD_PLAN S3 "Done 2026-10-24"). Milestone: `BUILD_PLAN.md` S3. It needs S2 done first (`specs/plans/S2_BRIEF.md`: `null-proto`, `null-bus`). Next after it: S6 (the skeleton live).
 
 S3 has five crates, more than one task of 500–800 lines. So it is two tasks, each with one done-when:
 

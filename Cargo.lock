@@ -2097,11 +2097,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "null-cli"
+version = "0.1.0"
+dependencies = [
+ "null-bus",
+ "null-hq",
+ "null-op",
+ "null-proto",
+ "null-simbot",
+ "null-squad",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "null-combat"
 version = "0.1.0"
 dependencies = [
  "null-bot-api",
  "null-mechanics",
+]
+
+[[package]]
+name = "null-hq"
+version = "0.1.0"
+dependencies = [
+ "null-bus",
+ "null-op",
+ "null-proto",
+ "null-squad",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -2164,6 +2192,18 @@ name = "null-skills-demo"
 version = "0.1.0"
 dependencies = [
  "null-bot-api",
+]
+
+[[package]]
+name = "null-squad"
+version = "0.1.0"
+dependencies = [
+ "null-bus",
+ "null-op",
+ "null-proto",
+ "null-simbot",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

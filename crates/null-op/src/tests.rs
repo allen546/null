@@ -79,6 +79,21 @@ impl Squad {
                         (b.clone(), job.claims[0].clone()),
                     );
                     let key = format!("assign:{}:{}", job.id, now.0);
+                    // The bot refuses a job without a lease; this stand-in squad grants a far-off one.
+                    let lease = Lease {
+                        bot: b.clone(),
+                        job: job.id.clone(),
+                        attempt: job.attempt,
+                        claim: job.claims[0].clone(),
+                        expires_at: Gt(1 << 40),
+                    };
+                    self.bus
+                        .publish_intent(
+                            &bot_jobs(&srv(), &b),
+                            Intent { key: format!("lease:{}", job.id), body: IntentBody::Lease(lease) },
+                        )
+                        .await
+                        .unwrap();
                     let body = IntentBody::JobBatch {
                         squad: SquadId::new("sq1"),
                         jobs: vec![job],

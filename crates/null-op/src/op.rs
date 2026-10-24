@@ -109,6 +109,8 @@ struct Core {
     goal: Option<GoalSpec>,
     state: OpState,
     bots: Vec<BotId>,
+    /// Bots the squad reported as lost; they stay in `bots` (their late outcomes still count).
+    lost: BTreeSet<BotId>,
     jobs: BTreeMap<JobId, JobRec>,
     used_trees: BTreeSet<Loc>,
     /// Ledger (K5 §4.4): items counted from outcomes only.
@@ -124,6 +126,7 @@ impl Core {
             goal: None,
             state: OpState::Planning,
             bots: vec![],
+            lost: BTreeSet::new(),
             jobs: BTreeMap::new(),
             used_trees: BTreeSet::new(),
             ledger: BTreeMap::new(),
@@ -187,7 +190,13 @@ impl Core {
                 }
             }
             OpEvent::State { state } => self.state = *state,
+            OpEvent::Roster { lost } => self.lost = lost.iter().cloned().collect(),
         }
+    }
+
+    /// Assigned bots the squad can still use.
+    fn alive(&self) -> usize {
+        self.bots.iter().filter(|b| !self.lost.contains(*b)).count()
     }
 
     fn outstanding(&self) -> u32 {
@@ -384,6 +393,13 @@ impl<B: Bus + Clone> Operation<B> {
                     self.record(OpEvent::Allocated { bots: a.bots })
                 }
                 IntentBody::JobOutcome(o) => self.on_outcome(o).await,
+                IntentBody::Roster { squad, lost } if squad == self.cfg.squad => {
+                    let mut lost = lost;
+                    lost.sort();
+                    if lost.iter().cloned().collect::<BTreeSet<_>>() != self.core.lost {
+                        self.record(OpEvent::Roster { lost });
+                    }
+                }
                 _ => {}
             }
         }
@@ -593,7 +609,7 @@ impl<B: Bus + Clone> Operation<B> {
     /// One job per assigned bot goes out, each under its tree's claim. A denied claim leaves the job pending.
     // Spec: specs/K5-operation-service.md §4.2
     async fn dispatch(&mut self) {
-        let cap = self.core.bots.len().max(1);
+        let cap = self.core.alive().max(1);
         let inflight = self
             .core
             .jobs
@@ -792,7 +808,7 @@ impl<B: Bus + Clone> Operation<B> {
             state: c.state,
             headcount: Headcount {
                 assigned: bots,
-                alive: bots,
+                alive: c.alive() as u32,
             },
             progress: Progress { done, target },
             stock: c

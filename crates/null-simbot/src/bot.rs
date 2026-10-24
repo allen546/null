@@ -2,7 +2,10 @@
 use crate::{SharedWorld, SimRng, bot_cmd, bot_jobs, bot_summary, bot_up, oak_log};
 use null_bus::{Bus, CommandRx, IntentRx};
 use null_proto::*;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
+
+/// Ticks before a lease ends at which the bot stops by itself (lease rule, K6 §4.8).
+pub const LEASE_MARGIN: u64 = 10;
 
 // Spec: specs/K6-squad-leader.md §3
 struct Running {
@@ -34,6 +37,12 @@ pub struct SimBot<B: Bus + Clone> {
     disconnect_at: Option<Gt>,
     /// A stall: the bot is alive but does nothing in this tick range (a hung client, a lag spike).
     stall: Option<(Gt, Gt)>,
+    /// Test hook: every Halt is lost on its way, so only the lease rule can stop this bot.
+    lose_halts: bool,
+    /// Latest `expires_at` the squad sent per (job, attempt). A job with no lease is refused: the check fails closed (K6 §4.8).
+    leases: BTreeMap<(JobId, u32), Gt>,
+    /// Reflex switches the squad applied (K6 §4.7); the sim only records them.
+    reflexes: Vec<ReflexSetting>,
 }
 
 impl<B: Bus + Clone> SimBot<B> {
@@ -63,6 +72,9 @@ impl<B: Bus + Clone> SimBot<B> {
             die_at: None,
             disconnect_at: None,
             stall: None,
+            lose_halts: false,
+            leases: BTreeMap::new(),
+            reflexes: Vec::new(),
         }
     }
     /// Tests trigger death and disconnect at a chosen tick.
@@ -75,6 +87,18 @@ impl<B: Bus + Clone> SimBot<B> {
     /// Alive but frozen from `from` up to (not including) `until`: no work, no outcome, state still published.
     pub fn stall(&mut self, from: Gt, until: Gt) {
         self.stall = Some((from, until));
+    }
+    /// The bot never sees a Halt (a lost message): the lease rule must stop it (K6 §4.8).
+    pub fn lose_halts(&mut self) {
+        self.lose_halts = true;
+    }
+    /// The switch last applied for a target, if any.
+    pub fn reflex(&self, t: &ReflexTarget) -> Option<bool> {
+        self.reflexes.iter().find(|s| s.target == *t).map(|s| s.on)
+    }
+    /// Logs the running job has taken so far; they go up only with its outcome.
+    pub fn holding(&self) -> u32 {
+        self.running.as_ref().map_or(0, |r| r.gained)
     }
     pub fn life(&self) -> Life {
         self.life
@@ -100,15 +124,36 @@ impl<B: Bus + Clone> SimBot<B> {
         }
         let stalled = self.stall.is_some_and(|(a, z)| now >= a && now < z);
         if self.life == Life::Alive && !stalled {
+            let mut halted = false;
             while let Some(Command::Halt { .. }) = self.cmds.try_recv() {
+                if self.lose_halts {
+                    continue;
+                }
+                halted = true;
                 if let Some(r) = self.running.take() {
                     self.finish(r, OutcomeKind::Preempted, now).await;
                 }
             }
             while let Some(i) = self.jobs.try_recv() {
-                if let IntentBody::JobBatch { jobs, .. } = i.body {
-                    self.queue.extend(jobs);
+                match i.body {
+                    IntentBody::JobBatch { jobs, .. } => self.queue.extend(jobs),
+                    IntentBody::Lease(l) => {
+                        // The bus keeps order per subject, so the last lease wins, a shorter one too: the squad ends a lease early when a renew fails.
+                        self.leases.insert((l.job, l.attempt), l.expires_at);
+                    }
+                    IntentBody::Command(Command::SetReflexes { settings, .. }) => {
+                        for s in settings {
+                            self.reflexes.retain(|o| o.target != s.target);
+                            self.reflexes.push(s);
+                        }
+                    }
+                    _ => {}
                 }
+            }
+            // A halt stops all work, the jobs read in the same tick after it too (they sit behind
+            // the halt in time); the squad already dropped them, and their claims expire.
+            if halted {
+                self.queue.clear();
             }
             if self.running.is_none() {
                 if let Some(job) = self.queue.pop_front() {
@@ -117,7 +162,10 @@ impl<B: Bus + Clone> SimBot<B> {
             }
             self.advance(now).await;
         }
-        self.publish_state(now);
+        // A hung client sends nothing, so its squad sees the silence (K6 §5).
+        if !stalled {
+            self.publish_state(now);
+        }
     }
 
     // Spec: specs/K6-squad-leader.md §3
@@ -158,6 +206,11 @@ impl<B: Bus + Clone> SimBot<B> {
             return self
                 .finish(r, OutcomeKind::Failed(FailReason::BudgetExhausted), now)
                 .await;
+        }
+        // Lease rule: stop before the claim can pass to another attempt, even if no Halt ever arrives. No lease for this (job, attempt) counts as expired.
+        let lease = self.leases.get(&(r.job.id.clone(), r.job.attempt));
+        if lease.is_none_or(|exp| now.0 + LEASE_MARGIN >= exp.0) {
+            return self.finish(r, OutcomeKind::Preempted, now).await;
         }
         if r.idx >= r.trees.len() {
             let kind = if r.gained == 0 && r.skipped > 0 {
@@ -200,6 +253,7 @@ impl<B: Bus + Clone> SimBot<B> {
 
     // Spec: specs/CONVENTIONS.md §3.1
     async fn finish(&mut self, r: Running, kind: OutcomeKind, now: Gt) {
+        self.leases.remove(&(r.job.id.clone(), r.job.attempt));
         let items_gained = if r.gained > 0 {
             vec![ItemCount {
                 item: oak_log(),

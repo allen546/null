@@ -5,6 +5,7 @@
 ## Decided 2026-10-24
 
 - A14: a drop that lands on canopy leaves out of reach is reported as left, not chased (`gather` unchanged). The A14 log-count rows accept it only with server proof (item entity of that log on leaves, counts add up). B4 §4.9.
+- Squad claim renewal: keep claims short (TTL 100 ticks, renew every 20); a renew with no reply in 2 s counts as failed and halts the bot, so an operation restart longer than about 2 s pauses its bots (they resume when the restarted op dispatches again). K6 §4.8, S3b `SquadConfig::renew_timeout`.
 
 ## Decided 2026-10-20
 

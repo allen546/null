@@ -7,7 +7,7 @@ mod bot;
 mod tests;
 mod world;
 
-pub use bot::SimBot;
+pub use bot::{LEASE_MARGIN, SimBot};
 pub use world::{SharedWorld, SimRng, SimWorld};
 
 use null_bus::{Level, Subject, kind};

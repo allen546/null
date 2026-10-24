@@ -1,0 +1,16 @@
+[package]
+name = "null-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+null-proto = { path = "../null-proto" }
+null-bus = { path = "../null-bus" }
+null-op = { path = "../null-op" }
+null-squad = { path = "../null-squad" }
+null-hq = { path = "../null-hq" }
+null-simbot = { path = "../null-simbot" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.50.0", features = ["sync", "time", "rt", "macros"] }

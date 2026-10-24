@@ -67,6 +67,10 @@ pub enum IntentBody {
     Command(Command),
     JobOutcome(JobOutcome),
     Observation(Observation),
+    /// Squad to bot: the claim of the running job is held until `expires_at` (K6 §4.8).
+    Lease(Lease),
+    /// Squad to operation: the bots it cannot use (dead, disconnected, silent). Latest list wins.
+    Roster { squad: SquadId, lost: Vec<BotId> },
 }
 
 // Spec: specs/F6-bus-deployment.md §3
