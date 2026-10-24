@@ -93,6 +93,10 @@ pub struct Job {
     pub checkpoint: Checkpoint,
     /// Minimum crew that cannot be preempted (cargo jobs only).
     pub preemption_floor: Option<u32>,
+    /// Which dispatch of this job this is (1, 2, ...); 0 means unnumbered. The bot echoes it in its outcome so
+    /// the operation can tell a late report of an old attempt from the current one (K5 §4.6).
+    #[serde(default)]
+    pub attempt: u32,
 }
 
 // Spec: specs/CONVENTIONS.md §3.1

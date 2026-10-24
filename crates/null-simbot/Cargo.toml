@@ -1,0 +1,12 @@
+[package]
+name = "null-simbot"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+null-proto = { path = "../null-proto" }
+null-bus = { path = "../null-bus" }
+
+[dev-dependencies]
+tokio = { version = "1.50.0", features = ["sync", "time", "rt", "macros"] }

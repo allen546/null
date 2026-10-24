@@ -18,7 +18,7 @@ The goal: all four levels (HQ, one operation, one squad, two bots) run in one pr
 |---|---|---|---|---|
 | S1 | Workspace and decision API | `null-bot-api`, `null-mechanics`, `scripts/check_boundary.sh` | | done 2026-10-16 (combat M1) |
 | S2 | Message types and transport | `null-proto`, `null-bus` | S1 | done 2026-10-24 |
-| S3 | Control spine on simulated bots | `null-hq`, `null-op`, `null-squad`, `null-cli`, `null-simbot` | S2 | not started |
+| S3 | Control spine on simulated bots | `null-hq`, `null-op`, `null-squad`, `null-cli`, `null-simbot` | S2 | S3a done 2026-10-24 (`null-simbot`, `null-op`); S3b not started |
 | S4 | Adapter, host and login | `mc-adapter`, `null-node`, `skeleton-server/` | S1 | done 2026-10-16, verified live |
 | SA | Ability check: basic abilities proven live, fixed in the fork where needed ([ABILITY_CHECK.md](ABILITY_CHECK.md)) | `null-abilitycheck`, `mc-adapter`, fork | S4 | closed 2026-10-19: A1–A12, A10E, A4C, AT and the shape families pass on both servers (358/358 each, verified) |
 | S5 | Skills and belief for the goal | `null-skills`, `null-belief` | S4, SA | closed 2026-10-23: mailbox, `null-belief`, `gather` with the tree policy (A14 checks all three done-when terms), fork patches 23–38; last full pair `p39_full` plus reruns, pushed `4ee1f8a` |

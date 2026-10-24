@@ -2123,11 +2123,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "null-op"
+version = "0.1.0"
+dependencies = [
+ "null-bus",
+ "null-proto",
+ "null-simbot",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "null-proto"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "null-simbot"
+version = "0.1.0"
+dependencies = [
+ "null-bus",
+ "null-proto",
+ "tokio",
 ]
 
 [[package]]

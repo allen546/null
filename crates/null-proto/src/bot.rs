@@ -46,4 +46,7 @@ pub struct JobOutcome {
     pub bot: BotId,
     pub outcome: Outcome,
     pub tick: Gt,
+    /// The `Job::attempt` this outcome answers.
+    #[serde(default)]
+    pub attempt: u32,
 }

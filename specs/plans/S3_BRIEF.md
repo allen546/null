@@ -1,6 +1,6 @@
 # S3 brief: control spine on simulated bots
 
-Implementer briefs for two Sonnet agents, run one after the other (written 2026-10-24, not started). Milestone: `BUILD_PLAN.md` S3. It needs S2 done first (`specs/plans/S2_BRIEF.md`: `null-proto`, `null-bus`). Next after it: S6 (the skeleton live).
+Implementer briefs for two Sonnet agents, run one after the other (written 2026-10-24; S2 notes added; S3a done 2026-10-24, its notes added; S3b not started). Milestone: `BUILD_PLAN.md` S3. It needs S2 done first (`specs/plans/S2_BRIEF.md`: `null-proto`, `null-bus`). Next after it: S6 (the skeleton live).
 
 S3 has five crates, more than one task of 500–800 lines. So it is two tasks, each with one done-when:
 
@@ -8,6 +8,24 @@ S3 has five crates, more than one task of 500–800 lines. So it is two tasks, e
 - **S3b:** `null-squad`, `null-hq` and `null-cli`, then the S3 done-when runs end to end.
 
 Before either task starts, the lead checks S2's report for the open details it decided and for gaps it named for S3, and adds them to the brief.
+
+## What S2 gives and leaves (lead's check, 2026-10-24; paste into both briefs)
+
+S2's open-detail choices are listed in `BUILD_PLAN.md` S2 "Done 2026-10-24". The ones that matter for S3:
+
+- `null-proto` has its own `Pos`, `ReflexTarget` and `ReflexGroup` (copies of the `null-bot-api` ones, with serde). Use the `null-proto` ones on the bus; convert only at a real-bot boundary (S6).
+- Claims: requests carry `ttl: Gt`; a grant carries `expires_at: Gt` and a fencing `token: u64` (F6 §4.7). The registry issues tokens and checks them on renew and release. `Preempt` is a reply the registry sends to the old owner. Denials are `Held`, `NotHeld`, `NotOwner`.
+- `OpSummary.exceptions` is merged by `merge_exception()` and capped at `MAX_EXCEPTIONS` (8).
+- Only halt and recall use the command class (`Bus::send_command`; others return `NotUrgent`). Status, inspect, set_goal, cancel_goal and `SetReflexes` travel as `IntentBody::Command`. A command sent before anyone subscribes is held for the first subscriber, so a component may subscribe late, but subscribe at startup anyway.
+- Intent, escalation and claim are one-consumer queues per subject; a second subscribe returns `AlreadySubscribed`. Duplicates are dropped on receipt by key, so every intent and escalation needs a stable key (a replayed or resent message reuses its key).
+- Subjects match exactly, no wildcards; the id part may be empty (`null.smp1.hq.digest`). `Bus` is generic-only (`impl Future` returns), not `dyn`.
+- The event log stores `LogEvent { at: WallMs, kind, data }` with `data` as JSON text: S3a defines its own event payload types in `null-op` and serializes them into `data`. Don't change `LogEvent`.
+- `fell` parameters are a free map (`BTreeMap<String, ParamValue>`): S3a picks the key names (for example `"trees": Locs`) and lists them in its report.
+
+Gaps S2 left, and who fills them:
+
+- S3a: the claims registry with expiry, preempt and tokens; `JobId`/`ClaimId` generation (deterministic from the seed or a counter that the log replays, so the same seed gives the same log); the `Obtain` to `fell` expansion.
+- S3b: reply types for status and inspect (or read them from the digest; pick the simpler and say why); halt to all operations (HQ sends to each operation's command subject, or one agreed swarm-wide subject; pick one and say why).
 
 ---
 
@@ -43,6 +61,28 @@ In simulation, with the stand-in squad: `Obtain(oak_log, 64)` completes with 2 f
 Report briefly: files and line counts, the test list with results, every open detail you decided and why, any change to `null-proto`, and what S3b needs from you.
 
 ---
+
+## What S3a gives and leaves (lead's check, 2026-10-24; paste into the S3b brief)
+
+S3a is done (`null-simbot`, `null-op`; 18 `null-op` and 5 `null-simbot` tests; verified twice, safety bugs fixed). How it works, as far as S3b depends on it:
+
+- Each dispatch is an attempt `n` of a job. Its claim id is `claim_id(job, n)` = `claim-<job>-a<n>`, owner `Job(id)`; the dispatched `Job` carries `claims = [that id]` and `attempt = n`. A stale bot's renew of an old attempt's id gets `NotHeld`. The registry denies any take that overlaps a live claim, the same owner's included; a same-owner take of the same live id renews it.
+- Only an outcome for the current attempt of an in-flight job changes job state or releases a claim. An older attempt's yield still counts (the logs are real), once per (job, attempt) under key `out:<job>:a<n>`. Outcomes with attempt 0, an unknown job or attempt, or a bot outside the allocation are ignored and logged (`OpEvent::Ignored`).
+- `fell` parameters: `"trees"` (Locs, one tree), `"quota"` (Int), `"tree_type"` (Text). Job ids `<op>-j0001` from a counter the log replays. Up to 3 dispatches per job, then `job_dead:<job>` escalates. Claim TTL is `Gt(100)`.
+- `Operation::new/restore/kill/tick(now)`, `summary()`, `state()`, `ledger()`. Call `tick(now)` every tick; it never blocks. `kill()` returns the bus ports and `restore` takes them back (the in-process bus can't resubscribe a one-consumer queue).
+- Subjects: `null-op` has `op_intents`, `op_cmd`, `op_claims`, `op_events`, `op_summary`, `squad_jobs`, `hq_escalate`; `null-simbot` has `bot_jobs`, `bot_up`, `bot_summary`, `bot_cmd`.
+- Halt and recall both stop new dispatch; bots are not recalled.
+
+The squad must (safety rules, from the S3a checks):
+
+- Renew each running job's claim with `job.claims[0]`, never a rebuilt id, well before expiry; key running jobs by (job, attempt).
+- Echo `job.attempt` in `JobOutcome.attempt`.
+- Halt the bot at once on any failed renew: denied, `Preempt`, error or no reply.
+- **Lease rule:** a bot must also stop by itself when its claim's `expires_at` passes without a successful renew (with a margin), so a bot that stalls and wakes never works a tree whose claim went to a new attempt. Add a test with a fake bot that stalls past its TTL and wakes: it must not take a log from a tree claimed by the next attempt. The sim fake bot does not check claims today; add the check where the squad or bot holds the lease.
+- Stop renewing for a lost or silent bot, and report lost bots up, so `OpSummary.headcount.alive` counts live bots (today it is the allocated count).
+- Resend outcomes after an op restart (the op dedupes them).
+
+Known and accepted: `is_current_claim` (op.rs) is a defensive guard that no test reaches, because an old attempt's claim is released before the next is taken. The event log records the attempt, not the bot; the op doesn't choose bots (K6 §4.1).
 
 ## Task S3b: squad, HQ, CLI and the end-to-end runs
 

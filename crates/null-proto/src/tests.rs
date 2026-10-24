@@ -35,6 +35,7 @@ fn job() -> Job {
         reflexes: vec![ReflexSetting { target: ReflexTarget::Group(ReflexGroup::Combat), on: false }],
         checkpoint: Checkpoint::Resumable,
         preemption_floor: Some(2),
+        attempt: 2,
     }
 }
 fn summary() -> OpSummary {
@@ -166,6 +167,7 @@ fn bot_messages() {
         bot: BotId::new("Bot1"),
         outcome: Outcome { job: JobId::new("j1"), kind: OutcomeKind::Succeeded, report: Report::default() },
         tick: Gt(9),
+        attempt: 2,
     });
 }
 
