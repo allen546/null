@@ -2089,6 +2089,14 @@ name = "null-bot-api"
 version = "0.1.0"
 
 [[package]]
+name = "null-bus"
+version = "0.1.0"
+dependencies = [
+ "null-proto",
+ "tokio",
+]
+
+[[package]]
 name = "null-combat"
 version = "0.1.0"
 dependencies = [
@@ -2112,6 +2120,14 @@ dependencies = [
  "null-skills-demo",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "null-proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

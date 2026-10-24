@@ -1,6 +1,6 @@
 # S2 brief: message types and transport
 
-Implementer brief for one Sonnet agent (written 2026-10-24, not started; Allen held the agent). Paste it as the agent's prompt. Milestone: `BUILD_PLAN.md` S2. Next after it: S3 (control spine on simulated bots), then S6.
+Implementer brief for one Sonnet agent (written 2026-10-24; done 2026-10-24, results in BUILD_PLAN S2). Paste it as the agent's prompt. Milestone: `BUILD_PLAN.md` S2. Next after it: S3 (control spine on simulated bots), then S6.
 
 ---
 

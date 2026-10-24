@@ -17,7 +17,7 @@ The goal: all four levels (HQ, one operation, one squad, two bots) run in one pr
 | id | milestone | crates | depends on | status |
 |---|---|---|---|---|
 | S1 | Workspace and decision API | `null-bot-api`, `null-mechanics`, `scripts/check_boundary.sh` | | done 2026-10-16 (combat M1) |
-| S2 | Message types and transport | `null-proto`, `null-bus` | S1 | not started |
+| S2 | Message types and transport | `null-proto`, `null-bus` | S1 | done 2026-10-24 |
 | S3 | Control spine on simulated bots | `null-hq`, `null-op`, `null-squad`, `null-cli`, `null-simbot` | S2 | not started |
 | S4 | Adapter, host and login | `mc-adapter`, `null-node`, `skeleton-server/` | S1 | done 2026-10-16, verified live |
 | SA | Ability check: basic abilities proven live, fixed in the fork where needed ([ABILITY_CHECK.md](ABILITY_CHECK.md)) | `null-abilitycheck`, `mc-adapter`, fork | S4 | closed 2026-10-19: A1–A12, A10E, A4C, AT and the shape families pass on both servers (358/358 each, verified) |
@@ -53,6 +53,15 @@ S3 and S4 can run in parallel. **First target (Allen, 2026-10-16): S4, a swarm t
 
   The skeleton implementation runs in-process on tokio channels. NATS comes in step 4, behind the same trait.
 - Done when: every message type round-trips through JSON (unit tests); the in-process bus honours each class's guarantee in tests (a duplicate intent is applied once, summaries keep only the latest, halt overtakes a full queue); the stable build and the boundary check pass.
+- **Done 2026-10-24.** 21 unit tests pass (10 `null-proto`, 11 `null-bus`), workspace 195 pass, stable build and boundary check pass; verified by two Haiku checks. Choices where the specs were open (S3 builds on these):
+  - `Pos`, `ReflexTarget` and `ReflexGroup` are copies in `null-proto`, not reused from `null-bot-api` (no serde there; S3 converts at the boundary).
+  - Ids are string newtypes; time newtypes serialize as plain numbers. `Envelope { proto_version, body }` rejects another major; the in-process bus passes typed values without it.
+  - Claims: `ttl: Gt` on the request, `expires_at: Gt` and a fencing `token: u64` on the grant (F6 §4.7); owners are operation, squad, bot or job; denials `Held`, `NotHeld`, `NotOwner`.
+  - Exceptions are a field of `OpSummary`, merged by kind and subject with a count, capped at `MAX_EXCEPTIONS` (8, oldest last-seen dropped), so latest-wins still works.
+  - Only halt and recall go through the command class (`Command::is_urgent`); status, inspect, set_goal, cancel_goal and `SetReflexes` travel as intents. A command sent before anyone subscribes is held for the first subscriber (at least once).
+  - Intent, escalation and claim are one-consumer queues per subject; duplicates dropped on receipt by key, the seen set kept for the receiver's life (a bounded window is a later choice). Subjects match exactly, no wildcards. `Bus` is generic-only (`impl Future` returns), not `dyn`.
+  - Event log entries are `LogEvent { at, kind, data }` with `data` as JSON text; S3 defines its own event payloads.
+  - Left for S3: claims registry and expiry, reply types for status and inspect, a swarm-wide halt subject (HQ sends to each operation now), id generators, Goal-to-Job expansion (`fell` parameter names).
 
 ### S3: control spine on simulated bots
 

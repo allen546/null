@@ -1,0 +1,12 @@
+[package]
+name = "null-bus"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+null-proto = { path = "../null-proto" }
+tokio = { version = "1.50.0", features = ["sync", "time", "rt"] }
+
+[dev-dependencies]
+tokio = { version = "1.50.0", features = ["sync", "time", "rt", "macros", "test-util"] }
