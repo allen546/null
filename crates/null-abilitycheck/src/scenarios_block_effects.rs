@@ -131,7 +131,14 @@ pub(crate) fn try_bot_pos(cx: &mut Ctx) -> Option<[f64; 3]> {
         let online = list.split(':').nth(1).is_some_and(|l| l.split(',').any(|x| x.trim() == n));
         replies.push(format!("pos reply {reply:?}, list reply {list:?}"));
         if !online {
-            return None;
+            // Off the server only when a second look agrees (a wrong reading must not end the run).
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let again = cx.r("list");
+            if !again.split(':').nth(1).is_some_and(|l| l.split(',').any(|x| x.trim() == n)) {
+                eprintln!("the bot {n} is off the server: {}; list again {again:?}", replies.join("; "));
+                return None;
+            }
+            replies.push(format!("second list reply {again:?} names the bot"));
         }
         if attempt < 3 {
             std::thread::sleep(std::time::Duration::from_millis(200));

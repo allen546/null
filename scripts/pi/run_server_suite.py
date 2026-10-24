@@ -73,8 +73,18 @@ mon.write(f'{ts()} BOT exit {rc} wall {time.time() - T:.1f}s botcpu user {r.ru_u
 stop.set(); th.join()
 def alerts(text):
     return sum(1 for l in text.splitlines() if re.search(r'Grim.* failed ', re.sub(r'\x1b\[[0-9;]*m', '', l)))
+def allowed_alerts():
+    # Rows of Ctx::run_allowing print "expected Grim alerts from <why> (...): Check xN, ..." (N = log lines).
+    n = 0
+    for l in open(L + f'{prefix}_{kind}_run.log', errors='replace'):
+        m = re.search(r'expected Grim alerts from .*?\): ([^;]*)', re.sub(r'\x1b\[[0-9;]*m', '', l))
+        if m: n += sum(int(x) for x in re.findall(r' x(\d+)', m.group(1)))
+    return n
 whole = open(slog, 'rb').read()
-mon.write(f'{ts()} GRIM alerts in the suite: {alerts(whole[mark:].decode(errors="replace"))}; '
+total = alerts(whole[mark:].decode(errors="replace"))
+allowed = min(allowed_alerts(), total)
+# The first number is the alerts no row allowed (full_suite.sh reads it); the allowed ones follow.
+mon.write(f'{ts()} GRIM alerts in the suite: {total - allowed} (plus {allowed} allowed by rows, vanilla would draw them too); '
           f'in the warm-up: {alerts(whole[:mark].decode(errors="replace"))}\n')
 try: rcon.run(['stop'], port=cfg['rc'])
 except Exception as e: mon.write(f'stop err {e}\n')
