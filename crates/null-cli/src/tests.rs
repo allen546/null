@@ -47,7 +47,8 @@ fn assert_no_double_claim(evs: &[OpEvent]) {
                 }
                 active.insert(id.clone(), kind.clone());
             }
-            ClaimEvent::Released { id } | ClaimEvent::Expired { id, .. } | ClaimEvent::Preempted { id, .. } => {
+            // A preempted claim stays held until its release or expiry (S6b1).
+            ClaimEvent::Released { id } | ClaimEvent::Expired { id, .. } => {
                 active.remove(id);
             }
             _ => {}
@@ -369,4 +370,48 @@ async fn the_late_yield_of_a_halted_bot_is_counted_by_the_old_operation() {
     assert_eq!(unique.len(), keys.len(), "each (job, attempt) counted once");
     assert_eq!(total, before + held, "the held logs are in the old op's log: {before} + {held}, ledger {after}");
     assert!(s.retired_exceptions.iter().all(|e| e.kind != "retire_unreported"), "{:?}", s.retired_exceptions);
+}
+
+/// S6b1: with the operation's claim service down, a renew gets no reply. The squad tick must not wait for it: the
+/// other bot keeps working every tick, and no lease is extended while the reply is missing.
+#[tokio::test]
+async fn a_renew_reply_delayed_past_several_ticks_does_not_stop_the_squad_tick() {
+    let (mut s, _) = started(3, 2).await;
+    for _ in 0..60 {
+        s.step().await;
+        if s.squads[&op1()].running().len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(s.squads[&op1()].running().len(), 2);
+    s.kill_op(&op1()).await; // nobody answers claim requests from now on
+    let logs = all_logs(&s);
+    let t = std::time::Instant::now();
+    s.run(30).await; // the renews come due within 20 ticks; the 2 s timeout is far off
+    assert!(t.elapsed() < std::time::Duration::from_millis(1500), "the squad tick waited for a renew: {:?}", t.elapsed());
+    assert!(s.squads[&op1()].exceptions.iter().all(|e| e.kind != "renew_failed"), "no verdict before the timeout");
+    assert!(all_logs(&s) < logs, "the bots kept working under their old leases");
+}
+
+/// S6b1 (item 4): after a halt a claim stays held until its bot has stopped and reported. The halt message is lost
+/// here, so only the cut lease stops the bots.
+#[tokio::test]
+async fn a_halted_jobs_claim_is_held_until_its_bot_has_stopped_and_reported() {
+    let (mut s, _) = started(3, 2).await;
+    for _ in 0..60 {
+        s.step().await;
+        if s.squads[&op1()].running().len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(s.squads[&op1()].running().len(), 2);
+    s.bots.iter_mut().for_each(|b| b.lose_halts());
+    s.exec("halt --reason test").await;
+    for _ in 0..40 {
+        s.step().await;
+        let working = s.bots.iter().filter(|b| !b.is_idle()).count();
+        assert!(s.ops[&op1()].claims().len() >= working, "a bot works in a box whose claim was released");
+    }
+    assert!(s.bots.iter().all(|b| b.is_idle()), "the cut lease stopped the bots");
+    assert!(s.ops[&op1()].claims().is_empty(), "the outcomes released the claims");
 }

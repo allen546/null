@@ -99,6 +99,10 @@ impl ClaimRegistry {
                 // A live id taken again by its own owner is a resend, not a new grant: it renews (same token, so the
                 // holder's fence stays valid) when the block set is the same, and is denied when it differs. A silent
                 // replace could change a held claim's kind or token without the holder knowing.
+                if let Some(by) = self.preempted.get(id).filter(|_| self.entries.get(id).is_some_and(|e| &e.owner == owner)) {
+                    // A preempted claim is not renewed by a resend either.
+                    return ClaimReply::Preempt { id: id.clone(), by: by.clone() };
+                }
                 if let Some(e) = self.entries.get_mut(id).filter(|e| &e.owner == owner) {
                     if &e.kind != kind {
                         return ClaimReply::Denied {
@@ -138,16 +142,29 @@ impl ClaimRegistry {
                         },
                     };
                 }
-                for c in conflicts {
-                    let old = self.entries.remove(&c).expect("listed above");
-                    self.preempted.insert(c.clone(), owner.clone());
-                    self.pending.push(ClaimEvent::Preempted {
-                        id: c,
-                        owner: old.owner,
-                        by: owner.clone(),
-                    });
+                // A lower-priority holder is told at once (its next renew gets `Preempt`) but keeps the box until its
+                // release or expiry: its bot may still be breaking blocks, and stops only on that notice. The new
+                // request is denied meanwhile and its owner asks again (K5 §4.5, S6b1).
+                if !conflicts.is_empty() {
+                    let mut first = None;
+                    for c in conflicts {
+                        let old = self.entries[&c].owner.clone();
+                        first.get_or_insert_with(|| old.clone());
+                        if self.preempted.insert(c.clone(), owner.clone()).is_none() {
+                            self.pending.push(ClaimEvent::Preempted {
+                                id: c,
+                                owner: old,
+                                by: owner.clone(),
+                            });
+                        }
+                    }
+                    return ClaimReply::Denied {
+                        id: id.clone(),
+                        reason: DenyReason::Held {
+                            by: first.expect("conflicts listed"),
+                        },
+                    };
                 }
-                self.preempted.remove(id);
                 self.next_token += 1;
                 let (token, expires_at) = (self.next_token, now + *ttl);
                 let ev = ClaimEvent::Granted {
@@ -166,7 +183,7 @@ impl ClaimRegistry {
                     expires_at,
                 }
             }
-            ClaimRequest::Renew { id, owner, ttl } => match self.check(id, owner) {
+            ClaimRequest::Renew { id, owner, ttl } => match self.check(id, owner, true) {
                 Err(r) => r,
                 Ok(e) => {
                     e.expires_at = now + *ttl;
@@ -182,7 +199,7 @@ impl ClaimRegistry {
                     }
                 }
             },
-            ClaimRequest::Release { id, owner } => match self.check(id, owner) {
+            ClaimRequest::Release { id, owner } => match self.check(id, owner, false) {
                 Err(r) => r,
                 Ok(_) => {
                     self.entries.remove(id);
@@ -193,11 +210,12 @@ impl ClaimRegistry {
         }
     }
 
-    /// The entry if `owner` holds it, else the reply to send.
+    /// The entry if `owner` holds it, else the reply to send. A preempted claim answers a renew with `Preempt`
+    /// but can still be released: the old owner frees it once its bot has stopped.
     // Spec: specs/K5-operation-service.md §4.5
-    fn check(&mut self, id: &ClaimId, owner: &ClaimOwner) -> Result<&mut Entry, ClaimReply> {
+    fn check(&mut self, id: &ClaimId, owner: &ClaimOwner, renew: bool) -> Result<&mut Entry, ClaimReply> {
         if let Some(by) = self.preempted.get(id) {
-            if !self.entries.contains_key(id) {
+            if renew || !self.entries.contains_key(id) {
                 return Err(ClaimReply::Preempt {
                     id: id.clone(),
                     by: by.clone(),
@@ -267,7 +285,7 @@ impl ClaimRegistry {
                 self.entries.remove(id);
             }
             ClaimEvent::Preempted { id, by, .. } => {
-                self.entries.remove(id);
+                // Marked only: the entry stays until its release or expiry (S6b1).
                 self.preempted.insert(id.clone(), by.clone());
             }
         }

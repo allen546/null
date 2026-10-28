@@ -9,6 +9,7 @@ null-proto = { path = "../null-proto" }
 null-bus = { path = "../null-bus" }
 null-op = { path = "../null-op" }
 serde_json = "1"
+tokio = { version = "1.50.0", features = ["rt"] }
 
 [dev-dependencies]
 null-simbot = { path = "../null-simbot" }

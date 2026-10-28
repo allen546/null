@@ -434,7 +434,7 @@ impl<B: Bus + Clone> Operation<B> {
         self.log.append(self.now, &ev);
     }
 
-    /// Log the registry's changes in order; a job whose claim expired or was taken away is requeued.
+    /// Log the registry's changes in order; a job whose claim expired is requeued.
     // Spec: specs/K5-operation-service.md §4.6
     async fn flush_claims(&mut self) {
         let evs = self.shared.reg.lock().unwrap().drain_events();
@@ -446,11 +446,8 @@ impl<B: Bus + Clone> Operation<B> {
                     id,
                     owner: ClaimOwner::Job(j),
                 } if self.is_current_claim(&j, &id) => self.lost(&j, "claim_expired").await,
-                ClaimEvent::Preempted {
-                    id,
-                    owner: ClaimOwner::Job(j),
-                    ..
-                } if self.is_current_claim(&j, &id) => self.lost(&j, "claim_preempted").await,
+                // A preempted claim stays held: the job is requeued when its bot's outcome arrives or the claim
+                // expires, never before (S6b1), so no second attempt starts while the first still breaks blocks.
                 _ => {}
             }
         }

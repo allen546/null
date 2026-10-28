@@ -70,17 +70,38 @@ pub struct BotBrain {
     died_seen: u32,
     /// The result mailbox and the tracks that feed it (AD-F5.4).
     pub(crate) actions: Tracker,
+    /// A hard stop is in force (`halt_actions`) until the skill ends or a new one is installed.
+    halted: bool,
 }
 
 impl BotBrain {
     pub fn new(brain: Brain, skill: Option<Box<dyn Skill>>) -> Self {
-        Self { brain, skill, pending: Vec::new(), died_seen: 0, actions: Tracker::default() }
+        Self { brain, skill, pending: Vec::new(), died_seen: 0, actions: Tracker::default(), halted: false }
+    }
+
+    // Spec: specs/plans/S6_BRIEF.md (S6b1 hard-stop fix); specs/B6-placement-breaking.md §4.6
+    /// Stops the bot's actions from the next game tick whether or not the skill steps: aborts a break, stops
+    /// navigation, releases held use, and drops every start the skill queues. It stays in force on every tick (the
+    /// client can run several per loop) until the skill's run ends or a new skill is installed. The skill is not
+    /// ended; its own end still reports.
+    pub fn halt_actions(&mut self) {
+        self.halted = true;
+    }
+
+    // Spec: specs/plans/S6_BRIEF.md (S6b2 sticky hard stop)
+    /// Takes the commands for this game tick; while halted, the starts are dropped and the stops added.
+    fn take_commands(&mut self) -> Vec<(Option<ActionId>, Command)> {
+        if self.halted {
+            hard_stop(&mut self.pending);
+        }
+        std::mem::take(&mut self.pending)
     }
 
     /// Starts `skill` when none runs (the node does this for a new job; the ability check, after a
     /// skill the host ended).
     pub fn install_skill(&mut self, skill: Box<dyn Skill>) {
         if self.skill.is_none() {
+            self.halted = false;
             self.skill = Some(skill);
         }
     }
@@ -89,6 +110,7 @@ impl BotBrain {
     /// Replaces the skill. The old one's results are released.
     pub fn set_skill(&mut self, skill: Option<Box<dyn Skill>>) {
         self.actions.mailbox.end_owner(Owner::Skill);
+        self.halted = false;
         self.skill = skill;
     }
 
@@ -112,6 +134,7 @@ impl BotBrain {
     fn end_skill(&mut self) -> Option<Box<dyn Skill>> {
         self.actions.mailbox.end_owner(Owner::Skill);
         self.brain.end_job();
+        self.halted = false;
         self.skill.take()
     }
 }
@@ -489,6 +512,7 @@ fn decide(
                 && skill.on_death(&view, d) == AfterDeath::End
             {
                 ended_by_death = bb.skill.take();
+                bb.halted = false;
             }
             died.write(BotDied { entity, tick: now, death });
         }
@@ -544,6 +568,19 @@ fn decide(
             ended.write(SkillEnded { entity, skill: id, status, tick: now });
         }
     }
+}
+
+// Spec: specs/plans/S6_BRIEF.md (S6b1 hard-stop fix, S6b2 sticky)
+/// The commands of a hard-stop tick: whatever the skill just asked to start is dropped, then the bot aborts its break
+/// (vanilla `MultiPlayerGameMode#stopDestroyBlock`), stops navigation and releases use.
+fn hard_stop(pending: &mut Vec<(Option<ActionId>, Command)>) {
+    pending.retain(|(_, c)| {
+        !matches!(
+            c,
+            Command::BreakBlock(_) | Command::PlaceBlock { .. } | Command::Goto { .. } | Command::Attack(_) | Command::UseItem(_)
+        )
+    });
+    pending.extend([(None, Command::CancelBreak), (None, Command::StopNav), (None, Command::ReleaseUse)]);
 }
 
 fn walk_direction(forward: i8, strafe: i8) -> WalkDirection {
@@ -615,7 +652,8 @@ fn apply(
             **jumping = false;
             flags.jump_pulse = false;
         }
-        for (id, cmd) in std::mem::take(&mut bb.pending) {
+        // Walk, Sprint and Jump stay: the halt drops only what changes the world or starts a path; the skill's own end stops movement.
+        for (id, cmd) in bb.take_commands() {
             match cmd {
                 Command::Walk { forward, strafe } => mv.move_direction = walk_direction(forward, strafe),
                 Command::Sprint(on) => mv.trying_to_sprint = on,
@@ -753,3 +791,64 @@ fn apply(
     }
 }
 
+
+#[cfg(test)]
+mod hard_stop_tests {
+    use super::*;
+    use null_bot_api::BlockPos;
+
+    /// A skill that stepped a break and a goto this tick gets them dropped; the three stops go out.
+    #[test]
+    fn a_hard_stop_drops_starts_and_adds_the_three_stops() {
+        let mut p = vec![
+            (None, Command::Walk { forward: 1, strafe: 0 }),
+            (Some(ActionId::fresh()), Command::BreakBlock(BlockPos::new(1, 2, 3))),
+            (None, Command::Goto { target: BlockPos::new(4, 5, 6), tolerance: 0.0 }),
+        ];
+        hard_stop(&mut p);
+        let cmds: Vec<&Command> = p.iter().map(|(_, c)| c).collect();
+        assert!(matches!(cmds.as_slice(), [Command::Walk { .. }, Command::CancelBreak, Command::StopNav, Command::ReleaseUse]));
+    }
+
+    struct Idle;
+    impl Skill for Idle {
+        fn id(&self) -> &str {
+            "idle"
+        }
+        fn step(&mut self, _: &dyn null_bot_api::BotView, _: &mut dyn null_bot_api::BotCommands) -> SkillStatus {
+            SkillStatus::Running
+        }
+    }
+
+    fn queue_break(b: &mut BotBrain) {
+        b.pending = vec![(Some(ActionId::fresh()), Command::BreakBlock(BlockPos::new(1, 2, 3)))];
+    }
+
+    fn has_break(cmds: &[(Option<ActionId>, Command)]) -> bool {
+        cmds.iter().any(|(_, c)| matches!(c, Command::BreakBlock(_)))
+    }
+
+    /// One halt, then several game ticks in one loop: every tick drops the skill's breaks (a catch-up burst).
+    #[test]
+    fn a_halt_drops_the_breaks_of_every_following_tick() {
+        let mut b = BotBrain::new(Brain::new(), Some(Box::new(Idle)));
+        b.halt_actions();
+        for _ in 0..10 {
+            queue_break(&mut b);
+            let cmds = b.take_commands();
+            assert!(!has_break(&cmds));
+            assert!(cmds.iter().any(|(_, c)| matches!(c, Command::CancelBreak)));
+        }
+    }
+
+    /// A new skill clears the halt: the next job's breaks go through.
+    #[test]
+    fn a_new_install_clears_the_halt() {
+        let mut b = BotBrain::new(Brain::new(), Some(Box::new(Idle)));
+        b.halt_actions();
+        b.end_skill();
+        b.install_skill(Box::new(Idle));
+        queue_break(&mut b);
+        assert!(has_break(&b.take_commands()));
+    }
+}

@@ -5,7 +5,7 @@ use null_bus::{Bus, CommandRx, IntentRx, bot_cmd, bot_jobs, bot_summary, bot_up}
 use null_proto::*;
 use std::collections::{BTreeMap, VecDeque};
 
-/// Ticks a stopped job waits for its skill to report before the bot answers without it (a frozen client).
+/// Ticks after a stop request without the skill's end before the run counts as stuck (a frozen client).
 const STOP_WAIT: u64 = 100;
 
 /// A host's view of its bot, read once per tick. Reads never wait.
@@ -21,6 +21,10 @@ pub struct HostStatus {
 pub trait Host {
     fn start(&mut self, spec: FellSpec) -> RunHandle;
     fn status(&mut self) -> HostStatus;
+    /// Stop the bot's own actions at its next game tick, whether or not the skill steps: cancel a break in progress,
+    /// stop navigation, release held use. Sends only what a vanilla client sends (`MultiPlayerGameMode#stopDestroyBlock`).
+    // Spec: specs/plans/S6_BRIEF.md (S6b1 hard-stop fix)
+    fn halt_actions(&mut self);
 }
 
 struct Active {
@@ -29,6 +33,8 @@ struct Active {
     started: Gt,
     /// Set when this link asked for a stop: the outcome kind to report when the skill has stopped.
     stopping: Option<(OutcomeKind, Gt)>,
+    /// True once the host got a hard stop inside the lease margin (the last chance before the claim can free).
+    margin_halted: bool,
 }
 
 // Spec: specs/K6-squad-leader.md §3
@@ -73,6 +79,12 @@ impl<B: Bus + Clone> BotLink<B> {
     pub fn life(&self) -> Life {
         self.life
     }
+    /// True when a stop was asked more than `STOP_WAIT` ticks ago and the skill has still not stepped its stop.
+    /// The link sends no outcome then; the host should log it. S6b2 reads this to report a frozen bot.
+    // Spec: specs/K6-squad-leader.md §4.8
+    pub fn stuck(&self, now: Gt) -> bool {
+        matches!(self.running.as_ref().and_then(|a| a.stopping.as_ref()), Some((_, since)) if now.0 - since.0 > STOP_WAIT)
+    }
 
     /// One tick: read messages, start or stop the job, publish state. Never waits on the bot.
     // Spec: specs/K6-squad-leader.md §3
@@ -88,19 +100,19 @@ impl<B: Bus + Clone> BotLink<B> {
             while self.cmds.try_recv().is_some() {}
             while self.jobs.try_recv().is_some() {}
         } else {
-            self.read(now);
+            self.read(now, host);
             self.begin(now, host).await;
-            self.advance(now).await;
+            self.advance(now, host).await;
         }
         self.publish_state(now);
     }
 
     // Spec: specs/K6-squad-leader.md §3
-    fn read(&mut self, now: Gt) {
+    fn read(&mut self, now: Gt, host: &mut dyn Host) {
         let mut halted = false;
         while let Some(Command::Halt { .. }) = self.cmds.try_recv() {
             halted = true;
-            self.stop(OutcomeKind::Preempted, now);
+            self.stop(OutcomeKind::Preempted, now, host);
         }
         while let Some(i) = self.jobs.try_recv() {
             match i.body {
@@ -156,7 +168,7 @@ impl<B: Bus + Clone> BotLink<B> {
                 match self.spec(&job) {
                     Ok(spec) => {
                         let handle = host.start(spec);
-                        self.running = Some(Active { job, handle, started: now, stopping: None });
+                        self.running = Some(Active { job, handle, started: now, stopping: None, margin_halted: false });
                     }
                     Err(why) => self.refuse(job, OutcomeKind::Failed(FailReason::Other(why.clone())), &why, now).await,
                 }
@@ -165,22 +177,27 @@ impl<B: Bus + Clone> BotLink<B> {
     }
 
     async fn refuse(&mut self, job: Job, kind: OutcomeKind, note: &str, now: Gt) {
-        let a = Active { job, handle: RunHandle::new(), started: now, stopping: None };
+        let a = Active { job, handle: RunHandle::new(), started: now, stopping: None, margin_halted: false };
         self.finish(a, kind, None, note, now).await;
     }
 
-    /// Ask the skill to stop; the outcome goes when it has stopped.
-    fn stop(&mut self, kind: OutcomeKind, now: Gt) {
+    /// Ask the skill to stop and stop the bot's actions at once; the outcome goes when the skill has stopped. The hard
+    /// stop does not wait for the skill: a break in flight must not finish after the claim is free.
+    // Spec: specs/plans/S6_BRIEF.md (S6b1 hard-stop fix)
+    fn stop(&mut self, kind: OutcomeKind, now: Gt, host: &mut dyn Host) {
+        let in_margin = self.running.as_ref().is_some_and(|a| !self.lease_ok(&a.job, now));
         if let Some(a) = &mut self.running {
             if a.stopping.is_none() {
                 a.handle.request_stop();
                 a.stopping = Some((kind, now));
+                a.margin_halted = in_margin;
+                host.halt_actions();
             }
         }
     }
 
     // Spec: specs/K6-squad-leader.md §4.8
-    async fn advance(&mut self, now: Gt) {
+    async fn advance(&mut self, now: Gt, host: &mut dyn Host) {
         let Some(a) = &self.running else { return };
         if let Some(end) = a.handle.take_end() {
             let a = self.running.take().expect("checked");
@@ -195,19 +212,30 @@ impl<B: Bus + Clone> BotLink<B> {
             return self.finish(a, kind, Some(end), &note, now).await;
         }
         match &a.stopping {
-            Some((kind, since)) if now.0 - since.0 > STOP_WAIT => {
-                let kind = kind.clone();
-                let a = self.running.take().expect("checked");
-                return self.finish(a, kind, None, "the skill did not report after the stop", now).await;
+            // No answer from the skill is not an answer for the squad: a break may still be in flight (the skill never
+            // ran `cancel_break`), and the outcome releases the claim. A stuck run stays `running`, sends nothing and
+            // shows in `stuck`; the claim then frees itself at lease end and the operation requeues the job. A skill
+            // that steps again later ends its run and reports normally. A dead or disconnected host ends the run in
+            // `tick`, where it sends no outcome either (S6b1).
+            Some(_) => {
+                // Stopped before the margin and still not ended: hard-stop again at the margin, the last chance.
+                let job = a.job.clone();
+                if !self.lease_ok(&job, now) {
+                    let a = self.running.as_mut().expect("checked");
+                    if !a.margin_halted {
+                        a.margin_halted = true;
+                        host.halt_actions();
+                    }
+                }
+                return;
             }
-            Some(_) => return,
             None => {}
         }
         // Lease rule: stop before the claim can pass to another attempt, even if no Halt ever arrives.
         if now.0 - a.started.0 > a.job.budget.ticks.0 {
-            self.stop(OutcomeKind::Failed(FailReason::BudgetExhausted), now);
+            self.stop(OutcomeKind::Failed(FailReason::BudgetExhausted), now, host);
         } else if !self.lease_ok(&a.job.clone(), now) {
-            self.stop(OutcomeKind::Preempted, now);
+            self.stop(OutcomeKind::Preempted, now, host);
         }
     }
 

@@ -404,15 +404,16 @@ async fn higher_priority_take_preempts_and_old_owner_is_told() {
         priority: Priority(5),
         ttl: Gt(60),
     };
+    // The raiders wait: the old attempt's bot may still be breaking blocks in the box.
     assert!(matches!(
         rig.bus
             .request_claim(&claims, take, WallMs(2000))
             .await
             .unwrap(),
-        ClaimReply::Granted { .. }
+        ClaimReply::Denied { .. }
     ));
     let renew = ClaimRequest::Renew {
-        id: claim,
+        id: claim.clone(),
         owner: ClaimOwner::Job(job.clone()),
         ttl: Gt(100),
     };
@@ -427,6 +428,9 @@ async fn higher_priority_take_preempts_and_old_owner_is_told() {
         }
         r => panic!("old owner should hear Preempt, got {r:?}"),
     }
+    // Told, but still holding: the job is in flight and the box stays held until the outcome or expiry.
+    assert!(rig.op().claims().iter().any(|(id, _)| *id == claim));
+    assert!(rig.op().job_states().iter().any(|j| j.0 == job && j.1 == JobSt::InFlight));
     // The squad's next renew gets Preempt too and halts the bot: the job ends `preempted`.
     rig.run_until(100, |o| {
         o.event_log()
@@ -437,11 +441,45 @@ async fn higher_priority_take_preempts_and_old_owner_is_told() {
     rig.run_until(6000, |o| o.state() == OpState::Done).await;
     let evs = rig.log();
     assert!(count(&evs, "claim_preempted") >= 1 && count(&evs, "requeued") >= 1);
-    assert!(
-        count(&evs, "claim_expired") >= 1,
-        "the raiders' claim runs out on its own"
-    );
     assert_no_double_claim(&evs);
+}
+
+/// A preempted job is not dispatched again while its claim is held: no requeue, no second attempt, no new claim before
+/// the outcome or the claim's expiry (S6b1). The squad is muted so nothing halts the bot in between.
+#[tokio::test]
+async fn a_preempted_job_is_not_requeued_until_its_outcome_or_expiry() {
+    let mut rig = Rig::new(3, &["b1", "b2"], 40).await;
+    rig.goal(64).await;
+    rig.run_until(200, |o| o.job_states().iter().any(|j| j.1 == JobSt::InFlight)).await;
+    // Land just after a renew so most of the claim's ttl is left, and stop the squad from halting the bot.
+    while rig.now % 20 != 1 {
+        rig.step().await;
+    }
+    rig.squad.mute = rig.squad.ups.keys().cloned().collect();
+    let (job, _, _) = rig.op().job_states().into_iter().find(|j| j.1 == JobSt::InFlight).unwrap();
+    let claim = claim_id(&job, 1);
+    let held = rig.op().claims().into_iter().find(|(id, _)| *id == claim).unwrap().1;
+    let ClaimKind::Region(tree) = held.kind else { panic!("{:?}", held.kind) };
+    let claims = op_claims(&srv(), &opid());
+    let take = ClaimRequest::Take {
+        id: ClaimId::new("raid-1"),
+        kind: ClaimKind::Region(tree),
+        owner: ClaimOwner::Squad(SquadId::new("raiders")),
+        priority: Priority(5),
+        ttl: Gt(60),
+    };
+    assert!(matches!(rig.bus.request_claim(&claims, take, WallMs(2000)).await.unwrap(), ClaimReply::Denied { .. }));
+    let attempts = |rig: &Rig| rig.log().iter().filter(|e| e.kind() == "dispatched").count();
+    let before = attempts(&rig);
+    // The op reads the registry's Preempted event on its next ticks; the job must stay in flight under its claim.
+    for _ in 0..5 {
+        rig.step().await;
+    }
+    assert!(count(&rig.log(), "claim_preempted") >= 1, "the op saw the preemption");
+    assert_eq!(count(&rig.log(), "requeued"), 0, "no requeue on Preempted");
+    assert!(rig.op().job_states().iter().any(|j| j.0 == job && j.1 == JobSt::InFlight));
+    assert!(rig.op().claims().iter().any(|(id, _)| *id == claim), "the claim is still held");
+    assert_eq!(attempts(&rig), before, "no second attempt");
 }
 
 #[tokio::test]
@@ -1030,11 +1068,13 @@ mod registry {
             ),
             "other tree is free"
         );
+        // The higher priority does not get the box yet: the old owner's bot may still be working in it.
         let g = r.handle(Gt(2), &take("b", "y", 2, 5, 100));
         assert!(
-            matches!(g, ClaimReply::Granted { token: 3, .. }),
-            "tokens grow with each grant: {g:?}"
+            matches!(&g, ClaimReply::Denied { reason: DenyReason::Held { by }, .. } if *by == owner("x")),
+            "the box stays with the old owner: {g:?}"
         );
+        assert!(r.get(&ClaimId::new("a")).is_some(), "the old claim is still held");
         let renew = ClaimRequest::Renew {
             id: ClaimId::new("a"),
             owner: owner("x"),
@@ -1045,8 +1085,33 @@ mod registry {
             ClaimReply::Preempt {
                 id: ClaimId::new("a"),
                 by: owner("y")
-            }
+            },
+            "the old owner is told at once and its claim is not extended"
         );
+        assert!(matches!(
+            r.handle(Gt(4), &take("b", "y", 2, 5, 100)),
+            ClaimReply::Denied { .. }
+        ));
+        // The old owner's release (its bot has stopped) hands the box over.
+        let release = ClaimRequest::Release {
+            id: ClaimId::new("a"),
+            owner: owner("x"),
+        };
+        assert!(matches!(r.handle(Gt(5), &release), ClaimReply::Released { .. }));
+        let g = r.handle(Gt(5), &take("b", "y", 2, 5, 100));
+        assert!(
+            matches!(g, ClaimReply::Granted { token: 3, .. }),
+            "tokens grow with each grant: {g:?}"
+        );
+    }
+
+    #[test]
+    fn a_preempted_claim_that_is_never_released_frees_the_box_at_expiry() {
+        let mut r = ClaimRegistry::default();
+        r.handle(Gt(0), &take("a", "x", 1, 5, 30));
+        assert!(matches!(r.handle(Gt(1), &take("b", "y", 2, 5, 100)), ClaimReply::Denied { .. }));
+        assert!(matches!(r.handle(Gt(29), &take("b", "y", 2, 5, 100)), ClaimReply::Denied { .. }));
+        assert!(matches!(r.handle(Gt(30), &take("b", "y", 2, 5, 100)), ClaimReply::Granted { .. }));
     }
 
     #[test]

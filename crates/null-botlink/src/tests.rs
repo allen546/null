@@ -14,6 +14,8 @@ struct FakeHost {
     life: Option<Life>,
     started: Vec<FellSpec>,
     handles: Vec<RunHandle>,
+    /// Hard stops the link asked for, each with the lease-relative moment unknown to the host: only the count matters.
+    halts: u32,
 }
 
 impl Host for FakeHost {
@@ -24,6 +26,9 @@ impl Host for FakeHost {
     }
     fn status(&mut self) -> HostStatus {
         HostStatus { life: self.life.unwrap_or(Life::Alive), pos: Some(Pos::new(1, 64, 2)), health: 20.0 }
+    }
+    fn halt_actions(&mut self) {
+        self.halts += 1;
     }
 }
 
@@ -257,8 +262,10 @@ async fn a_bot_that_dies_drops_its_job_sends_no_outcome_and_publishes_dead() {
     assert_eq!(r.host.started.len(), 1);
 }
 
+/// A skill that never steps its stop may have a break in flight, so no outcome goes up (S6b1): the claim frees at lease
+/// end. When the skill finally steps, the run ends and reports as usual.
 #[tokio::test]
-async fn a_skill_that_never_reports_after_a_stop_is_answered_for_after_a_wait() {
+async fn a_skill_that_never_steps_its_stop_sends_no_outcome_until_it_does() {
     let mut r = rig();
     let job = fell_job("j1");
     lease(&r.bus, &job, 1000).await;
@@ -268,8 +275,69 @@ async fn a_skill_that_never_reports_after_a_stop_is_answered_for_after_a_wait() 
     r.tick(2).await;
     r.tick(50).await;
     assert!(r.outcome().is_none());
+    assert!(!r.link.stuck(Gt(50)));
     r.tick(150).await;
-    assert_eq!(r.outcome().unwrap().outcome.kind, OutcomeKind::Preempted);
+    r.tick(400).await;
+    assert!(r.outcome().is_none(), "no clean outcome while the skill has not stopped");
+    assert!(r.link.stuck(Gt(400)) && !r.link.is_idle());
+    r.host.handles[0].finish(end(RunStatus::Stopped, 2));
+    r.tick(401).await;
+    let o = r.outcome().expect("the skill stopped, so the outcome goes");
+    assert_eq!(o.outcome.kind, OutcomeKind::Preempted);
+    assert!(!r.link.stuck(Gt(401)));
+}
+
+/// The hard stop does not depend on the skill: the host is told at stop time, and again inside the lease margin when the
+/// skill still has not ended (S6b1 hard-stop fix). A skill that stops at once gets one call only.
+#[tokio::test]
+async fn a_skill_that_never_steps_its_stop_still_gets_the_host_hard_stop_at_stop_time_and_at_the_margin() {
+    let mut r = rig();
+    let job = fell_job("j1");
+    lease(&r.bus, &job, 300).await;
+    batch(&r.bus, &job).await;
+    r.tick(1).await;
+    assert_eq!(r.host.halts, 0);
+    halt(&r.bus);
+    r.tick(2).await;
+    assert_eq!(r.host.halts, 1, "at stop time");
+    r.tick(100).await;
+    assert_eq!(r.host.halts, 1, "not repeated before the margin");
+    r.tick(291).await; // 291 + LEASE_MARGIN >= 300
+    assert_eq!(r.host.halts, 2, "again at the margin");
+    r.tick(292).await;
+    assert_eq!(r.host.halts, 2, "once at the margin");
+    assert!(r.outcome().is_none());
+}
+
+/// A lease margin stop is already the last chance: one hard stop, not two.
+#[tokio::test]
+async fn a_stop_at_the_lease_margin_is_one_hard_stop() {
+    let mut r = rig();
+    let job = fell_job("j1");
+    lease(&r.bus, &job, 200).await;
+    batch(&r.bus, &job).await;
+    r.tick(1).await;
+    r.tick(195).await;
+    r.tick(196).await;
+    assert_eq!(r.host.halts, 1);
+}
+
+/// A stuck run past its lease still sends nothing, and a host that dies ends the run without an outcome.
+#[tokio::test]
+async fn a_stuck_run_past_its_lease_and_then_a_dead_host_send_no_outcome() {
+    let mut r = rig();
+    let job = fell_job("j1");
+    lease(&r.bus, &job, 200).await;
+    batch(&r.bus, &job).await;
+    r.tick(1).await;
+    r.tick(195).await; // inside the lease margin: the link asks for the stop
+    r.tick(400).await;
+    assert!(r.outcome().is_none() && r.link.stuck(Gt(400)));
+    r.host.life = Some(Life::Dead);
+    r.tick(401).await;
+    assert!(r.outcome().is_none());
+    assert_eq!(r.link.life(), Life::Dead);
+    assert!(!r.link.stuck(Gt(401)), "the run ended with the host");
 }
 
 /// The skill side: a stop ends `FellRun` at its next step, stops the walk and reports the inventory gain.

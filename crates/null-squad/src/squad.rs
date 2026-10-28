@@ -1,10 +1,12 @@
 //! The squad leader. One `tick` per game tick: commands, new jobs, bot messages, liveness, claim renewals,
-//! assignment, roster. Never blocks on anything but a claim reply (bounded by `renew_timeout`).
-use null_bus::{Bus, CommandRx, IntentRx, Level, SummaryRx, Subject, kind};
+//! assignment, roster. Renews of running jobs are sent and read back on later ticks; only a job's first claim check
+//! in `assign` still waits for its reply (bounded by `renew_timeout`).
+use null_bus::{Bus, BusError, CommandRx, IntentRx, Level, SummaryRx, Subject, kind};
 use null_op::{op_claims, op_intents, squad_jobs};
 use null_proto::*;
 use null_bus::{bot_cmd, bot_jobs, bot_summary, bot_up};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use tokio::task::JoinHandle;
 
 // Spec: specs/F6-bus-deployment.md §4.2
 /// Where HQ sends `Halt` and `Recall` for this squad.
@@ -57,6 +59,14 @@ struct Running {
     failures: Vec<String>,
 }
 
+/// A renew sent and not yet answered. Its reply is read on a later tick; no lease is extended before it arrives.
+// Spec: specs/K6-squad-leader.md §4.8
+struct PendingRenew {
+    call: JoinHandle<Result<ClaimReply, BusError>>,
+    job: JobId,
+    attempt: u32,
+}
+
 // Spec: specs/K6-squad-leader.md §3
 struct BotRec {
     up: IntentRx,
@@ -72,6 +82,8 @@ pub struct Squad<B: Bus + Clone> {
     bots: BTreeMap<BotId, BotRec>,
     queue: VecDeque<Job>,
     running: BTreeMap<BotId, Running>,
+    /// Renews in flight, at most one per running bot (S6b1).
+    renewing: BTreeMap<BotId, PendingRenew>,
     /// Bots that are dead, disconnected or silent.
     lost: BTreeSet<BotId>,
     last_roster: Vec<BotId>,
@@ -116,7 +128,7 @@ const RELAY_KEEP: usize = 64;
 /// Ticks a retiring squad waits for its halted bots' final outcomes. A silent bot cannot hold retire longer.
 pub const RETIRE_WAIT: Gt = Gt(40);
 
-impl<B: Bus + Clone> Squad<B> {
+impl<B: Bus + Clone + 'static> Squad<B> {
     /// Subscribes at once to its jobs, its commands and every bot's outcomes and state.
     // Spec: specs/K6-squad-leader.md §3
     pub fn new(bus: &B, cfg: SquadConfig) -> Self {
@@ -148,6 +160,7 @@ impl<B: Bus + Clone> Squad<B> {
             bots,
             queue: VecDeque::new(),
             running: BTreeMap::new(),
+            renewing: BTreeMap::new(),
             lost: BTreeSet::new(),
             last_roster: vec![],
             held: BTreeSet::new(),
@@ -267,14 +280,19 @@ impl<B: Bus + Clone> Squad<B> {
         }
     }
 
-    /// Halt the bot and forget its job and lease. The bot's own `Preempted` outcome still goes up when it comes.
+    /// Halt the bot, cut its lease to now and forget its job. The bot's own `Preempted` outcome still goes up when it
+    /// comes; the claim is released by the operation on that outcome, not here.
     // Spec: specs/K6-squad-leader.md §4.8
     async fn stop_bot(&mut self, bot: &BotId, why: &str) {
         let _ = self.bus.send_command(
             &bot_cmd(&self.cfg.server, bot),
             Command::Halt { scope: Scope::Bot(bot.clone()) },
         );
-        if self.running.contains_key(bot) {
+        if let Some(run) = self.running.get(bot) {
+            // The Halt can be lost: a lease that ends now stops the bot on its next tick anyway (K6 §4.8). The claim
+            // is not released here; it stays held until the bot's outcome or the lease end (S6b1).
+            let job = run.job.clone();
+            self.send_lease(bot, &job, self.now).await;
             merge_exception(&mut self.exceptions, &format!("stopped:{why}"), bot.as_str(), self.now);
             self.end_job(bot).await;
         }
@@ -286,6 +304,9 @@ impl<B: Bus + Clone> Squad<B> {
         let Some(run) = self.running.remove(bot) else {
             return;
         };
+        // A reply still on its way answers a job that is over: it is read and dropped (the claim itself is the
+        // operation's to release).
+        self.renewing.remove(bot);
         // Lost bots too: the restore waits in the bot's queue behind the Halt and applies when it wakes.
         if run.job.reflexes.is_empty() {
             return;
@@ -480,42 +501,74 @@ impl<B: Bus + Clone> Squad<B> {
         }
     }
 
-    /// Lease rule: renew each running job's claim with the id the job carries. Any failed renew halts that bot.
+    /// Lease rule: renew each running job's claim with the id the job carries. Renews are sent without waiting. A
+    /// later tick reads the reply: only a granted one extends the lease, so a late or lost reply leaves the old
+    /// lease in force and the bot stops by itself before it ends. Any failed renew, a missing reply after
+    /// `renew_timeout` included, halts that bot (S6b1).
     // Spec: specs/K6-squad-leader.md §4.8
     async fn renew_due(&mut self) {
+        self.collect_renews().await;
         let due: Vec<BotId> = self
             .running
             .iter()
-            .filter(|(_, r)| self.now - r.last_renew >= self.cfg.renew_every)
+            .filter(|(b, r)| !self.renewing.contains_key(*b) && self.now - r.last_renew >= self.cfg.renew_every)
             .map(|(b, _)| b.clone())
             .collect();
         for b in due {
-            let job = self.running[&b].job.clone();
-            match self.renew(&job).await {
+            let run = self.running.get_mut(&b).expect("listed above");
+            run.last_renew = self.now;
+            let job = run.job.clone();
+            let (attempt, req) = (job.attempt, self.renew_request(&job));
+            let job = job.id;
+            let (bus, subject, timeout) = (self.bus.clone(), op_claims(&self.cfg.server, &self.cfg.op), self.cfg.renew_timeout);
+            let call = tokio::spawn(async move { bus.request_claim(&subject, req, timeout).await });
+            self.renewing.insert(b, PendingRenew { call, job, attempt });
+        }
+    }
+
+    /// Read the renew replies that have come. The others stay pending; the bus times each out by itself.
+    // Spec: specs/K6-squad-leader.md §4.8
+    async fn collect_renews(&mut self) {
+        let done: Vec<BotId> = self.renewing.iter().filter(|(_, p)| p.call.is_finished()).map(|(b, _)| b.clone()).collect();
+        for b in done {
+            let p = self.renewing.remove(&b).expect("listed above");
+            let reply = match p.call.await {
+                Ok(Ok(ClaimReply::Granted { expires_at, .. })) => Ok(expires_at),
+                Ok(Ok(other)) => Err(format!("{other:?}")),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            // The job may have ended or moved on while the reply was on its way.
+            let Some(run) = self.running.get_mut(&b).filter(|r| r.job.id == p.job && r.job.attempt == p.attempt) else {
+                continue;
+            };
+            let job = run.job.clone();
+            match reply {
                 Ok(expires_at) => {
-                    let run = self.running.get_mut(&b).expect("still running");
                     run.expires_at = expires_at;
-                    run.last_renew = self.now;
                     self.send_lease(&b, &job, expires_at).await;
                 }
                 Err(_) => {
                     merge_exception(&mut self.exceptions, "renew_failed", job.id.as_str(), self.now);
                     self.stop_bot(&b, "renew_failed").await;
-                    // The Halt can be lost; a lease that ends now stops the bot on its next tick anyway (K6 §4.8).
-                    self.send_lease(&b, &job, self.now).await;
                 }
             }
+        }
+    }
+
+    // Spec: specs/K6-squad-leader.md §4.8
+    fn renew_request(&self, job: &Job) -> ClaimRequest {
+        ClaimRequest::Renew {
+            id: job.claims[0].clone(),
+            owner: ClaimOwner::Job(job.id.clone()),
+            ttl: self.cfg.claim_ttl,
         }
     }
 
     /// The new `expires_at`, or why the claim is no longer ours.
     // Spec: specs/K6-squad-leader.md §4.8
     async fn renew(&self, job: &Job) -> Result<Gt, String> {
-        let req = ClaimRequest::Renew {
-            id: job.claims[0].clone(),
-            owner: ClaimOwner::Job(job.id.clone()),
-            ttl: self.cfg.claim_ttl,
-        };
+        let req = self.renew_request(job);
         match self
             .bus
             .request_claim(&op_claims(&self.cfg.server, &self.cfg.op), req, self.cfg.renew_timeout)

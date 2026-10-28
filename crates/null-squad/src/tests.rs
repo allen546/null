@@ -24,6 +24,8 @@ enum Mode {
     Silent,
     /// Grants a lease that ends 5 ticks on.
     Short,
+    /// Grants after 150 ms of wall time: the reply is late.
+    Slow,
 }
 
 /// Stands in for the operation's claim service: answers renews by mode and counts them.
@@ -31,20 +33,32 @@ struct FakeClaims {
     mode: Arc<Mutex<Mode>>,
     clock: Arc<AtomicU64>,
     seen: Arc<Mutex<Vec<ClaimId>>>,
+    /// Requests that were not renews (take, release). The squad sends none: the operation owns the registry.
+    others: Arc<Mutex<u32>>,
 }
 
 fn fake_claims(bus: &InProcBus) -> FakeClaims {
-    let f = FakeClaims { mode: Arc::new(Mutex::new(Mode::Grant)), clock: Arc::new(AtomicU64::new(0)), seen: Arc::default() };
+    let f = FakeClaims { mode: Arc::new(Mutex::new(Mode::Grant)), clock: Arc::new(AtomicU64::new(0)), seen: Arc::default(), others: Arc::default() };
     let mut server = bus.serve_claims(&op_claims(&srv(), &OperationId::new("op1"))).unwrap();
-    let (mode, clock, seen) = (f.mode.clone(), f.clock.clone(), f.seen.clone());
+    let (mode, clock, seen, others) = (f.mode.clone(), f.clock.clone(), f.seen.clone(), f.others.clone());
     tokio::spawn(async move {
         while let Some(call) = server.next().await {
             let id = call.req.id().clone();
             seen.lock().unwrap().push(id.clone());
+            if !matches!(call.req, ClaimRequest::Renew { .. }) {
+                *others.lock().unwrap() += 1;
+            }
             let m = *mode.lock().unwrap();
             match m {
                 Mode::Grant => call.reply(ClaimReply::Granted { id, token: 1, expires_at: Gt(clock.load(Ordering::SeqCst) + 100) }),
                 Mode::Short => call.reply(ClaimReply::Granted { id, token: 1, expires_at: Gt(clock.load(Ordering::SeqCst) + 5) }),
+                Mode::Slow => {
+                    let at = Gt(clock.load(Ordering::SeqCst) + 100);
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                        call.reply(ClaimReply::Granted { id, token: 1, expires_at: at });
+                    });
+                }
                 Mode::Deny => call.reply(ClaimReply::Denied { id, reason: DenyReason::NotHeld }),
                 Mode::Preempt => call.reply(ClaimReply::Preempt { id, by: ClaimOwner::Squad(SquadId::new("other")) }),
                 Mode::Silent => std::mem::forget(call),
@@ -98,10 +112,13 @@ struct Rig {
 
 impl Rig {
     fn new(names: &[&str]) -> Self {
+        Self::with_timeout(names, 50)
+    }
+    fn with_timeout(names: &[&str], renew_timeout_ms: u64) -> Self {
         let bus = InProcBus::default();
         let claims = fake_claims(&bus);
         let mut cfg = SquadConfig::new("smp1", "sq1", "op1", names);
-        cfg.renew_timeout = WallMs(50);
+        cfg.renew_timeout = WallMs(renew_timeout_ms);
         let squad = Squad::new(&bus, cfg);
         let bots: Vec<Bot> = names.iter().map(|n| Bot::new(&bus, n)).collect();
         let up = bus.subscribe_intents(&op_intents(&srv(), &OperationId::new("op1"))).unwrap();
@@ -122,6 +139,10 @@ impl Rig {
             self.claims.clock.store(self.now, Ordering::SeqCst);
             self.publish_states(skip);
             self.squad.tick(Gt(self.now)).await;
+            // Renew replies come from other tasks; let them run before the next tick reads them.
+            for _ in 0..3 {
+                tokio::task::yield_now().await;
+            }
         }
     }
     async fn batch(&self, jobs: Vec<Job>) {
@@ -209,6 +230,11 @@ async fn failed_renew_halts(mode: Mode) {
     r.bots[0].bodies();
     *r.claims.mode.lock().unwrap() = mode;
     r.tick(21, &[]).await;
+    if mode == Mode::Silent {
+        // The missing reply counts as failed after `renew_timeout` (50 ms of wall time here).
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    }
+    r.tick(2, &[]).await;
     assert!(r.bots[0].halted(), "a failed renew halts the bot");
     assert!(r.squad.running().is_empty());
     let n = r.claims.seen.lock().unwrap().len();
@@ -559,6 +585,9 @@ impl Live {
             self.now += 1;
             self.claims.clock.store(self.now, Ordering::SeqCst);
             self.squad.tick(Gt(self.now)).await;
+            for _ in 0..3 {
+                tokio::task::yield_now().await;
+            }
             self.bot.tick(Gt(self.now)).await;
         }
     }
@@ -637,4 +666,71 @@ async fn a_late_outcome_for_a_job_this_squad_never_had_is_recorded_not_forwarded
     assert!(r.to_op().iter().all(|b| !matches!(b, IntentBody::JobOutcome(_))), "nothing goes to the new operation");
     let e = r.squad.exceptions.iter().find(|e| e.kind == "late_outcome").expect("recorded");
     assert_eq!(e.subject, "op0-j0001 items:4");
+}
+
+fn leases(b: Vec<IntentBody>) -> Vec<u64> {
+    b.into_iter().filter_map(|b| if let IntentBody::Lease(l) = b { Some(l.expires_at.0) } else { None }).collect()
+}
+
+/// S6b1: a renew whose reply is late does not hold up the tick, and no lease is extended until a granted reply
+/// is read. After `renew_timeout` the missing reply counts as failed: halt, and the lease is cut to now.
+#[tokio::test]
+async fn a_late_renew_reply_does_not_block_the_tick_or_extend_the_lease() {
+    let mut r = Rig::with_timeout(&["b0", "b1"], 400);
+    r.batch(vec![job("j1", 1, 1), job("j2", 29, 1)]).await;
+    r.tick(2, &[]).await;
+    r.bots.iter_mut().for_each(|b| {
+        b.bodies();
+    });
+    *r.claims.mode.lock().unwrap() = Mode::Silent;
+    let t = std::time::Instant::now();
+    r.tick(30, &[]).await; // the renews come due at tick 21 and get no reply
+    assert!(t.elapsed() < std::time::Duration::from_millis(300), "the ticks waited for the reply: {:?}", t.elapsed());
+    assert_eq!(r.squad.running().len(), 2, "no verdict yet");
+    let l0 = leases(r.bots[0].bodies());
+    assert!(l0.is_empty(), "a lease was sent without a reply: {l0:?}");
+    assert!(!r.bots[0].halted());
+    tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+    r.tick(2, &[]).await;
+    assert!(r.squad.running().is_empty() && r.bots[0].halted() && r.bots[1].halted(), "the timeout counts as failed");
+    assert_eq!(leases(r.bots[1].bodies()), vec![r.now - 1], "and the lease is cut to now");
+}
+
+/// S6b1 (item 4): a halt cuts the lease to now and releases nothing; the claim stays with the operation until the
+/// bot's outcome or the lease end.
+#[tokio::test]
+async fn a_halt_cuts_the_lease_and_releases_no_claim() {
+    let mut r = Rig::new(&["b0"]);
+    r.batch(vec![job("j1", 1, 1)]).await;
+    r.tick(3, &[]).await;
+    r.bots[0].bodies();
+    r.bus.send_command(&squad_cmd(&srv(), &sq()), Command::Halt { scope: Scope::Swarm }).unwrap();
+    r.tick(3, &[]).await;
+    assert!(r.bots[0].halted());
+    assert_eq!(leases(r.bots[0].bodies()), vec![r.now - 2], "the lease ends at the halt");
+    assert_eq!(*r.claims.others.lock().unwrap(), 0, "the squad sent no take or release");
+    r.squad.begin_retire().await;
+    r.tick(3, &[]).await;
+    assert_eq!(*r.claims.others.lock().unwrap(), 0, "retire releases nothing either");
+}
+
+/// S6b1: a renew grant that arrives after `stop_bot` (halt, lease = now) sends no new lease and no second halt: the
+/// reply answers a job the squad no longer runs, so it is read and dropped.
+#[tokio::test]
+async fn a_renew_grant_that_arrives_after_the_halt_sends_no_lease() {
+    let mut r = Rig::with_timeout(&["b0"], 1000);
+    r.batch(vec![job("j1", 1, 1)]).await;
+    r.tick(2, &[]).await;
+    *r.claims.mode.lock().unwrap() = Mode::Slow;
+    r.tick(20, &[]).await; // the renew is sent at tick 21 and answered 150 ms later
+    r.bots[0].bodies();
+    r.bus.send_command(&squad_cmd(&srv(), &sq()), Command::Halt { scope: Scope::Swarm }).unwrap();
+    r.tick(1, &[]).await;
+    assert!(r.bots[0].halted() && r.squad.running().is_empty());
+    let cut = leases(r.bots[0].bodies());
+    assert_eq!(cut.len(), 1, "one lease = now at the halt: {cut:?}");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // the grant arrives now
+    r.tick(3, &[]).await;
+    assert_eq!(leases(r.bots[0].bodies()), Vec::<u64>::new(), "the late grant extended nothing");
+    assert!(!r.bots[0].halted(), "and halted nothing again");
 }

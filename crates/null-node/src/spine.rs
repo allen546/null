@@ -56,6 +56,8 @@ pub struct Shared {
     inbox: Mutex<HashMap<String, VecDeque<Box<dyn Skill>>>>,
     runs: Mutex<HashMap<String, RunHandle>>,
     rows: Mutex<HashMap<String, BotRow>>,
+    /// Bots whose actions the spine wants stopped at their next tick, skill or not.
+    halts: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Shared {
@@ -85,6 +87,7 @@ impl Shared {
         if life != Life::Alive {
             self.inbox.lock().unwrap().remove(&bot);
             self.runs.lock().unwrap().remove(&bot);
+            self.halts.lock().unwrap().remove(&bot);
         }
         self.rows.lock().unwrap().entry(bot).and_modify(|r| r.life = life).or_insert(BotRow { life, pos: None });
     }
@@ -113,6 +116,10 @@ fn deliver(link: Res<Link>, mut bots: Query<(&Account, &mut BotBrain, &Position)
         if let Some(r) = link.0.rows.lock().unwrap().get_mut(name) {
             r.pos = Some(here);
         }
+        // Spec: specs/plans/S6_BRIEF.md (S6b1 hard-stop fix): taken before the skill check, so a stuck skill is cut too
+        if link.0.halts.lock().unwrap().remove(name) {
+            brain.halt_actions();
+        }
         if brain.has_skill() {
             continue;
         }
@@ -137,6 +144,10 @@ impl Host for NodeHost {
         self.shared.runs.lock().unwrap().insert(self.name.clone(), handle.clone());
         self.shared.inbox.lock().unwrap().entry(self.name.clone()).or_default().push_back(Box::new(skill));
         handle
+    }
+    // Spec: specs/plans/S6_BRIEF.md (S6b1 hard-stop fix)
+    fn halt_actions(&mut self) {
+        self.shared.halts.lock().unwrap().insert(self.name.clone());
     }
     fn status(&mut self) -> HostStatus {
         let row = self.shared.rows.lock().unwrap().get(&self.name).cloned();
