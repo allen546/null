@@ -3610,6 +3610,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vd-tap"
+version = "0.1.0"
+dependencies = [
+ "azalea",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

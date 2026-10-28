@@ -4,7 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ALLOW="mc-adapter null-abilitycheck null-duel null-node"
+# vd-tap: harness tool (specs/plans/VANILLA_DIFF_PLAN.md VD0), a packet proxy that never runs in a bot.
+ALLOW="mc-adapter null-abilitycheck null-duel null-node vd-tap"
 
 meta=$(cargo metadata --format-version 1 --locked 2>/dev/null || cargo metadata --format-version 1)
 

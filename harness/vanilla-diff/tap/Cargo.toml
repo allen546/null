@@ -1,0 +1,11 @@
+[package]
+name = "vd-tap"
+description = "Vanilla-diff packet tap: a transparent TCP proxy that logs decoded packets as JSON lines. Harness tool, never runs in a bot."
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+azalea = { workspace = true }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+serde_json = "1"

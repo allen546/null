@@ -1,6 +1,6 @@
 # Vanilla diff: compare Null with a real vanilla client
 
-Plan, 2026-10-25 (Allen: "plan option 1"). Status: planned, decisions taken, not started. Open item (g) in OPEN.md.
+Plan, 2026-10-25 (Allen: "plan option 1"). Status: VD0 done 2026-10-28 (`harness/vanilla-diff/`, result in its README); VD1 next. Open item (g) in OPEN.md.
 
 ## Why
 

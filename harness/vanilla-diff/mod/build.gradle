@@ -1,0 +1,13 @@
+plugins { id 'fabric-loom' version '1.16.3' }
+version = project.mod_version
+base { archivesName = 'null-vanilla-diff' }
+repositories { mavenCentral(); maven { url = 'https://maven.fabricmc.net/' } }
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+}
+processResources { inputs.property "version", project.version; filesMatching("fabric.mod.json") { expand "version": project.version } }
+tasks.withType(JavaCompile).configureEach { it.options.release = 21 }
+// Our jar goes straight into the clean game directory (outside the repo).
+remapJar { destinationDirectory = file(System.getProperty('vd.mods', System.getProperty('user.home') + '/Desktop/null-spikes/vanilla-diff-client/game/mods')); archiveFileName = 'null-vanilla-diff.jar' }

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "null_vanilla_diff",
+  "version": "${version}",
+  "name": "Null vanilla diff driver",
+  "environment": "client",
+  "entrypoints": {},
+  "mixins": ["null_vanilla_diff.mixins.json"],
+  "depends": { "fabricloader": ">=0.15.0", "minecraft": "1.21.11" }
+}
