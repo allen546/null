@@ -742,6 +742,10 @@ impl<B: Bus + Clone> Operation<B> {
             outcome: o.outcome,
         });
         let rec = &self.core.jobs[&job];
+        if attempt == rec.attempts && rec.st == JobSt::Dead {
+            // The job ended (goal met) while this attempt ran: its claim was kept for this outcome.
+            return self.release(&job).await;
+        }
         if attempt != rec.attempts || rec.st != JobSt::InFlight {
             return;
         }
@@ -769,7 +773,8 @@ impl<B: Bus + Clone> Operation<B> {
         self.flush_claims().await;
     }
 
-    /// Goal met when the ledger reaches `n`: stop the rest and free their claims.
+    /// Goal met when the ledger reaches `n`: stop the rest. Claims of jobs not in flight are freed at once; an
+    /// in-flight attempt keeps its claim until its outcome or lease end, so no bot works in an unheld box.
     // Spec: specs/K5-operation-service.md §4.4
     fn check_done(&mut self) {
         let Some((_, n)) = self.core.target() else {
@@ -789,14 +794,18 @@ impl<B: Bus + Clone> Operation<B> {
             .map(|(i, _)| i.clone())
             .collect();
         for j in open {
-            let id = claim_id(&j, self.core.jobs[&j].attempts);
-            self.shared.reg.lock().unwrap().handle(
-                self.now,
-                &ClaimRequest::Release {
-                    id,
-                    owner: ClaimOwner::Job(j.clone()),
-                },
-            );
+            // A job in flight keeps its claim: its bot may still be breaking blocks in the box. The claim goes when
+            // that attempt's outcome arrives (`on_outcome`) or its lease runs out (expiry).
+            if self.core.jobs[&j].st == JobSt::Pending {
+                let id = claim_id(&j, self.core.jobs[&j].attempts);
+                self.shared.reg.lock().unwrap().handle(
+                    self.now,
+                    &ClaimRequest::Release {
+                        id,
+                        owner: ClaimOwner::Job(j.clone()),
+                    },
+                );
+            }
             self.record(OpEvent::JobDead {
                 job: j,
                 reason: GOAL_MET.into(),

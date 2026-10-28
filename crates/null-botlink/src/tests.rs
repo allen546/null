@@ -293,4 +293,5 @@ fn a_stopped_fell_run_stops_navigation_and_reports_the_logs_in_the_inventory() {
     assert_eq!(end.status, RunStatus::Stopped);
     assert_eq!(end.items, BTreeMap::from([("minecraft:oak_log".to_string(), 4)]));
     assert!(cmds.all().contains(&Cmd::StopNav), "{:?}", cmds.all());
+    assert!(cmds.all().contains(&Cmd::CancelBreak), "a stop aborts the break in progress: {:?}", cmds.all());
 }

@@ -112,6 +112,8 @@ impl Skill for FellRun {
         self.start.get_or_insert_with(|| counts(view));
         if self.handle.stop_requested() {
             cmds.stop_nav();
+            // A break in progress would finish after the skill ends, in a box the bot no longer holds (S6a live run 2026-10-28).
+            cmds.cancel_break();
             let end = self.end(view, RunStatus::Stopped);
             self.handle.finish(end);
             return SkillStatus::Done;

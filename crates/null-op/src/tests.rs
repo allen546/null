@@ -343,10 +343,8 @@ async fn obtain_64_with_two_bots_no_double_claims() {
             }
         )
     );
-    assert!(
-        rig.op().claims().is_empty(),
-        "claims are released when the goal is met"
-    );
+    // An attempt still running keeps its claim until its outcome; then every claim is gone.
+    rig.run_until(600, |o| o.claims().is_empty()).await;
 }
 
 #[tokio::test]
@@ -1179,4 +1177,96 @@ mod registry {
         }
         assert_eq!(copy.snapshot(), r.snapshot());
     }
+}
+
+/// The box of a granted claim as (min, max) cells.
+fn box_of(k: &ClaimKind) -> Option<([i32; 3], [i32; 3])> {
+    match k {
+        ClaimKind::Region(r) => Some(([r.min.x, r.min.y, r.min.z], [r.max.x, r.max.y, r.max.z])),
+        _ => None,
+    }
+}
+
+/// No granted box overlaps a box that is still held (Region claims; `assert_no_double_claim` reads block sets).
+fn assert_no_box_overlap(evs: &[OpEvent]) {
+    let mut held: BTreeMap<ClaimId, ([i32; 3], [i32; 3])> = BTreeMap::new();
+    for e in evs {
+        let OpEvent::Claim(c) = e else { continue };
+        match c {
+            ClaimEvent::Granted { id, kind, .. } => {
+                let Some(b) = box_of(kind) else { continue };
+                for (other, ob) in &held {
+                    assert!(
+                        !(0..3).all(|k| b.0[k] <= ob.1[k] && ob.0[k] <= b.1[k]),
+                        "{id} granted a box that {other} still holds"
+                    );
+                }
+                held.insert(id.clone(), b);
+            }
+            ClaimEvent::Released { id } | ClaimEvent::Expired { id, .. } | ClaimEvent::Preempted { id, .. } => {
+                held.remove(id);
+            }
+            _ => {}
+        }
+    }
+}
+
+const SEED: u64 = 3;
+
+/// Runs the three-bot goal to Done. With `kill`, that bot dies one tick before. Returns the rig, the tick of Done and
+/// the attempts still running then (job, attempt, claim).
+async fn rig_at_done(kill: Option<(&str, u64)>) -> (Rig, u64, Vec<(JobId, u32, ClaimId)>) {
+    let mut rig = Rig::new(SEED, &["b1", "b2", "b3"], 40).await;
+    if let Some((b, t)) = kill {
+        rig.bots.iter_mut().find(|x| x.id.as_str() == b).unwrap().die_at(Gt(t));
+    }
+    rig.goal(64).await;
+    rig.run_until(3000, |o| o.state() == OpState::Done).await;
+    let now = rig.now;
+    let live = rig.squad.running.iter().map(|((j, a), (_, c))| (j.clone(), *a, c.clone())).collect();
+    (rig, now, live)
+}
+
+/// Goal met while another attempt still runs: its claim stays held until that attempt's outcome, and is freed by it.
+/// Spec: specs/K5-operation-service.md §4.4
+#[tokio::test]
+async fn goal_met_keeps_the_claim_of_a_running_attempt_until_its_outcome() {
+    let (mut rig, _, live) = rig_at_done(None).await;
+    assert!(!live.is_empty(), "the scenario needs an attempt still running at goal met");
+    let held: Vec<ClaimId> = rig.op().claims().into_iter().map(|(i, _)| i).collect();
+    for (_, _, c) in &live {
+        assert!(held.contains(c), "{c} was released at goal met while its attempt runs");
+    }
+    rig.run_until(600, |o| o.claims().is_empty()).await;
+    let evs = rig.log();
+    // Each running attempt's claim is released only after its outcome is on the log.
+    for (j, a, c) in &live {
+        let key = format!("out:{j}:a{a}");
+        let out = evs.iter().position(|e| matches!(e, OpEvent::Outcome { key: k, .. } if *k == key)).expect("outcome arrives");
+        let rel = evs.iter().position(|e| matches!(e, OpEvent::Claim(ClaimEvent::Released { id }) if id == c)).expect("claim released");
+        assert!(out < rel, "{c} released before the outcome of attempt {a} of {j}");
+    }
+    assert_no_box_overlap(&evs);
+}
+
+/// The attempt's bot dies and no outcome comes: the claim ends with its lease (expiry), not before.
+/// Spec: specs/K5-operation-service.md §4.5
+#[tokio::test]
+async fn goal_met_keeps_the_claim_until_the_lease_ends_when_no_outcome_comes() {
+    let (_, done, live) = rig_at_done(None).await;
+    let (j, _, _) = live[0].clone();
+    // The bot of that attempt dies one tick before goal met: the run up to there is the same.
+    let bot = {
+        let (rig, _, _) = rig_at_done(None).await;
+        rig.squad.running.values().next().unwrap().0.clone()
+    };
+    let (mut rig, done2, live2) = rig_at_done(Some((bot.as_str(), done - 1))).await;
+    assert_eq!(done, done2, "killing a bot with a running job leaves the goal tick unchanged");
+    let c = live2.iter().find(|(x, _, _)| *x == j).expect("same attempt").2.clone();
+    assert!(rig.op().claims().iter().any(|(i, _)| *i == c), "claim held at goal met");
+    rig.run_until(600, |o| o.claims().is_empty()).await;
+    let evs = rig.log();
+    assert!(evs.iter().any(|e| matches!(e, OpEvent::Claim(ClaimEvent::Expired { id, .. }) if *id == c)), "the lease end frees it");
+    assert!(!evs.iter().any(|e| matches!(e, OpEvent::Claim(ClaimEvent::Released { id }) if *id == c)), "no release without an outcome");
+    assert_no_box_overlap(&evs);
 }
