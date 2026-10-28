@@ -9,4 +9,4 @@ mod tests;
 
 pub use audit::{Audit, AuditEntry};
 pub use parse::{HELP, Line, parse_line, render};
-pub use spine::{Spine, SpineConfig};
+pub use spine::{Spine, SpineBot, SpineConfig, TreeSource};

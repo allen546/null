@@ -51,7 +51,7 @@ use scenarios::{Ctx, Outcome};
 use skill::RemoteSkill;
 
 const USAGE: &str = "usage: null-abilitycheck [--server 127.0.0.1:25567] [--account null_check] \
-[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|A16|A17|A18|A19|A20|A21|A22|A23|AT[,..]] [--shuffle SEED] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH]";
+[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|A16|A17|A18|A19|A20|A21|A22|A23|AT[,..]] [--shuffle SEED] [--companion [--companion-first]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH]";
 
 struct Args {
     server: String,
@@ -59,6 +59,11 @@ struct Args {
     scenarios: Vec<String>,
     /// Run the chosen modules in an order drawn from this seed (rows inside a module keep theirs).
     shuffle: Option<u64>,
+    /// Companion mode: a second bot (`<account>c`, no skill, not op) of the same swarm stands next to
+    /// the main bot in every row, so shared-`World` bugs show here. Spec: specs/plans/COMPANION_BRIEF.md
+    companion: bool,
+    /// The companion joins before the main bot (patch 40 failed only on the bot that joined second).
+    companion_first: bool,
     rcon_port: u16,
     rcon_pass: String,
     log: PathBuf,
@@ -70,6 +75,8 @@ fn parse_args() -> Result<Args, String> {
         account: "null_check".into(),
         scenarios: vec!["all".into()],
         shuffle: None,
+        companion: false,
+        companion_first: false,
         rcon_port: 25577,
         rcon_pass: "skeleton".into(),
         log: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../harness/skeleton-server/server/server.log"),
@@ -82,11 +89,16 @@ fn parse_args() -> Result<Args, String> {
             "--account" => a.account = val()?,
             "--scenario" => a.scenarios = val()?.split(',').map(|s| s.trim().to_uppercase()).collect(),
             "--shuffle" => a.shuffle = Some(val()?.parse().map_err(|e| format!("--shuffle: {e}"))?),
+            "--companion" => a.companion = true,
+            "--companion-first" => a.companion_first = true,
             "--rcon-port" => a.rcon_port = val()?.parse().map_err(|e| format!("--rcon-port: {e}"))?,
             "--rcon-password" => a.rcon_pass = val()?,
             "--server-log" => a.log = PathBuf::from(val()?),
             _ => return Err(USAGE.into()),
         }
+    }
+    if a.companion_first && !a.companion {
+        return Err("--companion-first needs --companion".into());
     }
     Ok(a)
 }
@@ -190,6 +202,8 @@ fn main() {
     let server = args.server.clone();
     // A8 needs a second player online to be the attacker: `<account>2`, with no skill; A18 uses it as the other bot.
     let account2 = format!("{}2", args.account);
+    let companion_name = args.companion.then(|| format!("{}c", args.account));
+    let companion_first = args.companion_first;
     let two = args.scenarios.iter().any(|s| s == "ALL" || s == "A8" || s == "A18" || s == "A19");
     // A16 and A17 end some rows in a disconnect: each such row has its own idle account.
     let spares = args.scenarios.iter().any(|s| s == "ALL" || s == "A16" || s == "A17");
@@ -197,11 +211,12 @@ fn main() {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         rt.block_on(async move {
             let second = account2.clone();
+            let comp = companion_name.clone();
             let probe_main = account.clone();
             let (revive_ops, revive_rep) = (ops.clone(), rep_tx.clone());
             let revive_account = account.clone();
             let factory = Arc::new(move |name: &str| {
-                if name == second || name.starts_with("null_d") {
+                if name == second || name.starts_with("null_d") || comp.as_deref() == Some(name) {
                     return BotBrain::new(Brain::new(), None);
                 }
                 let skill = RemoteSkill::new(ops.clone(), rep_tx.clone());
@@ -210,6 +225,11 @@ fn main() {
                 BotBrain::new(brain, Some(Box::new(skill)))
             });
             let mut accounts = vec![Account::offline(&account)];
+            if let Some(c) = &companion_name {
+                // Join order matters: `--companion-first` puts the companion ahead of the main bot.
+                let at = if companion_first { 0 } else { accounts.len() };
+                accounts.insert(at, Account::offline(c));
+            }
             if two {
                 accounts.push(Account::offline(&account2));
             }
@@ -218,7 +238,12 @@ fn main() {
                     accounts.push(Account::offline(&scenarios_envelope::d_name(k)));
                 }
             }
-            let _ = SwarmBuilder::new_without_plugins()
+            // Companion mode joins one by one, so `--companion-first` really is first (joined at once, the order is a race).
+            let mut builder = SwarmBuilder::new_without_plugins();
+            if companion_name.is_some() {
+                builder = builder.join_delay(Duration::from_millis(1500));
+            }
+            let _ = builder
                 .add_plugins((
                     DefaultPlugins,
                     null_bot_plugins(),
@@ -256,7 +281,16 @@ fn main() {
         }
     }
 
-    let mut cx = Ctx { rc, name: args.account.clone(), ops: op_tx, reports: rep_rx, seq: 0, log: args.log, events: ev_rx, probe };
+    let mut cx = Ctx { rc, name: args.account.clone(), ops: op_tx, reports: rep_rx, seq: 0, log: args.log, events: ev_rx, probe, companion: args.companion.then(|| format!("{}c", args.account)), companion_notes: Vec::new() };
+    if let Some(c) = cx.companion.clone() {
+        // Joined one by one: in main-first order the companion arrives 1.5 s after the main bot.
+        let up = cx.poll(30.0, |cx| cx.r("list").contains(&c));
+        if up.is_none() {
+            eprintln!("companion {c} did not join within 30 s");
+            std::process::exit(2);
+        }
+        std::thread::sleep(Duration::from_millis(1500));
+    }
     let wants = |id: &str| args.scenarios.iter().any(|s| s == "ALL" || s == id);
     let mut results: Vec<Outcome> = Vec::new();
     type Scenario = fn(&mut Ctx) -> Vec<Outcome>;

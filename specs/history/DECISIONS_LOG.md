@@ -2,6 +2,11 @@
 
 **Historical.** Moved from `OPEN.md` on 2026-10-19 so that OPEN stays a short start page. Each entry is a one-line record; the full reasoning is in `DECISIONS.md` and the specs each entry names. Paths are relative to the repo root unless they start with `specs/`.
 
+## Decided 2026-10-25
+
+- Shared-world bugs get a class test, not one-off audits: companion mode in the ability check (a second bot of the same swarm near the main bot in every row, both join orders) after fork patch 40. `specs/plans/COMPANION_BRIEF.md`.
+- Vanilla diff (the same input into Null and a real vanilla client, packets compared per client tick) is planned on Allen's HeadlessMC + Fabric client, cleaned of mods that change behaviour; code in `harness/vanilla-diff/`, the tap may import `azalea-protocol` as a listed harness tool, Mac first, after S6 and before `mine`; the real-server login plugin is not needed. `specs/plans/VANILLA_DIFF_PLAN.md`.
+
 ## Decided 2026-10-24
 
 - A14: a drop that lands on canopy leaves out of reach is reported as left, not chased (`gather` unchanged). The A14 log-count rows accept it only with server proof (item entity of that log on leaves, counts add up). B4 §4.9.

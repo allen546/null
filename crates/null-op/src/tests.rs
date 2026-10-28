@@ -153,7 +153,9 @@ impl Rig {
         let bus = InProcBus::default();
         let world = SimWorld::generate(seed, srv(), trees, 30).shared();
         let tl = world.lock().unwrap().tree_list();
-        let cfg = OpConfig::new("op1", "smp1", "sq1");
+        let mut cfg = OpConfig::new("op1", "smp1", "sq1");
+        // The toy trees stand on neighbouring cells: one column per claim.
+        cfg.tree_box = (0, 0);
         let squad = Squad::new(&bus, bots);
         let sim = bots
             .iter()
@@ -393,13 +395,13 @@ async fn higher_priority_take_preempts_and_old_owner_is_told() {
         .unwrap()
         .1;
     let tree = match held.kind {
-        ClaimKind::BlockSet(l) => l,
+        ClaimKind::Region(r) => r,
         k => panic!("{k:?}"),
     };
     let claims = op_claims(&srv(), &opid());
     let take = ClaimRequest::Take {
         id: ClaimId::new("raid-1"),
-        kind: ClaimKind::BlockSet(tree),
+        kind: ClaimKind::Region(tree),
         owner: ClaimOwner::Squad(SquadId::new("raiders")),
         priority: Priority(5),
         ttl: Gt(60),

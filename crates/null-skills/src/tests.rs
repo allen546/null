@@ -38,6 +38,7 @@ struct Sim {
     selected: Vec<u8>,
     stand_y: Vec<f64>,
     mode: Mode,
+    evidence: Option<null_bot_api::ClickEvidence>,
     next_item: u32,
     max_step: std::time::Duration,
     fast: bool,
@@ -57,7 +58,7 @@ struct Sim {
 
 impl Sim {
     fn new() -> Self {
-        Self { tick: 100, pos: Vec3::new(8.5, 64.0, 0.5), blocks: HashMap::new(), props: vec![], items: vec![], inv: 0, hotbar: Default::default(), results: HashMap::new(), due: vec![], breaks: vec![], leaves_broken: vec![], issued: vec![], released: vec![], selected: vec![], stand_y: vec![], mode: Mode::Ok, next_item: 1, max_step: Default::default(), fast: false, max_at: 0, offset: 0.0, stuck: false, full: false, stands: vec![], swap: None, persist_on_walk: false }
+        Self { tick: 100, pos: Vec3::new(8.5, 64.0, 0.5), blocks: HashMap::new(), props: vec![], items: vec![], inv: 0, hotbar: Default::default(), results: HashMap::new(), due: vec![], breaks: vec![], leaves_broken: vec![], issued: vec![], released: vec![], selected: vec![], stand_y: vec![], mode: Mode::Ok, evidence: None, next_item: 1, max_step: Default::default(), fast: false, max_at: 0, offset: 0.0, stuck: false, full: false, stands: vec![], swap: None, persist_on_walk: false }
     }
     fn set(&mut self, x: i32, y: i32, z: i32, n: &str) {
         let p = BlockPos::new(x, y, z);
@@ -157,7 +158,7 @@ impl Sim {
                             self.leaves_broken.push(p);
                         }
                     }
-                    let rec = BlockAction { kind: BlockActionKind::Break, pos: p, outcome, start_tick: self.tick, finish_tick: Some(self.tick), ack_tick: Some(self.tick + 1), reason, evidence: None };
+                    let rec = BlockAction { kind: BlockActionKind::Break, pos: p, outcome, start_tick: self.tick, finish_tick: Some(self.tick), ack_tick: Some(self.tick + 1), reason, evidence: if outcome == BlockOutcome::Refused { self.evidence } else { None } };
                     self.results.insert(id, ActionState::Pending(None));
                     let landed = if matches!(self.mode, Mode::ExpireAt(k) if k == n) { ActionState::Expired } else { ActionState::Finished(ActionRecord::Block(rec)) };
                     self.due.push((id, landed));
@@ -401,6 +402,18 @@ fn a_refused_or_unacknowledged_break_fails_the_job_and_stops() {
         assert_eq!(b.block(s.breaks[2], s.tick).unwrap().entry.block, LOG, "the cell that did not break is not recorded as air");
         assert!(matches!(f.step(&s.view(), &mut FakeCommands::default()), SkillStatus::Failed(_)));
     }
+}
+
+#[test]
+fn a_refused_break_reports_what_the_client_saw() {
+    use null_bot_api::{ClickEvidence, ClickHit};
+    let mut s = Sim::new();
+    s.oak(0, 0, 5);
+    s.mode = Mode::FailAt(1, BlockOutcome::Refused, "crosshair does not hit it");
+    s.evidence = Some(ClickEvidence { check_tick: 7, eye: Vec3::new(1.5, 65.62, 2.5), eye_height: 1.62, yaw: 10.0, pitch: 20.0, crouching: false, hit: ClickHit::Miss, look_changed_after_hit: false });
+    let (mut f, _) = fell_job(5, false);
+    let st = s.run(&mut f);
+    assert!(matches!(&st, SkillStatus::Failed(m) if m.contains("ray hit nothing") && m.contains("height 1.62")), "{st:?}");
 }
 
 #[test]

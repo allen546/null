@@ -1,7 +1,7 @@
 //! Subjects: `null.<server>.<level>.<id>.<kind>`; the id is left out for singletons like `null.smp1.hq.digest`.
 // Spec: specs/F6-bus-deployment.md §3
 
-use null_proto::ServerId;
+use null_proto::{BotId, ServerId};
 use std::fmt;
 
 // Spec: specs/F6-bus-deployment.md §4.2
@@ -76,4 +76,28 @@ impl fmt::Display for Subject {
         }
         write!(f, ".{}", self.kind)
     }
+}
+
+// Spec: specs/F6-bus-deployment.md §4.2
+/// Where a bot receives `IntentBody::JobBatch`.
+pub fn bot_jobs(server: &ServerId, bot: &BotId) -> Subject {
+    Subject::new(server, Level::Bot, Some(bot.as_str()), kind::JOBS)
+}
+
+// Spec: specs/F6-bus-deployment.md §4.2
+/// Where a bot publishes `IntentBody::JobOutcome` (its squad consumes it).
+pub fn bot_up(server: &ServerId, bot: &BotId) -> Subject {
+    Subject::new(server, Level::Bot, Some(bot.as_str()), "up")
+}
+
+// Spec: specs/F6-bus-deployment.md §4.2
+/// Where a bot publishes `SummaryBody::Bot`.
+pub fn bot_summary(server: &ServerId, bot: &BotId) -> Subject {
+    Subject::new(server, Level::Bot, Some(bot.as_str()), kind::SUMMARY)
+}
+
+// Spec: specs/F6-bus-deployment.md §4.2
+/// Where a bot receives `Command::Halt`.
+pub fn bot_cmd(server: &ServerId, bot: &BotId) -> Subject {
+    Subject::new(server, Level::Bot, Some(bot.as_str()), kind::CMD)
 }

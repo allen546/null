@@ -27,7 +27,7 @@ use std::{
 use azalea::{
     account::Account,
     app::{App, Plugin},
-    core::tick::GameTick,
+    core::{entity_id::MinecraftEntityId, tick::GameTick},
     ecs::prelude::*,
     entity::{
         EntityKindComponent, HasClientLoaded, LocalEntity, Physics, Position, dimensions::EntityDimensions,
@@ -92,12 +92,12 @@ impl Plugin for PushProbe {
         let main = self.main.clone();
         app.add_systems(
             GameTick,
-            (move |me: Query<(&Account, &Position, &Physics, &PushRecord, &TicksConnected, &EntityDimensions, Option<&PeerView>), (With<LocalEntity>, With<HasClientLoaded>)>,
-                   others: Query<(&EntityKindComponent, &Position, &EntityDimensions), Without<LocalEntity>>| {
+            (move |me: Query<(&Account, &Position, &Physics, &PushRecord, &TicksConnected, &EntityDimensions, Option<&PeerView>, Option<&MinecraftEntityId>), (With<LocalEntity>, With<HasClientLoaded>)>,
+                   others: Query<(&EntityKindComponent, &Position, &EntityDimensions, Option<&MinecraftEntityId>), Without<LocalEntity>>| {
                 if !TRACE_ON.load(Ordering::Relaxed) {
                     return;
                 }
-                for (a, p, ph, rec, t, d, view) in &me {
+                for (a, p, ph, rec, t, d, view, own) in &me {
                     let buf = if a.username() == main {
                         &TRACE
                     } else if a.username() == format!("{main}2") {
@@ -108,16 +108,27 @@ impl Plugin for PushProbe {
                     let mine = d.make_bounding_box(**p);
                     let touching = others
                         .iter()
-                        .filter(|(_, op, od)| mine.intersects_aabb(&od.make_bounding_box(***op)))
+                        .filter(|(_, op, od, _)| mine.intersects_aabb(&od.make_bounding_box(***op)))
                         .map(|(k, ..)| k.0)
                         .collect();
                     let near = others
                         .iter()
                         .filter(|(k, ..)| matches!(k.0, EntityKind::Cow | EntityKind::OakBoat | EntityKind::ArmorStand))
-                        .map(|(_, op, _)| (op.x, op.z))
+                        .map(|(_, op, ..)| (op.x, op.z))
                         .filter(|o| (o.0 - p.x).abs() < 3.0 && (o.1 - p.z).abs() < 3.0)
                         .min_by(|a, b| (a.0 - p.x).abs().total_cmp(&(b.0 - p.x).abs()));
-                    let peer = view.and_then(|v| v.iter().next().map(|(_, e)| (e.position.x, e.position.z)));
+                    // The other bot, nearest first. With a companion the view holds two bots, and `iter().next()`
+                    // is in hash order. A bot that joined the swarm later can be a plain remote player here
+                    // (a second entity carrying its id, never one carrying this bot's own id), and the push
+                    // then reads that entity.
+                    let from_view = view.into_iter().flat_map(|v| v.iter().map(|(_, e)| (e.position.x, e.position.z)));
+                    let from_world = others
+                        .iter()
+                        .filter(|(k, _, _, id)| k.0 == EntityKind::Player && id.is_none_or(|i| Some(i) != own))
+                        .map(|(_, op, ..)| (op.x, op.z));
+                    let peer = from_view
+                        .chain(from_world)
+                        .min_by(|a, b| (a.0 - p.x).hypot(a.1 - p.z).total_cmp(&(b.0 - p.x).hypot(b.1 - p.z)));
                     buf.lock().unwrap().push(PushTick {
                         tick: t.0,
                         x: p.x,
@@ -632,7 +643,9 @@ fn push_tick_order(cx: &mut Ctx) -> Outcome {
 
 // Spec: specs/B1-movement.md §4.2 (Pushes from entities)
 pub fn a19(cx: &mut Ctx) -> Vec<Outcome> {
-    cx.scene_in(AREA, &[], STAND);
+    // Companion opt-out: a bot 2.5 blocks away would be pushed by the rows' mobs and boats and could
+    // push the bot under test; it parks 6 blocks behind (still inside tracking range).
+    cx.scene_in_spot(AREA, &[], STAND, Some((-6.0, 0.0)));
     let mut out = Vec::new();
     // The second bot waits 8 blocks away so it cannot push the first one in the other rows.
     let other = format!("{}2", cx.name);

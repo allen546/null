@@ -1,0 +1,230 @@
+diff --git a/azalea-client/src/plugins/packet/game/mod.rs b/azalea-client/src/plugins/packet/game/mod.rs
+index 1ddceff..d38793f 100644
+--- a/azalea-client/src/plugins/packet/game/mod.rs
++++ b/azalea-client/src/plugins/packet/game/mod.rs
+@@ -232,6 +232,7 @@ impl GamePacketHandler<'_> {
+         true
+     }
+ 
++    // Spec: specs/F5-version-layer.md §4.6 (What Null computes)
+     pub fn login(&mut self, p: &ClientboundLogin) {
+         debug!("Got login packet");
+ 
+@@ -345,6 +346,21 @@ impl GamePacketHandler<'_> {
+                     azalea_entity::push::PushRecord::default(),
+                 ));
+ 
++                // Patch 44: the server may have announced this bot to an earlier bot of the swarm
++                // before this Login. That bot then holds a plain player entity with this id (a
++                // twin). Vanilla has one entity per id, so this Login adopts the twin.
++                let shared = world_holder.shared.clone();
++                let twin = shared
++                    .read()
++                    .entity_by_id
++                    .get(&p.player_id)
++                    .copied()
++                    .filter(|&e| e != self.player && loaded_by_query.contains(e));
++                let adopted_by: HashSet<Entity> = twin
++                    .and_then(|t| loaded_by_query.get(t).ok())
++                    .map(|l| l.0.clone())
++                    .unwrap_or_default();
++
+                 // Patch 32: a login starts the tick order again, with the player first
+                 // (`handleLogin` adds the local player before any other entity).
+                 entity_id_index.tick_order_mut().clear();
+@@ -362,13 +378,28 @@ impl GamePacketHandler<'_> {
+                     loaded_by.remove(&self.player);
+                 }
+ 
+-                // update or insert loaded_by
++                // update or insert loaded_by (the clients that held the twin hold this bot now)
+                 if let Some(mut loaded_by) = loaded_by {
+                     loaded_by.insert(self.player);
++                    loaded_by.extend(adopted_by.iter().copied());
+                 } else {
+-                    commands
+-                        .entity(self.player)
+-                        .insert(LoadedBy(HashSet::from_iter(vec![self.player])));
++                    let mut holders = adopted_by.clone();
++                    holders.insert(self.player);
++                    commands.entity(self.player).insert(LoadedBy(holders));
++                }
++
++                if let Some(twin) = twin {
++                    // Every client that held the twin now holds this bot's own entity, in the
++                    // same tick-order place; the twin leaves the chunk index and the ECS.
++                    for &holder in &adopted_by {
++                        if let Ok((_, _, _, _, mut index, _)) = query.get_mut(holder) {
++                            index.replace_entity(entity_id, twin, self.player);
++                        }
++                    }
++                    for entities in shared.write().entities_by_chunk.values_mut() {
++                        entities.remove(&twin);
++                    }
++                    commands.entity(twin).despawn();
+                 }
+             },
+         );
+diff --git a/azalea-client/src/test_utils/simulation.rs b/azalea-client/src/test_utils/simulation.rs
+index 6af7ba5..145b54b 100644
+--- a/azalea-client/src/test_utils/simulation.rs
++++ b/azalea-client/src/test_utils/simulation.rs
+@@ -111,6 +111,54 @@ impl Simulation {
+             raw_conn.injected_clientbound_packets.push(buf);
+         });
+     }
++
++    /// Add a second client (a second bot of one swarm) to this app, in the game state with the
++    /// overworld registry. Its packets go through [`Self::receive_packet_for`].
++    // Spec: specs/F5-version-layer.md §4.6 (What Null computes)
++    pub fn add_client(&mut self, uuid: Uuid, name: &str) -> Entity {
++        let mut entity = self.app.world_mut().spawn_empty();
++        let (player, rt) = create_local_player_bundle(entity.id(), ConnectionProtocol::Configuration);
++        entity.insert((player, ClientInformation::default()));
++        let entity = entity.id();
++        // The runtime must outlive the client's tasks; the test keeps it with the simulation.
++        std::mem::forget(rt);
++        tick_app(&mut self.app);
++        self.app.world_mut().entity_mut(entity).insert((
++            InConfigState,
++            GameProfileComponent(GameProfile::new(uuid, name.to_owned())),
++        ));
++        tick_app(&mut self.app);
++        self.receive_packet_for(
++            entity,
++            ClientboundRegistryData {
++                registry_id: Identifier::new("minecraft:dimension_type"),
++                entries: vec![(
++                    Identifier::new("minecraft:overworld"),
++                    Some(NbtCompound::from_values(vec![
++                        ("height".into(), NbtTag::Int(384)),
++                        ("min_y".into(), NbtTag::Int(-64)),
++                    ])),
++                )]
++                .into_iter()
++                .collect(),
++            },
++        );
++        self.receive_packet_for(entity, ClientboundFinishConfiguration);
++        self.tick();
++        entity
++    }
++
++    /// Like [`Self::receive_packet`], for a client added with [`Self::add_client`].
++    pub fn receive_packet_for<P: ProtocolPacket + Debug>(&mut self, client: Entity, packet: impl Packet<P>) {
++        let buf = azalea_protocol::write::serialize_packet(&packet.into_variant()).unwrap();
++        self.app
++            .world_mut()
++            .entity_mut(client)
++            .get_mut::<RawConnection>()
++            .expect("client has a connection")
++            .injected_clientbound_packets
++            .push(buf);
++    }
+     pub fn write_message(&mut self, message: impl Message) {
+         self.app.world_mut().write_message(message);
+     }
+diff --git a/azalea-client/tests/simulation/bot_login_twin.rs b/azalea-client/tests/simulation/bot_login_twin.rs
+new file mode 100644
+index 0000000..48c4159
+--- /dev/null
++++ b/azalea-client/tests/simulation/bot_login_twin.rs
+@@ -0,0 +1,59 @@
++use azalea_client::test_utils::prelude::*;
++use azalea_core::{entity_id::MinecraftEntityId, position::ChunkPos};
++use azalea_entity::{LocalEntity, indexing::EntityIdIndex, interpolation::PeerView};
++use azalea_protocol::packets::ConnectionProtocol;
++use azalea_registry::builtin::EntityKind;
++use bevy_ecs::prelude::*;
++use uuid::Uuid;
++
++// Spec: specs/F5-version-layer.md §4.6 (What Null computes: the bot-to-bot view)
++// Two bots of one swarm log in close together. The server announces the joiner (id 77) to the
++// earlier bot before the joiner's own Login registers it, so the earlier bot spawns a plain
++// player entity with that id (a twin). The joiner's Login must adopt the twin: one entity for
++// the id, the earlier bot's index pointing at the joiner's local entity, and the view holding it.
++#[test]
++fn test_joiner_login_adopts_the_twin_another_bot_spawned_for_its_id() {
++    let _lock = init();
++    let mut simulation = Simulation::new(ConnectionProtocol::Game);
++    simulation.receive_packet(default_login_packet());
++    simulation.receive_packet(make_basic_empty_chunk(ChunkPos::new(0, 0), (384 + 64) / 16));
++    simulation.tick();
++    let a = simulation.entity;
++    let a_id = simulation.minecraft_entity_id();
++    let a_uuid = simulation.app.world().get::<azalea_entity::EntityUuid>(a).map(|u| **u);
++
++    // The earlier bot hears about the joiner first.
++    let b_uuid = Uuid::from_u128(5678);
++    let mut add = make_basic_add_entity(EntityKind::Player, 77, (0., 0., 0.));
++    add.uuid = b_uuid;
++    simulation.receive_packet(add);
++    simulation.tick();
++
++    // Then the joiner logs in with that id and hears about the earlier bot.
++    let b = simulation.add_client(b_uuid, "b");
++    let mut login = default_login_packet();
++    login.player_id = MinecraftEntityId(77);
++    simulation.receive_packet_for(b, login);
++    simulation.receive_packet_for(b, make_basic_empty_chunk(ChunkPos::new(0, 0), (384 + 64) / 16));
++    let mut add_a = make_basic_add_entity(EntityKind::Player, a_id.0, (0., 0., 0.));
++    add_a.uuid = a_uuid.unwrap_or(Uuid::from_u128(1234));
++    simulation.receive_packet_for(b, add_a);
++    for _ in 0..3 {
++        simulation.tick();
++    }
++
++    let world = simulation.app.world();
++    let a_index = world.get::<EntityIdIndex>(a).unwrap();
++    assert_eq!(a_index.get_by_minecraft_entity(MinecraftEntityId(77)), Some(b), "A's index holds the joiner's own entity");
++    let mut twins = 0;
++    let mut q = simulation.app.world_mut().query_filtered::<&MinecraftEntityId, Without<LocalEntity>>();
++    for id in q.iter(simulation.app.world()) {
++        if id.0 == 77 {
++            twins += 1;
++        }
++    }
++    assert_eq!(twins, 0, "a non-local entity still carries the joiner's id");
++    let world = simulation.app.world();
++    assert!(world.get::<PeerView>(a).unwrap().contains(b), "A's view holds B");
++    assert!(world.get::<PeerView>(b).unwrap().contains(a), "B's view holds A");
++}
+diff --git a/azalea-client/tests/simulation/mod.rs b/azalea-client/tests/simulation/mod.rs
+index f17b308..75c6025 100644
+--- a/azalea-client/tests/simulation/mod.rs
++++ b/azalea-client/tests/simulation/mod.rs
+@@ -2,6 +2,7 @@
+ 
+ mod attack_cooldown_like_vanilla;
+ mod attackers_from_damage_event;
++mod bot_login_twin;
+ mod change_dimension_to_nether_and_back;
+ mod client_disconnect;
+ mod client_refusals;
+diff --git a/azalea-entity/src/plugin/indexing.rs b/azalea-entity/src/plugin/indexing.rs
+index 68a689a..0e983e5 100644
+--- a/azalea-entity/src/plugin/indexing.rs
++++ b/azalea-entity/src/plugin/indexing.rs
+@@ -137,6 +137,22 @@ impl EntityIdIndex {
+         trace!("Inserted {id} -> {entity:?} into a client's EntityIdIndex");
+     }
+ 
++    /// Point `id` at `new` instead of `old`, keeping the tick-order number (patch 44). Returns
++    /// false when `id` did not map to `old`.
++    // Spec: specs/F5-version-layer.md §4.6 (What Null computes)
++    pub fn replace_entity(&mut self, id: MinecraftEntityId, old: Entity, new: Entity) -> bool {
++        if self.entity_by_id.get(&id) != Some(&old) {
++            return false;
++        }
++        self.entity_by_id.insert(id, new);
++        self.id_by_entity.remove(&old);
++        self.id_by_entity.insert(new, id);
++        if let Some(n) = self.tick_order.seq.remove(&old) {
++            self.tick_order.seq.insert(new, n);
++        }
++        true
++    }
++
+     pub fn remove_by_minecraft_entity(&mut self, id: MinecraftEntityId) -> Option<Entity> {
+         if let Some(entity) = self.entity_by_id.remove(&id) {
+             trace!(

@@ -22,7 +22,7 @@ The goal: all four levels (HQ, one operation, one squad, two bots) run in one pr
 | S4 | Adapter, host and login | `mc-adapter`, `null-node`, `skeleton-server/` | S1 | done 2026-10-16, verified live |
 | SA | Ability check: basic abilities proven live, fixed in the fork where needed ([ABILITY_CHECK.md](ABILITY_CHECK.md)) | `null-abilitycheck`, `mc-adapter`, fork | S4 | closed 2026-10-19: A1–A12, A10E, A4C, AT and the shape families pass on both servers (358/358 each, verified) |
 | S5 | Skills and belief for the goal | `null-skills`, `null-belief` | S4, SA | closed 2026-10-23: mailbox, `null-belief`, `gather` with the tree policy (A14 checks all three done-when terms), fork patches 23–38; last full pair `p39_full` plus reruns, pushed `4ee1f8a` |
-| S6 | Skeleton live | wiring only | S3, S5 | not started |
+| S6 | Skeleton live | wiring only | S3, S5 | started 2026-10-25 (`S6_BRIEF.md`) |
 
 S3 and S4 can run in parallel. **First target (Allen, 2026-10-16): S4, a swarm that logs in and moves around.** It is done, and so is the combat track's M2 with the swarm duel test. **Next (Allen, 2026-10-17): SA, the ability check, before S5 and S2.** SA closed 2026-10-19; S5 is under way. S5 needs S4 and SA, not S2: its claims can be held locally until S3's squad hands them out in S6. S2 and S3 feed S6 only.
 

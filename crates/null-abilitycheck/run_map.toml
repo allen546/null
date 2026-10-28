@@ -79,6 +79,46 @@ modules = ["A5", "A6", "A7", "A8"]
 why = "BlockDelayBelief in skill_items.rs (A6)"
 
 [[entry]]
+path = "crates/null-proto/"
+modules = []
+why = "spine crate (S2-S6); null-abilitycheck does not depend on it (cargo tree), only null-node does"
+
+[[entry]]
+path = "crates/null-bus/"
+modules = []
+why = "spine crate (S2-S6); null-abilitycheck does not depend on it (cargo tree), only null-node does"
+
+[[entry]]
+path = "crates/null-op/"
+modules = []
+why = "spine crate (S2-S6); null-abilitycheck does not depend on it (cargo tree), only null-node does"
+
+[[entry]]
+path = "crates/null-squad/"
+modules = []
+why = "spine crate (S2-S6); null-abilitycheck does not depend on it (cargo tree), only null-node does"
+
+[[entry]]
+path = "crates/null-hq/"
+modules = []
+why = "spine crate (S2-S6); null-abilitycheck does not depend on it (cargo tree), only null-node does"
+
+[[entry]]
+path = "crates/null-cli/"
+modules = []
+why = "spine crate (S2-S6); null-abilitycheck does not depend on it (cargo tree), only null-node does"
+
+[[entry]]
+path = "crates/null-simbot/"
+modules = []
+why = "spine crate (S2-S6); null-abilitycheck does not depend on it (cargo tree), only null-node does"
+
+[[entry]]
+path = "crates/null-botlink/"
+modules = []
+why = "spine crate (S2-S6); null-abilitycheck does not depend on it (cargo tree), only null-node does"
+
+[[entry]]
 path = "crates/null-node/"
 modules = []
 why = "the swarm binary; no module runs it"

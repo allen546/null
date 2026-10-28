@@ -28,6 +28,8 @@ const STAND: (f64, f64, f64) = (695.5, 200.0, 357.5);
 /// The spawn point (block position) and the bot's position after a respawn there.
 const SPAWN_BLOCK: (i32, i32, i32) = (684, 200, 346);
 const SPAWN: (f64, f64, f64) = (684.5, 200.0, 346.5);
+/// Companion offset from `STAND` for the drop row: 8 blocks west, beyond where a death drop can land.
+const COMPANION_FAR: (f64, f64) = (-8.0, -1.5);
 /// The button turns on at the 20th screen tick (`DeathScreen#tick`).
 const GATE: u64 = 20;
 /// The bot sees the kill packet within about a tick plus the RCON round trip.
@@ -111,7 +113,12 @@ fn items(cx: &mut Ctx, op: ItemOp) -> crate::skill_items::ItemsInfo {
 
 /// Fresh scene: bot at `STAND` with `hotbar`, spawn point set, `keep_inventory` as asked.
 fn fresh(cx: &mut Ctx, hotbar: &[(u8, &str, u8)], keep: bool) {
-    cx.scene_in(AREA, hotbar, STAND);
+    fresh_spot(cx, hotbar, keep, None);
+}
+
+/// As `fresh`, with the companion's spot named by the row (`Ctx::place_companion`).
+fn fresh_spot(cx: &mut Ctx, hotbar: &[(u8, &str, u8)], keep: bool, spot: Option<(f64, f64)>) {
+    cx.scene_in_spot(AREA, hotbar, STAND, spot);
     let n = cx.name.clone();
     // The drop search reaches 48 blocks, past this module's area: drops another module left count too.
     cx.r(&format!("kill @e[type=minecraft:item,x={},y={},z={},distance=..60]", STAND.0, STAND.1, STAND.2));
@@ -147,6 +154,21 @@ fn dropped(cx: &mut Ctx, at: (f64, f64, f64), item: &str, n: u32) -> bool {
         at.0, at.1, at.2
     ))
     .contains("passed")
+}
+
+/// How many of each item the companion holds (None without one): tells a drop the companion picked up.
+// Spec: specs/B2-survival-upkeep.md §4.7 (the drops are the server's)
+fn companion_holds(cx: &mut Ctx, names: &[&str]) -> Option<Vec<(String, u32)>> {
+    let c = cx.companion.clone()?;
+    Some(
+        names
+            .iter()
+            .map(|i| {
+                let r = cx.r(&format!("clear {c} minecraft:{i} 0"));
+                (i.to_string(), r.strip_prefix("Found ").and_then(|s| s.split(' ').next()?.parse().ok()).unwrap_or(0))
+            })
+            .collect(),
+    )
 }
 
 /// Where the item entities of this kind are, anywhere in the world: tells a drop that flew off, one
@@ -250,17 +272,24 @@ fn kill_and_respawn(cx: &mut Ctx) -> Outcome {
 
 // Spec: specs/B2-survival-upkeep.md §4.7 (inventory snapshot at death; the drops are the server's)
 fn inventory_drops(cx: &mut Ctx) -> Outcome {
-    fresh(cx, &[(0, "stone", 5), (4, "golden_apple", 3), (8, "iron_axe", 1)], false);
+    // The companion stands away from the scattered drops, and the row reads the drops inside their
+    // 40-tick pickup delay. Any player can pick up a death drop after that delay, and the row's
+    // respawn wait passes it: at 2.5 blocks the companion took the stone once (`p42_sel_grim.log`: no
+    // stone entity anywhere, the other two found), and on Paper + Grim it still held stone 5 after the
+    // row with the spot at 8 blocks (`p44_sel_grim.log`; the vanilla run: 0).
+    fresh_spot(cx, &[(0, "stone", 5), (4, "golden_apple", 3), (8, "iron_axe", 1)], false, Some(COMPANION_FAR));
     cx.run("A12", "inventory_drops_with_keep_inventory_off", |cx| {
         let lat = match kill(cx) {
             Ok(l) => l,
             Err(e) => return (false, e),
         };
+        // The drops are read at once, inside the 40-tick pickup delay of a death drop
+        // (`LivingEntity#createItemStackToDrop`): no player can have taken one yet, whoever stands near.
+        let drops = [("stone", 5), ("golden_apple", 3), ("iron_axe", 1)].map(|(i, n)| (i, n, dropped(cx, STAND, i, n)));
         let info = revive(cx);
         let snap = death_counts(&info);
         sleep(Duration::from_millis(800));
         let left = server_counts(cx, &["stone", "golden_apple", "iron_axe"]);
-        let drops = [("stone", 5), ("golden_apple", 3), ("iron_axe", 1)].map(|(i, n)| (i, n, dropped(cx, STAND, i, n)));
         let want = |i: &str, n: u32| snap.get(&format!("minecraft:{i}")) == Some(&n);
         let ok = lat <= DEAD_WITHIN_MS
             && want("stone", 5)
@@ -269,12 +298,15 @@ fn inventory_drops(cx: &mut Ctx) -> Outcome {
             && left.iter().all(|(_, n)| *n == 0)
             && drops.iter().all(|d| d.2);
         let missing: Vec<String> = drops.iter().filter(|d| !d.2).map(|d| find_anywhere(cx, STAND, d.0)).collect();
+        let held = companion_holds(cx, &["stone", "golden_apple", "iron_axe"]);
+        let at = cx.companion.clone().map(|c| format!(" at {}", cx.r(&format!("data get entity {c} Pos")).rsplit(": ").next().unwrap_or("").trim().to_string()));
         clear_items(cx);
         (
             ok,
             format!(
-                "death snapshot {snap:?} (want stone 5, golden_apple 3, iron_axe 1); after the respawn the server counts {left:?} in the bot's inventory (want all 0); item entities near the death spot with the same counts: {drops:?}{}",
-                if missing.is_empty() { String::new() } else { format!("; missing drops: {}", missing.join(", ")) }
+                "death snapshot {snap:?} (want stone 5, golden_apple 3, iron_axe 1); after the respawn the server counts {left:?} in the bot's inventory (want all 0); item entities near the death spot with the same counts: {drops:?}{}{}",
+                if missing.is_empty() { String::new() } else { format!("; missing drops: {}", missing.join(", ")) },
+                held.map(|h| format!("; the companion{} holds {h:?}", at.clone().unwrap_or_default())).unwrap_or_default()
             ),
         )
     })

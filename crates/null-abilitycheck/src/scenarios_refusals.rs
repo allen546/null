@@ -171,7 +171,11 @@ fn broken_elytra_jump_not_refused(cx: &mut Ctx) -> Outcome {
 
 // Spec: specs/F5-version-layer.md §4.6 (client refusals: riptide)
 fn refuse_riptide_in_water(cx: &mut Ctx) -> Outcome {
-    cx.scene_in(AREA, &[], SPAWN);
+    // The companion (companion mode) stands on an inner block of the pool (all four neighbours water), not at its default spot on the
+    // west edge: at the edge it sits in water that is still spreading, and Grim's flow model differs
+    // from vanilla's for a flowing block with water above it (proof: F5 §4.6, "Identical to vanilla means
+    // identical Grim alerts"), so it would draw `Simulation` alerts that a vanilla client draws too. The row is about the main bot.
+    cx.scene_in_spot(AREA, &[], SPAWN, Some((-1.0, -1.0)));
     let n = cx.name.clone();
     cx.r("fill 988 200 350 992 203 354 minecraft:water");
     cx.r(&format!("execute in minecraft:overworld run tp {n} {} 200.0 {} 0 0", SPAWN.0, SPAWN.2));

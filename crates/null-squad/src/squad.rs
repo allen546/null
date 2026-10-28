@@ -3,7 +3,7 @@
 use null_bus::{Bus, CommandRx, IntentRx, Level, SummaryRx, Subject, kind};
 use null_op::{op_claims, op_intents, squad_jobs};
 use null_proto::*;
-use null_simbot::{LEASE_MARGIN, bot_cmd, bot_jobs, bot_summary, bot_up};
+use null_bus::{bot_cmd, bot_jobs, bot_summary, bot_up};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 // Spec: specs/F6-bus-deployment.md §4.2

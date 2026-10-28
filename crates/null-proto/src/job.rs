@@ -1,7 +1,7 @@
 //! Job contracts and outcomes (CONVENTIONS §3.1, §4.4).
 // Spec: specs/CONVENTIONS.md §3.1
 
-use crate::{ClaimId, Gt, ItemId, JobId, Loc, Priority};
+use crate::{ClaimId, Gt, ItemId, JobId, Loc, Priority, Region};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -21,6 +21,8 @@ pub enum ParamValue {
     Item(ItemId),
     Loc(Loc),
     Locs(Vec<Loc>),
+    /// A box the job may touch (the claim a bot hands its skill).
+    Region(Region),
     Ticks(Gt),
 }
 

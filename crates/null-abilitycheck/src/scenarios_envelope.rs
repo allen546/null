@@ -47,6 +47,8 @@ const CX: f64 = 900.5;
 const CZ: f64 = 352.5;
 /// The vanilla air drag (`0.98F` widened to a double).
 const DRAG: f64 = 0.98f32 as f64;
+/// The vanilla jump speed with the base `jump_strength` and a block factor of 1.
+const JUMP_SPEED: f64 = 0.42;
 /// Spare accounts for the rows that end in a disconnect: A16 uses 1 and 2, A17 uses 3 to 5.
 pub const SPARES: u32 = 5;
 
@@ -237,7 +239,10 @@ fn compare(trace: &[TraceTick], server_motion: bool) -> (usize, f64, Option<Stri
             let (dy, v) = model_step(v_prev, c.lev, c.slow);
             (((c.y - p.y) - dy).abs().max((c.vy - v).abs()), dy, v)
         };
-        let (mut e, mut dy, mut v) = err(p.vy);
+        // A take-off tick: `Player#jumpFromGround` sets the rise to 0.42 before the move, so that is
+        // the speed this tick starts from (the probe can hold a standing tick before it).
+        let take_off = p.on_ground && c.lev.is_none() && c.y - p.y > 0.3;
+        let (mut e, mut dy, mut v) = err(if take_off { JUMP_SPEED } else { p.vy });
         if e > 1e-6 && server_motion && i > 0 {
             let last_move = p.y - trace[i - 1].y;
             let (e2, dy2, v2) = err(last_move);
@@ -741,4 +746,53 @@ pub fn a17(cx: &mut Ctx) -> Vec<Outcome> {
     }
     cx.clean_in(AREA);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tick(n: u64, y: f64, vy: f64, on_ground: bool) -> TraceTick {
+        TraceTick { tick: n, y, vy, on_ground, lev: None, slow: false, xz: (0.0, 0.0), hp: None, arrows: Vec::new() }
+    }
+
+    /// A trace that holds a standing tick before the jump's take-off tick (the probe starts a tick
+    /// before the bot's jump input lands; seen in `p42_sel_grim.log` A17).
+    fn jump_trace(standing_first: bool) -> Vec<TraceTick> {
+        let floor = (FLOOR_Y + 1) as f64;
+        let mut t = Vec::new();
+        let (mut y, mut v, mut n) = (floor, -0.0784, 0);
+        if standing_first {
+            t.push(tick(n, y, v, true));
+            n += 1;
+        }
+        v = 0.42;
+        for _ in 0..8 {
+            let (dy, v2) = model_step(v, None, false);
+            y += dy;
+            v = v2;
+            t.push(tick(n, y, v, false));
+            n += 1;
+        }
+        t
+    }
+
+    // Spec: specs/B1-movement.md §4.2 (the jump's take-off tick: vanilla `jumpFromGround` sets 0.42 before the move)
+    #[test]
+    fn a_standing_tick_before_take_off_is_checked_as_a_jump_not_a_free_fall() {
+        for standing_first in [false, true] {
+            let (n, worst, miss, _) = compare(&jump_trace(standing_first), true);
+            assert!(miss.is_none(), "standing_first {standing_first}: {miss:?}");
+            assert!(worst < 1e-9, "worst {worst}");
+            assert!(n >= 7);
+        }
+    }
+
+    // Negative control for the rule above: a take-off that rises by anything but the jump speed still fails.
+    #[test]
+    fn a_take_off_with_the_wrong_rise_is_still_a_miss() {
+        let mut t = jump_trace(true);
+        t[1].y -= 0.1;
+        assert!(compare(&t, true).2.is_some());
+    }
 }

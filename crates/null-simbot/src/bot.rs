@@ -1,11 +1,8 @@
 //! A fake bot: runs `fell` jobs in simulated ticks and talks only S2 messages. Spec: specs/K6-squad-leader.md §3
-use crate::{SharedWorld, SimRng, bot_cmd, bot_jobs, bot_summary, bot_up, oak_log};
+use crate::{LEASE_MARGIN, SharedWorld, SimRng, bot_cmd, bot_jobs, bot_summary, bot_up, oak_log};
 use null_bus::{Bus, CommandRx, IntentRx};
 use null_proto::*;
 use std::collections::{BTreeMap, VecDeque};
-
-/// Ticks before a lease ends at which the bot stops by itself (lease rule, K6 §4.8).
-pub const LEASE_MARGIN: u64 = 10;
 
 // Spec: specs/K6-squad-leader.md §3
 struct Running {

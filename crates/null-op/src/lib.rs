@@ -10,6 +10,6 @@ mod tests;
 pub use claims::{ClaimEvent, ClaimRegistry, Entry};
 pub use events::{EventLog, OpEvent, decode, load_jsonl, wall_of};
 pub use op::{
-    JobSt, OpConfig, OpPorts, Operation, claim_id, hq_escalate, op_claims, op_cmd, op_events,
+    JobSt, OpConfig, OpPorts, Operation, TREE_BOX_HEAD, TREE_BOX_RADIUS, claim_id, hq_escalate, op_claims, op_cmd, op_events,
     op_intents, op_summary, squad_jobs,
 };

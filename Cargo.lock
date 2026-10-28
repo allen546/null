@@ -2089,6 +2089,18 @@ name = "null-bot-api"
 version = "0.1.0"
 
 [[package]]
+name = "null-botlink"
+version = "0.1.0"
+dependencies = [
+ "null-belief",
+ "null-bot-api",
+ "null-bus",
+ "null-proto",
+ "null-skills",
+ "tokio",
+]
+
+[[package]]
 name = "null-bus"
 version = "0.1.0"
 dependencies = [
@@ -2142,10 +2154,17 @@ version = "0.1.0"
 dependencies = [
  "azalea",
  "azalea-client",
+ "bevy_ecs",
  "mc-adapter",
  "null-bot-api",
+ "null-botlink",
+ "null-bus",
+ "null-cli",
  "null-combat",
+ "null-op",
+ "null-proto",
  "null-skills-demo",
+ "serde",
  "serde_json",
  "tokio",
 ]

@@ -11,6 +11,11 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+/// Blocks from a tree's trunk to the edge of its claim box on each side (the canopy reaches two, one block of room).
+pub const TREE_BOX_RADIUS: i32 = 3;
+/// Blocks above the top log that the claim box reaches (the canopy).
+pub const TREE_BOX_HEAD: i32 = 2;
+
 // Subjects (F6 §4.2). The squad and HQ use the same functions, so the names live in one place.
 // Spec: specs/F6-bus-deployment.md §4.2
 /// Inbound intents of an operation: goal, allocation, job outcomes, commands.
@@ -57,6 +62,9 @@ pub struct OpConfig {
     /// Dispatches of one job before it is given up and escalated.
     pub max_attempts: u32,
     pub job_budget: Gt,
+    /// Claim box of a `fell` job: blocks out from the trunk on each side, and above the top log. 0 and 0 is the trunk's
+    /// column only (the simulated trees stand on neighbouring cells; a real tree's canopy needs the defaults).
+    pub tree_box: (i32, i32),
     /// Mirror the log to this JSONL file.
     pub jsonl: Option<PathBuf>,
 }
@@ -72,6 +80,7 @@ impl OpConfig {
             margin_pct: 25,
             max_attempts: 3,
             job_budget: Gt(600),
+            tree_box: (TREE_BOX_RADIUS, TREE_BOX_HEAD),
             jsonl: None,
         }
     }
@@ -559,7 +568,21 @@ impl<B: Bus + Clone> Operation<B> {
         }
     }
 
-    /// Parameter names for `fell`: `trees` (Locs), `quota` (Int), `tree_type` (Text).
+    /// The box a `fell` job holds as its claim: the trunk and its canopy, with a block of room (`OpConfig::tree_box`). A real bot breaks only inside it, so the registry sees what the bot can touch.
+    // Spec: specs/K5-operation-service.md §4.2
+    fn tree_box(&self, tree: &Loc, logs: u32) -> Region {
+        let (radius, head) = self.cfg.tree_box;
+        let p = tree.pos;
+        Region {
+            server: tree.server.clone(),
+            dim: tree.dim.clone(),
+            min: Pos::new(p.x - radius, p.y, p.z - radius),
+            max: Pos::new(p.x + radius, p.y + logs as i32 - 1 + head, p.z + radius),
+        }
+    }
+
+    /// Parameter names for `fell`: `trees` (Locs), `quota` (Int), `tree_type` (Text), `claim` (Region, the box the
+    /// job is claimed under and the only place the bot may break).
     // Spec: specs/CONVENTIONS.md §3.1
     fn fell_job(&self, id: JobId, tree: &Loc, logs: u32) -> Job {
         Job {
@@ -569,6 +592,7 @@ impl<B: Bus + Clone> Operation<B> {
                 ("trees".to_string(), ParamValue::Locs(vec![tree.clone()])),
                 ("quota".to_string(), ParamValue::Int(i64::from(logs))),
                 ("tree_type".to_string(), ParamValue::Text("oak".into())),
+                ("claim".to_string(), ParamValue::Region(self.tree_box(tree, logs))),
             ]),
             items: vec![],
             preconditions: vec![Condition::Always],
@@ -642,7 +666,10 @@ impl<B: Bus + Clone> Operation<B> {
             job.attempt = attempt;
             let req = ClaimRequest::Take {
                 id: job.claims[0].clone(),
-                kind: ClaimKind::BlockSet(trees.clone()),
+                kind: match job.params.get("claim") {
+                    Some(ParamValue::Region(r)) => ClaimKind::Region(r.clone()),
+                    _ => ClaimKind::BlockSet(trees.clone()),
+                },
                 owner: ClaimOwner::Job(id.clone()),
                 priority: self.cfg.priority,
                 ttl: self.cfg.claim_ttl,

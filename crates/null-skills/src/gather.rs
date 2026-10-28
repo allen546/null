@@ -437,7 +437,14 @@ impl Gather {
                     let after = view.block_at(task.target).unwrap_or_default();
                     if !ok || !null_belief::is_air(&after) {
                         let why = match &rec {
-                            ActionRecord::Block(b) => b.reason.map(str::to_string).unwrap_or_else(|| format!("{:?}", b.outcome)),
+                            ActionRecord::Block(b) => {
+                                let why = b.reason.map(str::to_string).unwrap_or_else(|| format!("{:?}", b.outcome));
+                                // A refusal carries the client's own eye, look and ray; keep them in the report.
+                                match &b.evidence {
+                                    Some(e) => format!("{why} ({})", describe_evidence(e)),
+                                    None => why,
+                                }
+                            }
                             _ => "unexpected record".into(),
                         };
                         return Some(self.fail(view, task.target, format!("break at {:?}: {why}", task.target)));
@@ -594,4 +601,19 @@ impl Gather {
         }
         SkillStatus::Running
     }
+}
+
+// Spec: specs/B6-placement-breaking.md §4.1 (refusals carry their evidence)
+/// One line of what the client saw when it refused a click: the ray's hit, the eye and the look.
+fn describe_evidence(e: &null_bot_api::ClickEvidence) -> String {
+    use null_bot_api::ClickHit;
+    let hit = match e.hit {
+        ClickHit::Miss => "ray hit nothing".to_string(),
+        ClickHit::Block { pos, face, .. } => format!("ray hit block {pos:?} face {face:?}"),
+        ClickHit::Entity { id, kind } => format!("ray hit entity {} ({kind})", id.0),
+    };
+    format!(
+        "{hit}; eye {:.2},{:.2},{:.2} height {:.2} crouching {} yaw {:.1} pitch {:.1} look changed after ray {}",
+        e.eye.x, e.eye.y, e.eye.z, e.eye_height, e.crouching, e.yaw, e.pitch, e.look_changed_after_hit
+    )
 }

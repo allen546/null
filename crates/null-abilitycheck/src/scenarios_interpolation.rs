@@ -77,6 +77,8 @@ pub static MOB_ON: AtomicBool = AtomicBool::new(false);
 pub static BOT_ON: AtomicBool = AtomicBool::new(false);
 pub static MOB_TRACE: Mutex<Vec<MobTick>> = Mutex::new(Vec::new());
 pub static BOT_TRACE: Mutex<Vec<BotTick>> = Mutex::new(Vec::new());
+/// The bots of the swarm and the main bot's view entries as of the last traced tick (evidence for the rows).
+static WHO: Mutex<String> = Mutex::new(String::new());
 /// The most entries any bot's view held while a row watched, and the cap hits seen.
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 static CAP_HITS: AtomicUsize = AtomicUsize::new(0);
@@ -95,7 +97,8 @@ impl Plugin for InterpolationProbe {
             GameTick,
             (move |me: Query<(&Account, &Position, &EntityDimensions, &LookDirection, Option<&HitResultComponent>), With<LocalEntity>>,
                    mobs: Query<(&EntityKindComponent, &Position, &LastBoundingBox), Without<LocalEntity>>,
-                   bots: Query<(Entity, &Account, &Position, Option<&PeerView>), With<LocalEntity>>| {
+                   bots: Query<(Entity, &Account, &Position, Option<&PeerView>), With<LocalEntity>>,
+                   players: Query<(Entity, &EntityKindComponent, &Position, Option<&azalea::core::entity_id::MinecraftEntityId>, Has<LocalEntity>)>| {
                 if MOB_ON.load(Ordering::Relaxed)
                     && let Some((_, p, d, look, hit)) = me.iter().find(|(a, ..)| a.username() == main)
                     && let Some((_, mp, mbox)) = mobs.iter().find(|(k, ..)| k.0 == EntityKind::Villager)
@@ -117,11 +120,19 @@ impl Plugin for InterpolationProbe {
                 if BOT_ON.load(Ordering::Relaxed) {
                     let find = |name: &str| bots.iter().find(|(_, a, ..)| a.username() == name);
                     if let (Some((_, _, _, main_view)), Some((other_e, _, other_pos, other_view))) = (find(&main), find(&other)) {
-                        let (ml, ol) = (main_view.map_or(0, |v| v.len()), other_view.map_or(0, |v| v.len()));
+                        // Companion mode (`<main>c`) puts a third bot in range: the rows are about the second bot's entries, so the
+                        // companion's are left out of the counts. Spec: specs/plans/COMPANION_BRIEF.md (checks)
+                        let companion = find(&format!("{main}c")).map(|b| b.0);
+                        let count = |v: Option<&PeerView>| v.map_or(0, |v| v.iter().filter(|(e, _)| Some(*e) != companion).count());
+                        let (ml, ol) = (count(main_view), count(other_view));
                         for v in [main_view, other_view].into_iter().flatten() {
                             PEAK.fetch_max(v.peak(), Ordering::Relaxed);
                             CAP_HITS.fetch_max(v.cap_hits() as usize, Ordering::Relaxed);
                         }
+                        let all: Vec<String> = bots.iter().map(|(e, a, p, _)| format!("{}={e:?}@({:.1},{:.1},{:.1})", a.username(), p.x, p.y, p.z)).collect();
+                        let seen: Vec<String> = main_view.into_iter().flat_map(|v| v.iter().map(|(e, pe)| format!("{e:?}@{:.1}", pe.position.x))).collect();
+                        let pl: Vec<String> = players.iter().filter(|(_, k, ..)| k.0 == EntityKind::Player).map(|(e, _, p, id, l)| format!("{e:?} id {:?} local {l} x{:.1}", id.map(|i| i.0), p.x)).collect();
+                        *WHO.lock().unwrap() = format!("swarm [{}]; main's view [{}]; every player entity [{}]", all.join(", "), seen.join(", "), pl.join("; "));
                         BOT_TRACE.lock().unwrap().push(BotTick {
                             view_x: main_view.and_then(|v| v.get(other_e)).map(|e| e.position.x),
                             own_x: other_pos.x,
@@ -278,8 +289,9 @@ pub fn a18(cx: &mut Ctx) -> Vec<Outcome> {
         (
             ml == 1 && ol == 1 && peak >= 1 && view_close,
             format!(
-                "second bot 6 blocks away: entries now {ml} in the main bot's view and {ol} in the second bot's (want 1 each); peak entries seen {peak}; cap hits {}; the main bot's view of it is within 0.05 of its true x: {view_close}",
-                CAP_HITS.load(Ordering::Relaxed)
+                "second bot 6 blocks away: entries now {ml} in the main bot's view and {ol} in the second bot's (want 1 each); peak entries seen {peak}; cap hits {}; the main bot's view of it is within 0.05 of its true x: {view_close}; {}",
+                CAP_HITS.load(Ordering::Relaxed),
+                WHO.lock().unwrap()
             ),
         )
     }));
@@ -300,10 +312,11 @@ pub fn a18(cx: &mut Ctx) -> Vec<Outcome> {
         (
             ok && own_ahead && kept,
             format!(
-                "RCON tp of the second bot +6 blocks: the main bot's view x in runs: {} (want 3 vanilla steps, each middle value on one tick); the bot's own x when the view first moved: {:?} (want {}); the bot stayed in the view throughout: {kept}",
+                "RCON tp of the second bot +6 blocks: the main bot's view x in runs: {} (want 3 vanilla steps, each middle value on one tick); the bot's own x when the view first moved: {:?} (want {}); the bot stayed in the view throughout: {kept}; {}",
                 show(&r),
                 first_moved.map(|b| b.own_x),
-                MOVED.0
+                MOVED.0,
+                WHO.lock().unwrap()
             ),
         )
     }));
@@ -322,7 +335,8 @@ pub fn a18(cx: &mut Ctx) -> Vec<Outcome> {
         (
             fm == 0 && fo == 0 && none_view && bm == 1 && bo == 1 && peak >= 1,
             format!(
-                "second bot 18 blocks away: entries {fm} and {fo} (want 0, nothing kept); back at 6 blocks: {bm} and {bo} (want 1); peak entries any bot held (counter): {peak} (want at least 1)"
+                "second bot 18 blocks away: entries {fm} and {fo} (want 0, nothing kept); back at 6 blocks: {bm} and {bo} (want 1); peak entries any bot held (counter): {peak} (want at least 1); {}",
+                WHO.lock().unwrap()
             ),
         )
     }));

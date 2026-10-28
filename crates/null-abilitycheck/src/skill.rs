@@ -458,6 +458,27 @@ impl Skill for RemoteSkill {
                 clicked.and_then(|p| v.block_at(p))
             ));
         }
+        // A chain that ends with a client-refused break names the first one: the A2 row otherwise shows only "Refused".
+        // Spec: specs/B6-placement-breaking.md §4.1 (refusals carry their evidence)
+        if let Some(Info::Chain(_)) = &done
+            && let Some(a) = self.chain.started.iter().find_map(|(_, id)| match v.action(*id).record() {
+                Some(ActionRecord::Block(a)) if a.outcome == BlockOutcome::Refused && a.ack_tick.is_none() && a.reason.is_some() => Some(a.clone()),
+                _ => None,
+            })
+        {
+            *REFUSAL_VIEW.lock().unwrap() = Some(format!(
+                "first client-refused break in the chain ({}, {} refused in all): {}; pos {:?}, look {:?}, on ground {}, velocity {:?}, target {:?} seen as {:?}",
+                a.reason.unwrap_or(""),
+                self.chain.started.iter().filter(|(_, id)| matches!(v.action(*id).record(), Some(ActionRecord::Block(b)) if b.outcome == BlockOutcome::Refused)).count(),
+                a.evidence.as_ref().map_or("no click evidence".to_string(), describe_evidence),
+                v.position(),
+                v.look(),
+                v.on_ground(),
+                v.velocity(),
+                a.pos,
+                v.block_at(a.pos),
+            ));
+        }
         if let Some(info) = done {
             for id in &ids {
                 c.release(*id);

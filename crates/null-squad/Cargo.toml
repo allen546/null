@@ -8,8 +8,8 @@ publish.workspace = true
 null-proto = { path = "../null-proto" }
 null-bus = { path = "../null-bus" }
 null-op = { path = "../null-op" }
-null-simbot = { path = "../null-simbot" }
 serde_json = "1"
 
 [dev-dependencies]
+null-simbot = { path = "../null-simbot" }
 tokio = { version = "1.50.0", features = ["sync", "time", "rt", "macros"] }

@@ -8,7 +8,10 @@ prefix=$1; shift
 kinds="vanilla grim"
 if [ "${1:-}" = --only ]; then kinds=$2; shift 2; fi
 # One Bark push to Allen's Mac when the pair ends; a failed push never fails the run.
-notify() { /mnt/pi-data/tools/bark -d mac -t "Null $prefix" "$1" >/dev/null 2>&1 || true; }
+# Bark's reply and exit code go to logs/<prefix>_notify.log (p39q's push was lost with no trace).
+notify() {
+  { echo "$(date '+%F %T') push: $1"; /mnt/pi-data/tools/bark -d mac -t "Null $prefix" "$1" 2>&1; echo "exit $?"; } >> $L/${prefix}_notify.log 2>&1 || true
+}
 if pgrep -x java >/dev/null || pgrep -f '^([^ ]*/)?null-abilitycheck( |$)' >/dev/null; then
   echo "ABORT: a server or a check is already running" > $L/${prefix}_summary.txt; notify "aborted: a server or a check is already running"; exit 1
 fi

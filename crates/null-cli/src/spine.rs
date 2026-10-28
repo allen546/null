@@ -6,9 +6,10 @@ use null_bus::{Bus, InProcBus};
 use null_hq::{Hq, HqConfig, OpPlan, Reply};
 use null_op::{OpConfig, OpPorts, Operation};
 use null_proto::*;
-use null_simbot::{SharedWorld, SimBot, SimWorld};
+use null_simbot::{SimBot, SimWorld};
 use null_squad::{BotPorts, Squad, SquadConfig};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 // Spec: specs/F3-test-harness.md §4.5
 #[derive(Clone, Debug)]
@@ -20,22 +21,46 @@ pub struct SpineConfig {
     pub server: String,
     /// Ticks an operation stays after Done before HQ retires it (K1 §4.2).
     pub retire_after: Gt,
+    /// Each operation mirrors its event log to `<dir>/<op>.jsonl` (live runs keep it for the audit of claims).
+    pub jsonl_dir: Option<PathBuf>,
+    /// Claim box of a `fell` job: blocks out from the trunk, blocks above the top log. The toy trees stand on
+    /// neighbouring cells, so the simulation claims the trunk's column only; real trees need `null_op::TREE_BOX_*`.
+    pub tree_box: (i32, i32),
+    /// Ticks a `fell` job may run before the bot gives up on it.
+    pub job_budget: Gt,
 }
 
 impl SpineConfig {
     pub fn new(seed: u64, bots: usize) -> Self {
-        Self { seed, bots, trees: 60, extent: 40, server: "smp1".into(), retire_after: Gt(40) }
+        Self { seed, bots, trees: 60, extent: 40, server: "smp1".into(), retire_after: Gt(40), jsonl_dir: None, tree_box: (0, 0), job_budget: Gt(600) }
     }
 }
 
+/// The bots of a spine: simulated ones, or real ones behind `null-botlink` (S6). A bot ticks once per game tick,
+/// after HQ, the operations and the squads, and speaks only S2 messages on the bus.
 // Spec: specs/F3-test-harness.md §4.5
-pub struct Spine {
+pub trait SpineBot {
+    fn tick(&mut self, now: Gt) -> impl std::future::Future<Output = ()>;
+}
+
+impl SpineBot for SimBot<InProcBus> {
+    async fn tick(&mut self, now: Gt) {
+        SimBot::tick(self, now).await
+    }
+}
+
+/// What an operation believes about the trees: (location, logs). The toy world answers with the trees left.
+pub type TreeSource = Box<dyn Fn() -> Vec<(Loc, u32)> + Send>;
+
+// Spec: specs/F3-test-harness.md §4.5
+pub struct Spine<Bt: SpineBot = SimBot<InProcBus>> {
     pub bus: InProcBus,
-    pub world: SharedWorld,
+    trees: TreeSource,
+    cfg: SpineConfig,
     pub hq: Hq<InProcBus>,
     pub ops: BTreeMap<OperationId, Operation<InProcBus>>,
     pub squads: BTreeMap<OperationId, Squad<InProcBus>>,
-    pub bots: Vec<SimBot<InProcBus>>,
+    pub bots: Vec<Bt>,
     pub audit: Audit,
     pub now: u64,
     server: ServerId,
@@ -55,18 +80,31 @@ pub struct Spine {
 }
 
 impl Spine {
+    /// The simulated spine: toy world, fake bots.
+    // Spec: specs/F3-test-harness.md §4.5
     pub fn new(cfg: &SpineConfig) -> Self {
         let server = ServerId::new(&cfg.server);
         let bus = InProcBus::default();
         let world = SimWorld::generate(cfg.seed, server.clone(), cfg.trees, cfg.extent).shared();
         let names: Vec<BotId> = (1..=cfg.bots).map(|i| BotId::new(format!("bot{i}"))).collect();
         let bots = names.iter().map(|b| SimBot::new(&bus, &world, b.as_str(), cfg.seed)).collect();
+        let source: TreeSource = Box::new(move || world.lock().unwrap().tree_list());
+        Spine::with_bots(cfg, bus, names, bots, source)
+    }
+}
+
+impl<Bt: SpineBot> Spine<Bt> {
+    /// A spine over bots the caller made on `bus` (one per name, subscribed already) and the trees the operations may use.
+    // Spec: specs/F3-test-harness.md §4.5
+    pub fn with_bots(cfg: &SpineConfig, bus: InProcBus, names: Vec<BotId>, bots: Vec<Bt>, trees: TreeSource) -> Self {
+        let server = ServerId::new(&cfg.server);
         let mut hq_cfg = HqConfig::new(&cfg.server, names);
         hq_cfg.retire_after = cfg.retire_after;
         let hq = Hq::new(&bus, hq_cfg);
         Self {
             bus,
-            world,
+            trees,
+            cfg: cfg.clone(),
             hq,
             ops: BTreeMap::new(),
             squads: BTreeMap::new(),
@@ -123,6 +161,11 @@ impl Spine {
     }
 
     // Spec: specs/F3-test-harness.md §4.5
+    /// The trees the operations may still use, as the source gives them.
+    pub fn trees(&self) -> Vec<(Loc, u32)> {
+        (self.trees)()
+    }
+
     pub async fn run(&mut self, ticks: u64) {
         for _ in 0..ticks {
             self.step().await;
@@ -142,7 +185,7 @@ impl Spine {
     }
 
     // Spec: specs/F3-test-harness.md §4.5
-    fn finished(&self) -> bool {
+    pub fn finished(&self) -> bool {
         self.launched > 0
             && self.hq.queued() == 0
             && self.retiring.is_empty()
@@ -159,7 +202,7 @@ impl Spine {
         };
         let mut trees = vec![];
         let mut logs = 0;
-        for (loc, n) in self.world.lock().unwrap().tree_list() {
+        for (loc, n) in (self.trees)() {
             if logs >= want {
                 break;
             }
@@ -170,6 +213,9 @@ impl Spine {
         }
         let mut cfg = OpConfig::new(plan.op.as_str(), self.server.as_str(), plan.squad.as_str());
         cfg.priority = plan.goal.priority;
+        cfg.tree_box = self.cfg.tree_box;
+        cfg.job_budget = self.cfg.job_budget;
+        cfg.jsonl = self.cfg.jsonl_dir.as_ref().map(|d| d.join(format!("{}.jsonl", plan.op)));
         let op = Operation::new(&self.bus, cfg.clone(), trees.clone());
         let names: Vec<&str> = plan.bots.iter().map(BotId::as_str).collect();
         let sq = Squad::with_ports(

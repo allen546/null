@@ -20,6 +20,8 @@ use crate::{
 /// This module's test area (corner, 21x21), apart from the other scenarios' areas.
 const AREA: (i32, i32) = (710, 342);
 const STAND: (f64, f64, f64) = (715.5, 200.0, 348.5);
+/// Companion offset: the rows walk along z 348 (x 713..718) and click floor cells (713, 346) and (715, 351); (-2, +3) is clear of both.
+const COMPANION: Option<(f64, f64)> = Some((-2.0, 3.0));
 
 /// Players online (the bot, and the A8 attacker account when it is up).
 fn online(cx: &mut Ctx) -> u64 {
@@ -96,12 +98,12 @@ fn click_row(cx: &mut Ctx, ms: u64, x: i32, z: i32) -> Outcome {
 
 // Spec: specs/F5-version-layer.md §4.6 (tick catch-up like vanilla; the crosshair ray is cast once per tick)
 pub fn at(cx: &mut Ctx) -> Vec<Outcome> {
-    cx.scene_in(AREA, &[], STAND);
+    cx.scene_in_spot(AREA, &[], STAND, COMPANION);
     let bots = online(cx);
     let mut out = vec![row(cx, 400, bots, 718, 4), row(cx, 1500, bots, 715, 6)];
     // Back at the stand point after the walks; the two targets lie in opposite directions, so each
     // click needs a turn of well over 90 degrees.
-    cx.scene_in(AREA, &[], STAND);
+    cx.scene_in_spot(AREA, &[], STAND, COMPANION);
     out.push(click_row(cx, 250, 713, 346));
     out.push(click_row(cx, 250, 715, 351));
     cx.clean_in(AREA);

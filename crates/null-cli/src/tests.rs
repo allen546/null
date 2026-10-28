@@ -29,15 +29,23 @@ fn summary(s: &Spine, op: &OperationId) -> OpSummary {
 
 /// No tree is under two live claims at once, read from the claims log.
 fn assert_no_double_claim(evs: &[OpEvent]) {
-    let mut active: BTreeMap<ClaimId, Vec<Loc>> = BTreeMap::new();
+    let clash = |a: &ClaimKind, b: &ClaimKind| match (a, b) {
+        (ClaimKind::BlockSet(x), ClaimKind::BlockSet(y)) => x.iter().any(|l| y.contains(l)),
+        (ClaimKind::Region(x), ClaimKind::Region(y)) => x.overlaps(y),
+        (ClaimKind::Region(r), ClaimKind::BlockSet(s)) | (ClaimKind::BlockSet(s), ClaimKind::Region(r)) => s.iter().any(|l| r.contains(l)),
+        _ => false,
+    };
+    let mut active: BTreeMap<ClaimId, ClaimKind> = BTreeMap::new();
+    let mut granted = 0;
     for e in evs {
         let OpEvent::Claim(c) = e else { continue };
         match c {
-            ClaimEvent::Granted { id, kind: ClaimKind::BlockSet(locs), .. } => {
+            ClaimEvent::Granted { id, kind, .. } => {
+                granted += 1;
                 for (other, held) in &active {
-                    assert!(!held.iter().any(|l| locs.contains(l)), "{id} took a tree that {other} still holds");
+                    assert!(!clash(held, kind), "{id} took a tree that {other} still holds");
                 }
-                active.insert(id.clone(), locs.clone());
+                active.insert(id.clone(), kind.clone());
             }
             ClaimEvent::Released { id } | ClaimEvent::Expired { id, .. } | ClaimEvent::Preempted { id, .. } => {
                 active.remove(id);
@@ -45,6 +53,7 @@ fn assert_no_double_claim(evs: &[OpEvent]) {
             _ => {}
         }
     }
+    assert!(granted > 0, "the check saw no granted claim");
 }
 
 fn count(evs: &[OpEvent], kind: &str) -> usize {
@@ -53,10 +62,10 @@ fn count(evs: &[OpEvent], kind: &str) -> usize {
 
 /// Logs felled in the world so far.
 fn felled(s: &Spine, before: u32) -> u32 {
-    before - s.world.lock().unwrap().tree_list().iter().map(|t| t.1).sum::<u32>()
+    before - s.trees().iter().map(|t| t.1).sum::<u32>()
 }
 fn all_logs(s: &Spine) -> u32 {
-    s.world.lock().unwrap().tree_list().iter().map(|t| t.1).sum()
+    s.trees().iter().map(|t| t.1).sum()
 }
 
 async fn started(seed: u64, bots: usize) -> (Spine, u32) {

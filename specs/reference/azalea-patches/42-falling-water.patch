@@ -1,0 +1,230 @@
+diff --git a/azalea-block/src/fluid_state.rs b/azalea-block/src/fluid_state.rs
+index 55f0240..988fdc5 100644
+--- a/azalea-block/src/fluid_state.rs
++++ b/azalea-block/src/fluid_state.rs
+@@ -15,11 +15,9 @@ pub struct FluidState {
+     /// the two representations with [`to_or_from_legacy_fluid_level`].
+     pub amount: u8,
+ 
+-    /// Whether this fluid is at the max level and there's another fluid of the
+-    /// same type above it.
+-    ///
+-    /// TODO: this is currently unused (always false), make this actually get
+-    /// set (see FlowingFluid.getFlowing)
++    /// Whether this is falling fluid (vanilla's `FALLING` property): a flowing
++    /// block with fluid above it, stored as level 8 or more on the block. A
++    /// falling fluid has `amount` 8.
+     pub falling: bool,
+ }
+ #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+@@ -38,6 +36,18 @@ impl FluidState {
+         }
+     }
+ 
++    /// The fluid a water or lava block holds at `level` (its `level` property, 0 to 15). Level 0 is a
++    /// source, 1 to 7 are flowing with `amount` 8 - level, and 8 or more is falling fluid, which has
++    /// `amount` 8: `LiquidBlock#getFluidState` reads the level capped at 8, and the cache entry for 8
++    /// is `getFlowing(8, true)`.
++    // Spec: specs/B1-movement.md §4.6 (Falls, swimming, climbing)
++    pub fn from_block_level(kind: FluidKind, level: u8) -> Self {
++        if level >= 8 {
++            return Self { kind, amount: 8, falling: true };
++        }
++        Self { kind, amount: to_or_from_legacy_fluid_level(level), falling: false }
++    }
++
+     /// A floating point number in between 0 and 1 representing the height (as a
+     /// percentage of a full block) of the fluid.
+     pub fn height(&self) -> f32 {
+@@ -88,21 +98,13 @@ impl From<BlockState> for FluidState {
+                 let level = state
+                     .property::<crate::properties::WaterLevel>()
+                     .expect("water block should always have WaterLevel");
+-                return Self {
+-                    kind: FluidKind::Water,
+-                    amount: to_or_from_legacy_fluid_level(level as u8),
+-                    falling: false,
+-                };
++                return Self::from_block_level(FluidKind::Water, level as u8);
+             }
+             BlockKind::Lava => {
+                 let level = state
+                     .property::<crate::properties::LavaLevel>()
+                     .expect("lava block should always have LavaLevel");
+-                return Self {
+-                    kind: FluidKind::Lava,
+-                    amount: to_or_from_legacy_fluid_level(level as u8),
+-                    falling: false,
+-                };
++                return Self::from_block_level(FluidKind::Lava, level as u8);
+             }
+             BlockKind::BubbleColumn
+             | BlockKind::Seagrass
+@@ -142,3 +144,29 @@ impl From<FluidState> for BlockState {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    // Falling water (block level 8 to 15) is water with amount 8, not empty: the bot is pushed by,
++    // and pushed away from, a waterfall. `LiquidBlock#getFluidState` caps the level at 8.
++    #[test]
++    fn falling_levels_are_full_falling_fluid() {
++        for level in 8..=15u8 {
++            let f = FluidState::from_block_level(FluidKind::Water, level);
++            assert_eq!((f.amount, f.falling), (8, true), "level {level}");
++        }
++        let source = FluidState::from_block_level(FluidKind::Water, 0);
++        assert_eq!((source.amount, source.falling), (8, false));
++        let flowing = FluidState::from_block_level(FluidKind::Lava, 3);
++        assert_eq!((flowing.amount, flowing.falling), (5, false));
++    }
++
++    #[test]
++    fn a_water_block_at_level_8_reads_as_falling_water() {
++        let state = BlockState::from(crate::blocks::Water { level: crate::properties::WaterLevel::from(8 as BlockStateIntegerRepr) });
++        let f = FluidState::from(state);
++        assert_eq!((f.kind, f.amount, f.falling), (FluidKind::Water, 8, true));
++    }
++}
+diff --git a/azalea-physics/src/fluids.rs b/azalea-physics/src/fluids.rs
+index 73ee7dd..72fe0c8 100644
+--- a/azalea-physics/src/fluids.rs
++++ b/azalea-physics/src/fluids.rs
+@@ -11,7 +11,7 @@ use azalea_registry::builtin::BlockKind;
+ use azalea_world::{World, WorldName, Worlds};
+ use bevy_ecs::prelude::*;
+ 
+-use crate::collision::legacy_blocks_motion;
++use crate::collision::{BlockWithShape, legacy_blocks_motion};
+ 
+ #[allow(clippy::type_complexity)]
+ pub fn update_in_water_state_and_do_fluid_pushing(
+@@ -267,18 +267,14 @@ fn is_solid_face(
+     is_face_sturdy(block_state, world, adjacent_pos, direction)
+ }
+ 
++// `BlockBehaviour#isFaceSturdy`, for blocks whose collision shape is the full cube. A partial
++// shape (stairs, slabs, fences) counts as not sturdy here, where vanilla checks the face.
++// Spec: specs/B1-movement.md §4.6 (Falls, swimming, climbing)
+ fn is_face_sturdy(
+-    _block_state: BlockState,
++    block_state: BlockState,
+     _world: &World,
+     _pos: BlockPos,
+     _direction: Direction,
+ ) -> bool {
+-    // TODO: this does a whole bunch of physics shape checks for waterlogged blocks
+-    // that i honestly cannot be bothered to implement right now
+-
+-    // see BlockBehavior.isFaceSturdy in the decompiled minecraft source
+-
+-    // also, this probably should be in a module other than fluids.rs
+-
+-    false
++    block_state.is_collision_shape_full()
+ }
+diff --git a/azalea-physics/tests/physics.rs b/azalea-physics/tests/physics.rs
+index 06c0b47..983911c 100644
+--- a/azalea-physics/tests/physics.rs
++++ b/azalea-physics/tests/physics.rs
+@@ -425,6 +425,96 @@ fn spawn_and_unload_world() {
+     app.update();
+ }
+ 
++// Falling water (block level 8 or more) is full fluid that flows down; the fork once read it as
++// empty. A bot in a shallow flowing cell next to a falling-water block is pushed away from it,
++// because the falling block's surface is higher (`FlowingFluid#getFlow`). Spec: specs/B1-movement.md §4.6
++#[test]
++fn test_falling_water_pushes_a_neighbour_away() {
++    let mut app = make_test_app();
++    let world_lock = insert_overworld(&mut app);
++    let mut partial_world = PartialWorld::default();
++    partial_world.chunks.set(
++        &ChunkPos { x: 0, z: 0 },
++        Some(Chunk::default()),
++        &mut world_lock.write().chunks,
++    );
++    let setblock = |x: i32, y: i32, z: i32, b: BlockState| {
++        world_lock.write().chunks.set_block_state(BlockPos { x, y, z }, b);
++    };
++    let stone: BlockState = azalea_block::blocks::Stone.into();
++    let water_level = |level: BlockStateIntegerRepr| {
++        BlockState::from(azalea_block::blocks::Water { level: WaterLevel::from(level) })
++    };
++    // Floor, and walls east, north and south of the bot's cell (8, 64, 8).
++    for x in 6..=10 {
++        for z in 6..=10 {
++            setblock(x, 63, z, stone);
++        }
++    }
++    setblock(9, 64, 8, stone);
++    setblock(8, 64, 7, stone);
++    setblock(8, 64, 9, stone);
++    // The bot's cell: flowing water, level 2 (height 6/9). Its west neighbour: falling water (level 8).
++    setblock(8, 64, 8, water_level(2));
++    setblock(7, 64, 8, water_level(8));
++
++    let entity = app
++        .world_mut()
++        .spawn((
++            EntityBundle::new(
++                Uuid::nil(),
++                Vec3 { x: 8.5, y: 64., z: 8.5 },
++                EntityKind::Player,
++                WorldName::new("minecraft:overworld"),
++            ),
++            MinecraftEntityId(0),
++            LocalEntity,
++            HasClientLoaded,
++        ))
++        .id();
++    for _ in 0..3 {
++        app.world_mut().run_schedule(GameTick);
++        app.update();
++    }
++    let x = app.world_mut().get::<Position>(entity).unwrap().x;
++    assert!(x > 8.5 + 0.005, "the falling neighbour should push the bot east, x is {x}");
++}
++
++// Falling water beside a solid wall flows mostly down (`FlowingFluid#getFlow`: the horizontal part
++// is normalised, then 6 down is added, then the sum is normalised). Spec: specs/B1-movement.md §4.6
++#[test]
++fn test_falling_water_beside_a_wall_flows_down() {
++    let mut app = make_test_app();
++    let world_lock = insert_overworld(&mut app);
++    let mut partial_world = PartialWorld::default();
++    partial_world.chunks.set(
++        &ChunkPos { x: 0, z: 0 },
++        Some(Chunk::default()),
++        &mut world_lock.write().chunks,
++    );
++    let setblock = |x: i32, y: i32, z: i32, b: BlockState| {
++        world_lock.write().chunks.set_block_state(BlockPos { x, y, z }, b);
++    };
++    let water_level = |level: BlockStateIntegerRepr| {
++        BlockState::from(azalea_block::blocks::Water { level: WaterLevel::from(level) })
++    };
++    let pos = BlockPos::new(8, 64, 8);
++    // Falling water here, flowing level 1 to the west (so there is a horizontal flow), and no wall yet.
++    setblock(8, 64, 8, water_level(8));
++    setblock(7, 64, 8, water_level(1));
++    let flow_at = |pos: BlockPos| {
++        let world = world_lock.read();
++        let fluid = world.get_fluid_state(pos).unwrap();
++        azalea_physics::fluids::get_fluid_flow(&fluid, &world, pos)
++    };
++    let open = flow_at(pos);
++    assert!(open.y == 0. && open.x < -0.9, "no wall: a plain horizontal flow, got {open:?}");
++    // A stone wall to the east: the falling water now flows down along it.
++    setblock(9, 64, 8, azalea_block::blocks::Stone.into());
++    let walled = flow_at(pos);
++    assert!(walled.y < -0.95 && walled.x > -0.25, "wall: mostly down, got {walled:?}");
++}
++
+ #[test]
+ fn test_afk_pool() {
+     let mut app = make_test_app();

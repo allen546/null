@@ -21,6 +21,8 @@ use crate::{
 const X0: i32 = 470;
 const Z0: i32 = 342;
 pub(crate) const FLOOR_Y: i32 = 199;
+/// Default companion offset from the main bot (dx, dz): 2.5 blocks, behind and beside it.
+const COMPANION_SPOT: (f64, f64) = (-2.0, -1.5);
 const SPAWN: (f64, f64, f64) = (480.5, 200.0, 352.5);
 
 pub struct Outcome {
@@ -46,6 +48,10 @@ pub struct Ctx {
     pub events: Receiver<mc_adapter::HostEvent>,
     /// What the bot's death probe reflex saw (A12).
     pub probe: crate::skill_respawn::SharedProbe,
+    /// Companion mode: the second bot's account (`--companion`). Spec: specs/plans/COMPANION_BRIEF.md
+    pub(crate) companion: Option<String>,
+    /// Companion trouble found at placement (dead, offline); added to the next row's evidence.
+    pub(crate) companion_notes: Vec<String>,
 }
 
 /// Attributes the suite sets (A16, A17) and neighbours a row could meet; `base reset` on each.
@@ -118,7 +124,8 @@ fn scan_log(s: &str, me: &str) -> (Vec<String>, Vec<String>) {
     let pats = ["moved too quickly", "moved wrongly", "Mismatch", "kicked", "lost connection", "Rejecting"];
     let (mut warns, mut grim): (Vec<String>, Vec<(String, u32)>) = (vec![], vec![]);
     for line in s.lines().map(strip_ansi) {
-        if !names(&line, me) && line.contains("null_") {
+        // The companion (`<me>c`, companion mode) counts as this run's bot.
+        if !names(&line, me) && !names(&line, &format!("{me}c")) && line.contains("null_") {
             continue;
         }
         // Grim: "Grim » <player> failed <Check> (x3) ..."
@@ -138,6 +145,13 @@ fn scan_log(s: &str, me: &str) -> (Vec<String>, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn companion_lines_count_as_the_runs_bot() {
+        let log = "Grim » null_checkc failed Simulation (x2)\nGrim » null_check2 failed Timer (x1)";
+        let (_, grim) = scan_log(log, "null_check");
+        assert_eq!(grim, vec!["Simulation x1".to_string()]);
+    }
 
     #[test]
     fn tick_query_mean_is_read() {
@@ -272,6 +286,11 @@ impl Ctx {
 
     /// As `scene_at`, in the 21x21 area whose corner is `area` (each scenario module has its own).
     pub(crate) fn scene_in(&mut self, area: (i32, i32), hotbar: &[(u8, &str, u8)], at: (f64, f64, f64)) {
+        self.scene_in_spot(area, hotbar, at, None);
+    }
+
+    /// As `scene_in`, with the companion's spot named by the row: `(dx, dz)` from `at` (see `place_companion`).
+    pub(crate) fn scene_in_spot(&mut self, area: (i32, i32), hotbar: &[(u8, &str, u8)], at: (f64, f64, f64), spot: Option<(f64, f64)>) {
         let n = self.name.clone();
         let (x0, z0) = area;
         let (x1, z1) = (x0 + 20, z0 + 20);
@@ -290,6 +309,7 @@ impl Ctx {
         // reset commands run.
         self.r(&format!("execute in minecraft:overworld run tp {n} {} {} {} 0 0", at.0, at.1, at.2));
         self.reset_player(area);
+        self.place_companion(area, at, spot);
         self.r(&format!("clear {n}"));
         for (slot, item, count) in hotbar {
             self.r(&format!("item replace entity {n} hotbar.{slot} with minecraft:{item} {count}"));
@@ -302,6 +322,26 @@ impl Ctx {
         if (here.x - at.0).abs() > 0.5 || (here.y - at.1).abs() > 0.5 || (here.z - at.2).abs() > 0.5 {
             eprintln!("warning: bot is at {here:?}, not at {at:?}");
         }
+    }
+
+    // Spec: specs/plans/COMPANION_BRIEF.md (placement)
+    /// Companion mode: stands the second bot on the stone floor `COMPANION_SPOT` (2.5 blocks: behind
+    /// and beside the main bot, which looks south, and clear of the rows' cells) from `at`, or at the
+    /// row's own `spot` offset. Kept inside the area. Survival, no effects. If it is dead or offline, a
+    /// note goes into the next row's evidence (the run cannot reconnect it mid-run).
+    pub(crate) fn place_companion(&mut self, area: (i32, i32), at: (f64, f64, f64), spot: Option<(f64, f64)>) {
+        let Some(c) = self.companion.clone() else { return };
+        let (dx, dz) = spot.unwrap_or(COMPANION_SPOT);
+        let x = (at.0 + dx).clamp(area.0 as f64 + 1.5, area.0 as f64 + 19.5);
+        let z = (at.2 + dz).clamp(area.1 as f64 + 1.5, area.1 as f64 + 19.5);
+        let alive = self.r(&format!("data get entity {c} Health"));
+        if alive.contains("No entity") {
+            self.companion_notes.push(format!("companion {c} was offline or dead at placement (not placed)"));
+            return;
+        }
+        self.r(&format!("gamemode survival {c}"));
+        self.r(&format!("effect clear {c}"));
+        self.r(&format!("execute in minecraft:overworld run tp {c} {x} {} {z} 0 0", FLOOR_Y + 1));
     }
 
     // Spec: specs/plans/ABILITY_CHECK.md §How to run (the warm-up gate)
@@ -410,6 +450,9 @@ impl Ctx {
         crate::skill::TICK_FAST.store(0, std::sync::atomic::Ordering::Relaxed);
         *crate::skill::REFUSAL_VIEW.lock().unwrap() = None;
         let (mut pass, mut evidence) = body(self);
+        for note in self.companion_notes.drain(..) {
+            evidence += &format!("; {note}");
+        }
         // Only on a failed row: refusal rows that expect a refusal stay short.
         if !pass && let Some(v) = crate::skill::REFUSAL_VIEW.lock().unwrap().take() {
             evidence += &format!("; {v}");
@@ -496,7 +539,9 @@ pub fn a1(cx: &mut Ctx) -> Vec<Outcome> {
 /// each break like a fresh click, one tick early and with no destroy delay).
 // Spec: specs/B6-placement-breaking.md §4.4 (break timing over a chain of breaks)
 fn chain_of_breaks(cx: &mut Ctx) -> Outcome {
-    cx.scene(&[(0, "iron_axe", 1)]);
+    // The companion (companion mode) parks 5 blocks east, clear of both walls: at its default spot it stands in the
+    // crosshair line to the first log of the second wall, and a vanilla click would hit it (found by p41_full).
+    cx.scene_in_spot((X0, Z0), &[(0, "iron_axe", 1)], SPAWN, Some((5.0, 0.0)));
     // Two walls of 5 x 3 logs, 2 blocks in front of and behind the bot (it stands at 480, 200, 352).
     let mut list = Vec::new();
     for z in [354, 350] {

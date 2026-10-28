@@ -32,3 +32,7 @@ impl WallMs {
         std::time::Duration::from_millis(self.0)
     }
 }
+
+/// Ticks before a lease ends at which a bot stops by itself (lease rule, K6 §4.8). Squad and bots share it.
+// Spec: specs/K6-squad-leader.md §4.8
+pub const LEASE_MARGIN: u64 = 10;

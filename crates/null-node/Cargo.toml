@@ -9,7 +9,14 @@ mc-adapter = { path = "../mc-adapter" }
 null-bot-api = { path = "../null-bot-api" }
 null-combat = { path = "../null-combat" }
 null-skills-demo = { path = "../null-skills-demo" }
+null-botlink = { path = "../null-botlink" }
+null-bus = { path = "../null-bus" }
+null-cli = { path = "../null-cli" }
+null-op = { path = "../null-op" }
+null-proto = { path = "../null-proto" }
 azalea = { workspace = true }
 azalea-client = { workspace = true }
-tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "time", "signal"] }
+bevy_ecs = { version = "0.18.1", default-features = false }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
 serde_json = "1.0.149"
+serde = { version = "1", features = ["derive"] }

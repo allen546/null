@@ -8,6 +8,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+mod spine;
+
 use azalea::{
     DefaultPlugins,
     account::Account,
@@ -34,10 +36,16 @@ struct Args {
     no_respawn: bool,
     telemetry: Option<String>,
     enemies: Vec<String>,
+    /// Host HQ, the operation and the squad here and drive the bots from them (S6a); command lines come from stdin.
+    spine: bool,
+    trees: Option<String>,
+    audit: Option<String>,
+    op_log_dir: Option<String>,
+    job_budget: u64,
 }
 
 const USAGE: &str = "usage: null-node --server HOST:PORT --accounts null_b1..null_b20 \
-[--join-interval-ms N] [--state-log FILE] [--fight --enemies A..B [--no-respawn] [--telemetry FILE]] [--center X,Z] [--goto X,Y,Z] [--exit-after-skills] [--fight --enemies PREFIXa..PREFIXb]\n  --fight runs the engage skill and retreat reflex against --enemies (the node's own accounts are allies); runs until killed\n  --goto replaces the patrol: every bot walks to that block and finishes
+[--join-interval-ms N] [--state-log FILE] [--fight --enemies A..B [--no-respawn] [--telemetry FILE]] [--center X,Z] [--goto X,Y,Z] [--exit-after-skills] [--fight --enemies PREFIXa..PREFIXb] [--spine --trees FILE [--audit FILE] [--op-log-dir DIR] [--job-budget TICKS]]\n  --spine hosts HQ, one operation and its squad in this process; reads null-cli command lines from stdin (set-goal obtain oak_log 64 --reason \"...\"); --trees FILE is JSON [{\"x\":0,\"y\":0,\"z\":0,\"logs\":5}] (lowest log of each tree)\n  --fight runs the engage skill and retreat reflex against --enemies (the node's own accounts are allies); runs until killed\n  --goto replaces the patrol: every bot walks to that block and finishes
   --accounts takes PREFIXa..PREFIXb (numeric suffix range) or a comma-separated list";
 
 /// `null_b1..null_b20` -> null_b1, null_b2, ... null_b20.
@@ -80,6 +88,11 @@ fn parse_args() -> Result<Args, String> {
         no_respawn: false,
         telemetry: None,
         enemies: vec![],
+        spine: false,
+        trees: None,
+        audit: None,
+        op_log_dir: None,
+        job_budget: 2400,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -111,12 +124,20 @@ fn parse_args() -> Result<Args, String> {
             "--fight" => a.fight = true,
             "--enemies" => a.enemies.extend(expand_accounts(&val()?)?),
             "--exit-after-skills" => a.exit_after_skills = true,
+            "--spine" => a.spine = true,
+            "--trees" => a.trees = Some(val()?),
+            "--audit" => a.audit = Some(val()?),
+            "--op-log-dir" => a.op_log_dir = Some(val()?),
+            "--job-budget" => a.job_budget = val()?.parse().map_err(|e| format!("--job-budget: {e}"))?,
             "-h" | "--help" => return Err(USAGE.into()),
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
     if a.server.is_empty() || a.accounts.is_empty() {
         return Err(USAGE.into());
+    }
+    if a.spine && (a.fight || a.trees.is_none()) {
+        return Err("--spine needs --trees FILE and cannot combine with --fight".into());
     }
     if a.fight && a.enemies.is_empty() {
         return Err("--fight needs --enemies".into());
@@ -200,6 +221,22 @@ async fn main() {
         None => Box::new(std::io::stdout()),
     };
     let (tx, rx) = mpsc::channel();
+    // With --spine the lifecycle events pass the spine's shared state first, then go on to the log.
+    let shared = args.spine.then(|| Arc::new(spine::Shared::default()));
+    let tx = match &shared {
+        Some(shared) => {
+            let (node_tx, node_rx) = mpsc::channel::<HostEvent>();
+            let (shared, log_tx) = (shared.clone(), tx);
+            std::thread::spawn(move || {
+                for ev in node_rx {
+                    shared.on_event(&ev);
+                    let _ = log_tx.send(ev);
+                }
+            });
+            node_tx
+        }
+        None => tx,
+    };
     let exit_after = (args.exit_after_skills && !args.fight).then_some(args.accounts.len());
     std::thread::spawn(move || log_events(rx, out, exit_after));
 
@@ -230,7 +267,12 @@ async fn main() {
     let count = args.accounts.len();
     let (center, goto) = (args.center, args.goto);
     let (fight, enemies, allies) = (args.fight, args.enemies.clone(), args.accounts.clone());
+    let spine_on = args.spine;
     let factory = Arc::new(move |name: &str| {
+        // The spine hands each bot its work as skills: a bot starts idle (S6a).
+        if spine_on {
+            return BotBrain::new(Brain::new(), None);
+        }
         if fight {
             // Naming enemies is the permission to attack first; everyone else is never a target.
             let mut rules = FightRules::new(TargetSelector::PlayerNames(enemies.clone()));
@@ -260,7 +302,26 @@ async fn main() {
         BotBrain::new(Brain::new(), Some(skill))
     });
 
+    if let Some(shared) = shared.clone() {
+        let trees = spine::read_trees(args.trees.as_deref().expect("checked"), &null_proto::ServerId::new("live1")).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(2);
+        });
+        let (line_tx, line_rx) = tokio::sync::mpsc::unbounded_channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+                if !line.trim().is_empty() && line_tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let sargs = spine::SpineArgs { accounts: args.accounts.clone(), trees, audit: args.audit.clone(), op_log_dir: args.op_log_dir.clone(), job_budget: args.job_budget };
+        std::thread::spawn(move || spine::run(shared, sargs, line_rx));
+    }
+
     let accounts: Vec<Account> = args.accounts.iter().map(|n| Account::offline(n)).collect();
+    let spine_link = spine::SpineLink(shared);
     let builder = SwarmBuilder::new_without_plugins()
         .add_plugins((
             DefaultPlugins,
@@ -268,6 +329,7 @@ async fn main() {
             DefaultSwarmPlugins,
             HostPlugin,
             NodePlugin { factory, events: tx, backoff: Backoff::default(), respawn: !args.no_respawn },
+            spine_link,
         ))
         // Azalea's fixed-delay reconnect is replaced by NodePlugin's backoff.
         .reconnect_after(None)
