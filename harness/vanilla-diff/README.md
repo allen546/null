@@ -1,4 +1,4 @@
-# Vanilla diff: clean client, tap, driver (VD0)
+# Vanilla diff: clean client, tap, driver (VD0), replay and differ (VD1a)
 
 Spec: `specs/plans/VANILLA_DIFF_PLAN.md` VD0. A real vanilla 1.21.11 client joins `skeleton-server` through a packet tap, and our own minimal mod drives it. The replay driver and the differ are VD1/VD2.
 
@@ -31,3 +31,26 @@ Dropped, because they change what the client does: Meteor Client, Baritone, Nora
 ## Result (2026-10-28, Mac)
 
 Done-when met on the first live run (`logs/tap.jsonl` in the client dir): forward held for client ticks 40 to 59, one `MovePlayerPos` before each of the 20 `ClientTickEnd`s, z 347.60 to 351.56, `PlayerLoaded` at tick 6, no decode errors; 20.0 ticks/s, about 620 MB RSS, 60 to 70 s from launch to join. A second run (memory sample) started where the first ended, since the server keeps player data, and hit a wall at tick 54: VD1 must use a fresh player name or clear the player data so each run starts at the same spot. Open for VD1: the client runs with real rendering against the stub, so frame count and `pick` per frame are unchecked; tick catch-up behaviour under load; `ClientInformation`, `ChunkBatchReceived`, keep-alive and pong timing are the timer packets for the differ's ignore list.
+
+## VD1a: input log, replay driver, differ (2026-10-29)
+
+Spec: `specs/plans/VANILLA_DIFF_PLAN.md` VD1. Same input into Null and into the vanilla client; the serverbound packets are compared per client tick. VD1a builds the three parts and proves them on one row (the A15 control walk). VD1b covers all A15 and A17 rows.
+
+### Parts
+
+- **Fork patch 45 `input-log`** (`azalea-client/src/plugins/input_log.rs`, row in `AZALEA_PATCHES.md`). Off unless the app has an `InputLogDir`. One JSON line per client tick, `{"tick":N,"f","b","l","r","jump","sneak","sprint","yaw","pitch","slot"}`, written where vanilla's `LocalPlayer#aiStep` has just read the keys. `N` counts client ticks of the connection from 0, as the tap counts `ClientTickEnd`. `{"mark":"start:<id>:<row>","tick":N}` lines carry the row windows. `mc-adapter` has `InputLogPlugin(dir)` and `mark_input`; `null-abilitycheck --input-log DIR` turns it on and `Ctx::run` marks `start:` and `end:` for every row (a no-op without the flag).
+- **Replay** (`mod/.../Replay.java`, started by `Driver` when `-Dvd.input` is set). Per tick it sets the key mappings (forward, back, left, right, jump, sneak, sprint) and the player's yaw, pitch and hotbar slot at the head of `Minecraft#tick`, so `KeyboardInput#tick` builds the input and vanilla decides what to send. Look is set directly (the mouse path is per frame, not per tick). Properties: `vd.input` (log file), `vd.row` (the window, from its two marks; else the whole file), `vd.control` (the replay waits until this file exists and the player rests on the ground for 10 ticks), `vd.marks` (output: `replay_start_tick` is the client tick of the first replayed input, counted as the number of `ClientTickEnd` sent before it).
+- **Scene for the vanilla player**: `null-abilitycheck --prepare-scene A15 --player NAME` waits for the player to join, then runs the module's own scene code (`prepare_control`: `scene_in` and lane 0) with that name, with no bot. Only A15 so far. A fresh name per run (`VD<MMDDhhmmss>`) gives a fresh start.
+- **`run_replay.sh`**: starts the tap, the client and the scene, touches the control file, waits for the client to quit. **`run_null.sh`**: tap plus `null-abilitycheck` with the input log. **`differ/vd_diff.py`** (`uv run`, tests: `cd differ && uv run python -m unittest test_vd_diff`, 8 tests with a negative control): aligns the windows by tick (`replay_start_tick - first_input_tick`), compares serverbound game packets in order (summary strings, so coordinates must be equal), reports the first difference with both packet lists, the clientbound arrivals and the inputs around it. A difference at or after the first different clientbound arrival (timer packets excluded) is labelled "server timing". Ignored serverbound packets, each with its vanilla sender: `KeepAlive` (`ClientCommonPacketListenerImpl#handleKeepAlive`), `Pong` (`#handlePing`), `ClientInformation` (`Options#broadcastOptions`), `ChunkBatchReceived` (`ClientPacketListener#handleChunkBatchFinished`). `ClientTickEnd` is checked as one per tick.
+
+### Hand-written check (`inputs/hand_written.jsonl`, 66 ticks, vanilla server, run-logs/vd1a/hand_vtap.jsonl)
+
+Read by hand against the input (tick = replay tick): forward from 5 gives one `PlayerInput{forward}` and `MovePlayerPos` the same tick; yaw 18, 36, 54 with movement give `MovePlayerPosRot` at 15 to 17, then `MovePlayerRot` at 18 and 19 when the player stands against a wall (`horizontal_collision` true); pitch 20 at 23 gives one `MovePlayerRot`; jump at 25 gives `PlayerInput{jump}` with y 71.42, released at 26; sneak at 34 gives `PlayerInput{shift}`, released at 42; sprint at 44 gives `PlayerInput{sprint}` and `PlayerCommand StartSprinting` the same tick, and `StopSprinting` at 54 when the key goes; back at 58 gives `PlayerInput{backward}`; the idle ticks send nothing until the 20-tick position reminder at 86 and 106. Every packet is where the input puts it. The player started against a wall and stepped up a block while jumping; that is the world there, not the replay.
+
+### Result (A15 control row, vanilla server)
+
+Null: `run_null.sh --scenario A15 --account vd1a_null` (`run-logs/vd1a/a15_null.log`, 9/9 pass; input log has 892 lines for 892 `ClientTickEnd`, so the counts agree). Vanilla: `run_replay.sh --row A15:plain_stone_walk_matches_the_model --scene A15` (`a15_replay.out`, replay began at client tick 75; Null's window starts at 71). Differ: `MATCH: 55 ticks compared, serverbound packets identical` (30 packets: 28 `MovePlayerPos`, 2 `PlayerInput`, equal down to the last digit of each coordinate). Negative control: the same logs with the offset moved by one tick report `DIFF: 30 of 55 ticks differ`. No finding: Null and vanilla agree on this row. The first replay run failed in `--prepare-scene` (`wait_block` asked the missing bot); fixed and rerun once.
+
+### For VD1b
+
+The scene for the other A15 rows (they need `lane` with their setup) and A17 rows; rows that end in a disconnect or use `goto` (the pathfinder's input is recorded, but the row window includes RCON sleeps); the 20-tick position reminder phase at the window start was equal here by luck of a settled start, check on rows that start moving later; Grim alert lists (VD3).

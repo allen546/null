@@ -51,7 +51,7 @@ use scenarios::{Ctx, Outcome};
 use skill::RemoteSkill;
 
 const USAGE: &str = "usage: null-abilitycheck [--server 127.0.0.1:25567] [--account null_check] \
-[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|A16|A17|A18|A19|A20|A21|A22|A23|AT[,..]] [--shuffle SEED] [--companion [--companion-first]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH]";
+[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|A16|A17|A18|A19|A20|A21|A22|A23|AT[,..]] [--shuffle SEED] [--companion [--companion-first]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH] [--input-log DIR] [--prepare-scene A15 --player NAME]";
 
 struct Args {
     server: String,
@@ -67,6 +67,13 @@ struct Args {
     rcon_port: u16,
     rcon_pass: String,
     log: PathBuf,
+    /// Write the bot's input per client tick into this directory, one file per connection (fork
+    /// patch 45), with each row's window marked. Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+    input_log: Option<PathBuf>,
+    /// Set the scene of the first row of this module for the player `--player` (a vanilla client)
+    /// and exit; no bot runs.
+    prepare_scene: Option<String>,
+    player: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -79,6 +86,9 @@ fn parse_args() -> Result<Args, String> {
         companion_first: false,
         rcon_port: 25577,
         rcon_pass: "skeleton".into(),
+        input_log: None,
+        prepare_scene: None,
+        player: None,
         log: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../harness/skeleton-server/server/server.log"),
     };
     let mut it = std::env::args().skip(1);
@@ -94,11 +104,17 @@ fn parse_args() -> Result<Args, String> {
             "--rcon-port" => a.rcon_port = val()?.parse().map_err(|e| format!("--rcon-port: {e}"))?,
             "--rcon-password" => a.rcon_pass = val()?,
             "--server-log" => a.log = PathBuf::from(val()?),
+            "--input-log" => a.input_log = Some(PathBuf::from(val()?)),
+            "--prepare-scene" => a.prepare_scene = Some(val()?.to_uppercase()),
+            "--player" => a.player = Some(val()?),
             _ => return Err(USAGE.into()),
         }
     }
     if a.companion_first && !a.companion {
         return Err("--companion-first needs --companion".into());
+    }
+    if a.prepare_scene.is_some() != a.player.is_some() {
+        return Err("--prepare-scene and --player go together".into());
     }
     Ok(a)
 }
@@ -179,6 +195,33 @@ mod tests {
     }
 }
 
+/// Waits for the vanilla client `player` to join, sets the scene of the first row of `module`
+/// for it, and exits. The scene code is the module's own, run with the player's name.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1 (the vanilla client needs the same scene)
+fn prepare_scene(rc: rcon::Rcon, module: &str, player: &str, log: PathBuf) -> ! {
+    // No bot: the channels only satisfy the type; nothing reads or writes them.
+    let (ops, _) = mpsc::channel();
+    let (_, reports) = mpsc::channel();
+    let (_, events) = mpsc::channel();
+    let mut cx = Ctx { rc, name: player.into(), ops, reports, seq: 0, log, events, probe: Arc::default(), companion: None, companion_notes: Vec::new(), prepare_only: true };
+    let up = cx.poll(240.0, |cx| cx.r("list").split(':').nth(1).is_some_and(|l| l.split(',').any(|x| x.trim() == player)));
+    if up.is_none() {
+        eprintln!("player {player} did not join within 240 s");
+        std::process::exit(2);
+    }
+    match module {
+        "A15" => {
+            scenarios_block_effects::prepare_control(&mut cx);
+        }
+        m => {
+            eprintln!("--prepare-scene: no scene for {m} yet (VD1b)");
+            std::process::exit(2);
+        }
+    }
+    println!("scene {module} ready for {player}");
+    std::process::exit(0);
+}
+
 fn main() {
     let args = match parse_args() {
         Ok(a) => a,
@@ -191,6 +234,12 @@ fn main() {
         eprintln!("cannot reach RCON on port {} (is skeleton-server up?): {e}", args.rcon_port);
         std::process::exit(2);
     });
+
+    if let (Some(module), Some(player)) = (args.prepare_scene.clone(), args.player.clone()) {
+        prepare_scene(rc, &module, &player, args.log);
+    }
+    scenarios::INPUT_LOG.store(args.input_log.is_some(), std::sync::atomic::Ordering::Relaxed);
+    let input_log = args.input_log.clone();
 
     let (op_tx, op_rx) = mpsc::channel();
     let (rep_tx, rep_rx) = mpsc::channel();
@@ -243,6 +292,9 @@ fn main() {
             if companion_name.is_some() {
                 builder = builder.join_delay(Duration::from_millis(1500));
             }
+            if let Some(dir) = input_log {
+                builder = builder.add_plugins(mc_adapter::InputLogPlugin(dir));
+            }
             let _ = builder
                 .add_plugins((
                     DefaultPlugins,
@@ -281,7 +333,7 @@ fn main() {
         }
     }
 
-    let mut cx = Ctx { rc, name: args.account.clone(), ops: op_tx, reports: rep_rx, seq: 0, log: args.log, events: ev_rx, probe, companion: args.companion.then(|| format!("{}c", args.account)), companion_notes: Vec::new() };
+    let mut cx = Ctx { rc, name: args.account.clone(), ops: op_tx, reports: rep_rx, seq: 0, log: args.log, events: ev_rx, probe, companion: args.companion.then(|| format!("{}c", args.account)), companion_notes: Vec::new(), prepare_only: false };
     if let Some(c) = cx.companion.clone() {
         // Joined one by one: in main-first order the companion arrives 1.5 s after the main bot.
         let up = cx.poll(30.0, |cx| cx.r("list").contains(&c));

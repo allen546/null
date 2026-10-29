@@ -206,9 +206,15 @@ fn effect_row(cx: &mut Ctx, i: i32, name: &str, ticks: u32, setup: Vec<String>, 
     })
 }
 
+/// The scene of the control row: the module's area, the player at the start of lane 0, settled.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1 (also used to set the scene for a vanilla client)
+pub(crate) fn prepare_control(cx: &mut Ctx) -> i32 {
+    cx.scene_in(AREA, &[], (LANE0 as f64 + 0.5, (FLOOR_Y + 1) as f64, START_Z));
+    lane(cx, 0, START_Z, &[])
+}
+
 // Spec: specs/B1-movement.md §4.2 (a walk the model can be fitted to)
-fn control(cx: &mut Ctx) -> (Outcome, u32) {
-    let x = lane(cx, 0, START_Z, &[]);
+fn control(cx: &mut Ctx, x: i32) -> (Outcome, u32) {
     let mut ticks = 0;
     let o = cx.run("A15", "plain_stone_walk_matches_the_model", |cx| {
         walk(cx, WALK);
@@ -341,8 +347,8 @@ fn goto_around_cobweb(cx: &mut Ctx, with_web: bool) -> Outcome {
 
 // Spec: specs/B1-movement.md §4.2, §4.3
 pub fn a15(cx: &mut Ctx) -> Vec<Outcome> {
-    cx.scene_in(AREA, &[], (LANE0 as f64 + 0.5, (FLOOR_Y + 1) as f64, START_Z));
-    let (control_row, ticks) = control(cx);
+    let x = prepare_control(cx);
+    let (control_row, ticks) = control(cx, x);
     let mut out = vec![control_row];
     out.push(cobweb(cx, ticks));
     out.push(berry_bush(cx, ticks));

@@ -1,6 +1,6 @@
 # Vanilla diff: compare Null with a real vanilla client
 
-Plan, 2026-10-25 (Allen: "plan option 1"). Status: VD0 done 2026-10-28 (`harness/vanilla-diff/`, result in its README); VD1 next. Open item (g) in OPEN.md.
+Plan, 2026-10-25 (Allen: "plan option 1"). Status: VD0 done 2026-10-28 (`harness/vanilla-diff/`, result in its README); VD1a done 2026-10-29 (input log, replay, differ; A15 control row matches packet for packet); VD1b next. Open item (g) in OPEN.md.
 
 ## Why
 
@@ -34,7 +34,7 @@ Input level, not packet level, is the point: if Null's physics, click checks or 
   - **Judge each companion-mod mixin against vanilla:** `ChunkLoadProgressMixin` sends `PlayerLoaded` at tick 1, where vanilla waits for its chunks, so it changes what is sent and must go or be matched on the Null side; `GameRendererMixin` cancels the render passes, so VD0 must confirm the crosshair pick still runs each tick (vanilla `GameRenderer#pick`), or the click rows are wrong; `HudMixin` and `FontsMixin` are display only.
   - **Replace** the HTTP control with the replay driver (VD1) and the tap.
   - Done when the clean client logs in to `skeleton-server`, a minimal driver walks forward 20 ticks, and the tap log shows 20 tick ends and the expected `MovePlayer` packets. Note how fast it runs on the Pi.
-- **VD1, movement.** A Null-only fork patch `input-log` (records the input per tick, adds nothing to what is sent). The record format (JSON lines). The replay mod for movement, look, jump, sneak and sprint. The differ. Done when A15 (block movement effects) and A17 (Levitation, Slow Falling) rows match vanilla packet for packet, or each difference is a reported finding.
+- **VD1, movement.** A Null-only fork patch `input-log` (records the input per tick, adds nothing to what is sent). The record format (JSON lines). The replay mod for movement, look, jump, sneak and sprint. The differ. Done when A15 (block movement effects) and A17 (Levitation, Slow Falling) rows match vanilla packet for packet, or each difference is a reported finding. **VD1a done 2026-10-29:** fork patch 45, replay driver, differ and `--prepare-scene`, proved on the A15 control row (README "VD1a"). VD1b: the other A15 and all A17 rows.
 - **VD2, actions.** Clicks, hotbar, item use, block break and place, containers and crafting. Done when A1–A4, A9, A13 and A22 rows match, or each difference is a reported finding.
 - **VD3, Grim and the harness.** `null-abilitycheck --vanilla-diff` runs the diff after each chosen row. The Grim alert lists are compared, and an allowed alert in F5 §4.6 is backed by the vanilla run instead of a trace. Done when every static-world module runs under the diff on both servers.
 

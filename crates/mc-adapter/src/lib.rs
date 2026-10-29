@@ -15,6 +15,19 @@ pub use lifecycle::{
     classify_kick,
 };
 
+/// Turns on the fork's per-tick input log (patch 45): one file per connection in `dir`. Off unless added.
+/// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+pub struct InputLogPlugin(pub std::path::PathBuf);
+
+impl azalea::app::Plugin for InputLogPlugin {
+    fn build(&self, app: &mut azalea::app::App) {
+        app.insert_resource(azalea::input_log::InputLogDir(self.0.clone()));
+    }
+}
+
+/// Asks the input log of `player` to write a mark line before its next tick (a row's start or end).
+pub use azalea::input_log::mark as mark_input;
+
 /// Azalea's default bot plugins minus the ones that act on their own (CONVENTIONS §4.5).
 ///
 /// Removed: `AutoRespawnPlugin` and `AutoReconnectPlugin` (replaced by `lifecycle`, which

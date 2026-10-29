@@ -52,7 +52,12 @@ pub struct Ctx {
     pub(crate) companion: Option<String>,
     /// Companion trouble found at placement (dead, offline); added to the next row's evidence.
     pub(crate) companion_notes: Vec<String>,
+    /// `--prepare-scene`: only sets the scene for a vanilla client named `name`; no bot is running.
+    pub(crate) prepare_only: bool,
 }
+
+/// `--input-log` is on: each row marks its window in the bot's input log. Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+pub(crate) static INPUT_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Attributes the suite sets (A16, A17) and neighbours a row could meet; `base reset` on each.
 const RESET_ATTRIBUTES: [&str; 20] = [
@@ -239,6 +244,12 @@ impl Ctx {
     }
 
     pub(crate) fn wait_block(&mut self, p: BlockPos, name: &'static str) {
+        if self.prepare_only {
+            // No bot to ask: the server's own answer is enough.
+            let short = name.trim_start_matches("minecraft:");
+            self.poll(10.0, |cx| cx.block_is(p, short));
+            return;
+        }
         if !matches!(self.call(Op::WaitBlock { pos: p, name }).info, Info::Waited(true)) {
             eprintln!("warning: the bot never saw {name} at {p:?}");
         }
@@ -318,6 +329,10 @@ impl Ctx {
         self.wait_block(pos(x0 + 10, FLOOR_Y, z0 + 10), "minecraft:stone");
         self.wait_block(pos(x0 + 10, FLOOR_Y + 1, z0 + 10), "minecraft:air");
         self.settle_server();
+        // `--prepare-scene` has no bot (the vanilla client stands in), so there is no position to check.
+        if self.prepare_only {
+            return;
+        }
         let here = self.snap_after(Op::SelectSlot(0)).pos;
         if (here.x - at.0).abs() > 0.5 || (here.y - at.1).abs() > 0.5 || (here.z - at.2).abs() > 0.5 {
             eprintln!("warning: bot is at {here:?}, not at {at:?}");
@@ -445,11 +460,18 @@ impl Ctx {
     pub(crate) fn run_allowing(&mut self, id: &'static str, name: &str, allowed: &[&str], why: &str, body: impl FnOnce(&mut Self) -> (bool, String)) -> Outcome {
         let started = std::time::Instant::now();
         let mark = self.log_len();
+        let input_log = INPUT_LOG.load(std::sync::atomic::Ordering::Relaxed);
+        if input_log {
+            mc_adapter::mark_input(&self.name, &format!("start:{id}:{name}"));
+        }
         sleep(Duration::from_millis(100));
         crate::skill::TICK_GAP_MAX_MS.store(0, std::sync::atomic::Ordering::Relaxed);
         crate::skill::TICK_FAST.store(0, std::sync::atomic::Ordering::Relaxed);
         *crate::skill::REFUSAL_VIEW.lock().unwrap() = None;
         let (mut pass, mut evidence) = body(self);
+        if input_log {
+            mc_adapter::mark_input(&self.name, &format!("end:{id}:{name}"));
+        }
         for note in self.companion_notes.drain(..) {
             evidence += &format!("; {note}");
         }

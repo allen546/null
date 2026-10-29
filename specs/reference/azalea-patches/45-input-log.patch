@@ -1,0 +1,369 @@
+diff --git a/azalea-client/src/plugins/input_log.rs b/azalea-client/src/plugins/input_log.rs
+new file mode 100644
+index 0000000..cac4741
+--- /dev/null
++++ b/azalea-client/src/plugins/input_log.rs
+@@ -0,0 +1,240 @@
++//! Null fork: records the bot's input per client tick, for the vanilla diff
++//! (VD1). It changes nothing that is sent. Off unless the app holds an
++//! [`InputLogDir`] resource.
++//!
++//! One JSON line per client tick,
++//! `{"tick":N,"f":..,"b":..,"l":..,"r":..,"jump":..,"sneak":.., "sprint":..,"
++//! yaw":..,"pitch":..,"slot":..}`. `N` counts the client ticks of the
++//! connection from 0, the same way the vanilla-diff tap counts serverbound
++//! `ClientTickEnd` packets, so the two logs align. The line is written where
++//! vanilla's `LocalPlayer#aiStep` has just read the keys (`KeyboardInput#
++//! tick`): after the screen hold and `tick_controls`, before the sprint
++//! decision and the physics step, so it is the input the step used. [`mark`]
++//! adds `{"mark":"..","tick":N}` lines, where `N` is the tick of the next
++//! sample.
++
++use std::{
++    fs::{self, File},
++    io::Write,
++    path::PathBuf,
++    sync::Mutex,
++};
++
++use azalea_core::tick::GameTick;
++use azalea_entity::{Jumping, LocalEntity, LookDirection, inventory::Inventory};
++use azalea_physics::{PhysicsSystems, client_movement::ClientMovementState};
++use azalea_world::WorldName;
++use bevy_app::{App, Plugin};
++use bevy_ecs::prelude::*;
++
++use crate::{
++    movement::{local_player_ai_step, tick_controls},
++    player::GameProfileComponent,
++};
++
++/// Turns the log on: one file per connection is written into this directory.
++#[derive(Clone, Debug, Resource)]
++pub struct InputLogDir(pub PathBuf);
++
++/// Marks asked for by other threads (the ability check): (player name, label).
++/// The next sample of that player's log takes them.
++static MARKS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
++
++/// Asks the log of `player` to write a mark line before its next sample. A
++/// no-op when the log is off.
++// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
++pub fn mark(player: &str, label: &str) {
++    MARKS
++        .lock()
++        .unwrap()
++        .push((player.to_owned(), label.to_owned()));
++}
++
++/// What a player did in one tick.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct InputSample {
++    pub forward: bool,
++    pub backward: bool,
++    pub left: bool,
++    pub right: bool,
++    pub jump: bool,
++    pub sneak: bool,
++    pub sprint: bool,
++    pub yaw: f32,
++    pub pitch: f32,
++    pub slot: u8,
++}
++
++/// The log file of one connection.
++#[derive(Component)]
++pub struct InputLog {
++    out: Box<dyn Write + Send + Sync>,
++    tick: u64,
++}
++
++impl InputLog {
++    pub fn new(out: Box<dyn Write + Send + Sync>) -> Self {
++        Self { out, tick: 0 }
++    }
++
++    /// Writes the mark lines, then the sample line for the next tick.
++    // Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
++    pub fn write(&mut self, marks: &[String], s: &InputSample) {
++        for m in marks {
++            let _ = writeln!(self.out, "{{\"mark\":{m:?},\"tick\":{}}}", self.tick);
++        }
++        let _ = writeln!(
++            self.out,
++            "{{\"tick\":{},\"f\":{},\"b\":{},\"l\":{},\"r\":{},\"jump\":{},\"sneak\":{},\"sprint\":{},\"yaw\":{:?},\"pitch\":{:?},\"slot\":{}}}",
++            self.tick,
++            s.forward,
++            s.backward,
++            s.left,
++            s.right,
++            s.jump,
++            s.sneak,
++            s.sprint,
++            s.yaw,
++            s.pitch,
++            s.slot
++        );
++        let _ = self.out.flush();
++        self.tick += 1;
++    }
++}
++
++pub struct InputLogPlugin;
++impl Plugin for InputLogPlugin {
++    // Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
++    fn build(&self, app: &mut App) {
++        app.add_systems(
++            GameTick,
++            record_input
++                .run_if(resource_exists::<InputLogDir>)
++                .in_set(PhysicsSystems)
++                .after(tick_controls)
++                .before(local_player_ai_step),
++        );
++    }
++}
++
++/// Opens `<dir>/<player>.jsonl`, or `<player>.2.jsonl` and so on when that
++/// exists: a new connection never overwrites an older log.
++fn open_log(dir: &PathBuf, player: &str) -> std::io::Result<File> {
++    fs::create_dir_all(dir)?;
++    for n in 1.. {
++        let name = if n == 1 {
++            format!("{player}.jsonl")
++        } else {
++            format!("{player}.{n}.jsonl")
++        };
++        match File::create_new(dir.join(name)) {
++            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
++            r => return r,
++        }
++    }
++    unreachable!()
++}
++
++// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
++#[allow(clippy::type_complexity)]
++pub fn record_input(
++    dir: Res<InputLogDir>,
++    mut query: Query<
++        (
++            Entity,
++            &GameProfileComponent,
++            &ClientMovementState,
++            &Jumping,
++            &LookDirection,
++            &Inventory,
++            Option<&mut InputLog>,
++        ),
++        (With<LocalEntity>, With<WorldName>),
++    >,
++    mut commands: Commands,
++) {
++    for (entity, profile, mv, jumping, look, inventory, log) in &mut query {
++        let d = mv.move_direction;
++        let sample = InputSample {
++            forward: d.forward(),
++            backward: d.backward(),
++            left: d.left(),
++            right: d.right(),
++            jump: **jumping,
++            sneak: mv.trying_to_crouch,
++            sprint: mv.trying_to_sprint,
++            yaw: look.y_rot(),
++            pitch: look.x_rot(),
++            slot: inventory.selected_hotbar_slot,
++        };
++        let marks: Vec<String> = {
++            let mut all = MARKS.lock().unwrap();
++            let (mine, rest) = all.drain(..).partition(|(n, _)| *n == profile.name);
++            *all = rest;
++            mine.into_iter().map(|(_, l)| l).collect()
++        };
++        match log {
++            Some(mut log) => log.write(&marks, &sample),
++            None => match open_log(&dir.0, &profile.name) {
++                Ok(f) => {
++                    let mut log = InputLog::new(Box::new(f));
++                    log.write(&marks, &sample);
++                    commands.entity(entity).insert(log);
++                }
++                Err(e) => tracing::warn!("input log: cannot open a file in {:?}: {e}", dir.0),
++            },
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use std::sync::{Arc, Mutex};
++
++    use super::*;
++
++    #[derive(Clone, Default)]
++    struct Buf(Arc<Mutex<Vec<u8>>>);
++    impl Write for Buf {
++        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
++            self.0.lock().unwrap().extend_from_slice(b);
++            Ok(b.len())
++        }
++        fn flush(&mut self) -> std::io::Result<()> {
++            Ok(())
++        }
++    }
++
++    fn sample(forward: bool, yaw: f32) -> InputSample {
++        InputSample {
++            forward,
++            backward: false,
++            left: false,
++            right: false,
++            jump: false,
++            sneak: false,
++            sprint: true,
++            yaw,
++            pitch: -12.5,
++            slot: 3,
++        }
++    }
++
++    #[test]
++    fn lines_count_ticks_from_zero_and_marks_take_the_next_tick() {
++        let buf = Buf::default();
++        let mut log = InputLog::new(Box::new(buf.clone()));
++        log.write(&[], &sample(false, 0.0));
++        log.write(&["start".to_owned()], &sample(true, 90.0));
++        let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
++        let lines: Vec<&str> = text.lines().collect();
++        assert_eq!(lines.len(), 3);
++        assert!(lines[0].starts_with("{\"tick\":0,\"f\":false,"));
++        assert_eq!(lines[1], "{\"mark\":\"start\",\"tick\":1}");
++        assert_eq!(
++            lines[2],
++            "{\"tick\":1,\"f\":true,\"b\":false,\"l\":false,\"r\":false,\"jump\":false,\"sneak\":false,\"sprint\":true,\"yaw\":90.0,\"pitch\":-12.5,\"slot\":3}"
++        );
++    }
++}
+diff --git a/azalea-client/src/plugins/mod.rs b/azalea-client/src/plugins/mod.rs
+index 1f471c1..061a571 100644
+--- a/azalea-client/src/plugins/mod.rs
++++ b/azalea-client/src/plugins/mod.rs
+@@ -17,6 +17,7 @@ pub mod disconnect;
+ pub mod interact;
+ pub mod interpolation;
+ pub mod item_use;
++pub mod input_log;
+ pub mod inventory;
+ pub mod join;
+ pub mod loading;
+@@ -69,6 +70,7 @@ impl PluginGroup for DefaultPlugins {
+             .add(chunks::ChunksPlugin)
+             .add(block_update::BlockUpdatePlugin)
+             .add(tick_end::TickEndPlugin)
++            .add(input_log::InputLogPlugin)
+             .add(loading::PlayerLoadedPlugin)
+             .add(brand::BrandPlugin)
+             .add(client_information::ClientInformationPlugin)
+diff --git a/azalea-client/tests/simulation/input_log.rs b/azalea-client/tests/simulation/input_log.rs
+new file mode 100644
+index 0000000..4ce2cd1
+--- /dev/null
++++ b/azalea-client/tests/simulation/input_log.rs
+@@ -0,0 +1,85 @@
++use azalea_client::{
++    ClientMovementState, input_log, input_log::InputLogDir, test_utils::prelude::*,
++};
++use azalea_core::position::{BlockPos, ChunkPos, Vec3};
++use azalea_entity::LookDirection;
++use azalea_physics::client_movement::WalkDirection;
++use azalea_protocol::{
++    common::movements::{PositionMoveRotation, RelativeMovements},
++    packets::{
++        ConnectionProtocol,
++        game::{ClientboundBlockUpdate, ClientboundPlayerPosition},
++    },
++};
++use azalea_registry::builtin::BlockKind;
++
++// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1 (the input log: one line per
++// client tick, the input the physics step used)
++#[test]
++fn test_input_log_one_line_per_tick() {
++    let _lock = init();
++    let dir = std::env::temp_dir().join(format!("null-input-log-test-{}", std::process::id()));
++    let _ = std::fs::remove_dir_all(&dir);
++
++    let mut simulation = Simulation::new(ConnectionProtocol::Game);
++    simulation.app.insert_resource(InputLogDir(dir.clone()));
++    simulation.receive_packet(default_login_packet());
++    simulation.receive_packet(make_basic_empty_chunk(ChunkPos::new(0, 0), (384 + 64) / 16));
++    simulation.receive_packet(ClientboundBlockUpdate {
++        pos: BlockPos::new(0, 119, 0),
++        block_state: BlockKind::Stone.into(),
++    });
++    simulation.receive_packet(ClientboundPlayerPosition {
++        id: 1,
++        change: PositionMoveRotation {
++            pos: Vec3::new(0.5, 120., 0.5),
++            delta: Vec3::ZERO,
++            look_direction: LookDirection::default(),
++        },
++        relative: RelativeMovements::all_absolute(),
++    });
++    simulation.tick();
++    simulation.tick();
++
++    input_log::mark("azalea", "row-start");
++    simulation.with_component_mut::<ClientMovementState>(|mut m| {
++        m.move_direction = WalkDirection::Forward;
++        m.trying_to_sprint = true;
++    });
++    simulation.tick();
++    simulation.tick();
++    simulation
++        .with_component_mut::<ClientMovementState>(|mut m| m.move_direction = WalkDirection::None);
++    simulation.tick();
++
++    let text = std::fs::read_to_string(dir.join("azalea.jsonl")).expect("the log file exists");
++    let _ = std::fs::remove_dir_all(&dir);
++    let lines: Vec<&str> = text.lines().collect();
++    let samples: Vec<&&str> = lines
++        .iter()
++        .filter(|l| l.starts_with("{\"tick\""))
++        .collect();
++    // One sample per tick, numbered from 0 without a gap.
++    for (i, l) in samples.iter().enumerate() {
++        assert!(l.starts_with(&format!("{{\"tick\":{i},")), "line {i}: {l}");
++    }
++    let n = samples.len();
++    assert!(n >= 5, "{text}");
++    // The last three ticks: walking with sprint twice, then released.
++    assert!(
++        samples[n - 3].contains("\"f\":true") && samples[n - 3].contains("\"sprint\":true"),
++        "{text}"
++    );
++    assert!(samples[n - 2].contains("\"f\":true"), "{text}");
++    assert!(samples[n - 1].contains("\"f\":false"), "{text}");
++    // The mark sits right before the first walking tick and names its number.
++    let at = lines
++        .iter()
++        .position(|l| l.starts_with("{\"mark\":\"row-start\""))
++        .expect("mark line");
++    assert_eq!(
++        lines[at],
++        format!("{{\"mark\":\"row-start\",\"tick\":{}}}", n - 3)
++    );
++    assert!(lines[at + 1].contains("\"f\":true"));
++}
+diff --git a/azalea-client/tests/simulation/mod.rs b/azalea-client/tests/simulation/mod.rs
+index 75c6025..aab9944 100644
+--- a/azalea-client/tests/simulation/mod.rs
++++ b/azalea-client/tests/simulation/mod.rs
+@@ -15,6 +15,7 @@ mod enchantments;
+ mod entity_interpolation;
+ mod entity_pushes;
+ mod fast_login;
++mod input_log;
+ mod item_use_hold_and_release;
+ mod login_to_dimension_with_same_name;
+ mod mine_block_rollback;

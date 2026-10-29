@@ -9,7 +9,7 @@ import net.minecraft.client.network.ServerInfo;
 /**
  * Minimal VD0 driver: joins a server, then holds the forward key for N client ticks through
  * vanilla's key mapping (so KeyboardInput builds the movement input), then quits.
- * The replay driver (VD1) replaces this.
+ * With -Dvd.input set it hands each tick to {@link Replay} (VD1) instead.
  */
 public final class Driver {
     private static final String SERVER = System.getProperty("vd.server", "127.0.0.1:25569");
@@ -43,6 +43,11 @@ public final class Driver {
             }
             return;
         }
+        // VD1: replay an input log instead of the fixed walk.
+        if (Replay.enabled()) {
+            Replay.onClientTick(mc);
+            return;
+        }
         // The player ticks only once vanilla marks the client loaded (PlayerLoaded sent).
         if (walked < 0) {
             if (mc.player.age < SETTLE_TICKS) return;
@@ -70,7 +75,7 @@ public final class Driver {
         }
     }
 
-    private static void log(String s) {
+    static void log(String s) {
         System.out.println("[null-vd] " + s);
     }
 }
