@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Runs on the Mac: starts scripts/pi/full_suite.sh (or SCRIPT=queue.sh) on the Pi, detached, and returns at once.
 # Usage: scripts/pi/launch.sh <prefix> [null-abilitycheck args]; read the result later with
-#   ssh 100.95.33.78 cat /mnt/pi-data/null-harness/logs/<prefix>_summary.txt
+#   ssh 192.168.1.2 cat /mnt/pi-data/null-harness/logs/<prefix>_summary.txt
 # Deploy the binary first (scripts/pi/deploy.sh). Spec: specs/plans/ABILITY_CHECK.md §How to run
 set -eu
-PI=${PI_HOST:-100.95.33.78}  # override while Tailscale is down, e.g. PI_HOST=192.168.1.2
+PI=${PI_HOST:-192.168.1.2}  # LAN by default (Allen, 2026-10-31); Tailscale: PI_HOST=100.95.33.78
 [ $# -ge 1 ] || { echo "usage: $0 <prefix> [args]" >&2; exit 2; }
 # No `cd ... &&` before the `&`: that keeps a subshell holding the SSH channel open.
 S=${SCRIPT:-full_suite.sh}

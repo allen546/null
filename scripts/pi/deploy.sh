@@ -3,7 +3,7 @@
 # and checks the checksum. Keeps the Pi's previous binary as bin/null-abilitycheck.prev.
 # Usage: scripts/pi/deploy.sh. Do not run during a Grim run on this machine. Spec: specs/plans/ABILITY_CHECK.md §How to run
 set -euo pipefail
-PI=${PI_HOST:-100.95.33.78}  # override while Tailscale is down, e.g. PI_HOST=192.168.1.2
+PI=${PI_HOST:-192.168.1.2}  # LAN by default (Allen, 2026-10-31); Tailscale: PI_HOST=100.95.33.78
 cd "$(dirname "$0")/../.."
 T=aarch64-unknown-linux-gnu
 cargo zigbuild --release -p null-abilitycheck --target $T.2.36
