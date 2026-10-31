@@ -34,7 +34,7 @@ use azalea::{
 use mc_adapter::{BotState, HostEvent};
 
 use crate::{
-    scenarios::{Ctx, FLOOR_Y, Outcome},
+    scenarios::{Acts, Ctx, FLOOR_Y, Outcome},
     scenarios_block_effects::{bot_pos, floats},
     scenarios_server_attributes::{REVIVE, TOL, WALK, walk_model},
     skill::{Info, Op},
@@ -268,11 +268,6 @@ pub(crate) fn revive(cx: &mut Ctx) {
     let _ = cx.snap();
 }
 
-fn bot_effect(cx: &mut Ctx, cmd: &str) {
-    let n = cx.name.clone();
-    cx.r(&format!("effect {cmd}").replace("{n}", &n));
-}
-
 // Spec: specs/plans/PATCH_30_TIER1.md §4
 /// Floor, air and the bot at the area's centre, settled, with the air column above it cleared.
 fn stand(cx: &mut Ctx, tall: i32) {
@@ -304,14 +299,58 @@ fn rise_model(amp: i32, n: usize) -> f64 {
     y
 }
 
+/// The air rows' RCON actions inside the window, by row name: the Null run and the vanilla
+/// client's scene (`prepare_row`) run these same commands.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1 (one scene, two clients)
+fn air_acts(row: &str) -> (i32, Acts) {
+    let clear_all = ("clear_all", vec!["effect clear {n}".to_string()]);
+    match row {
+        "control_free_fall_matches_the_model" => (10, vec![("tp", vec![format!("tp {{n}} {CX} {} {CZ}", FLOOR_Y + 7)])]),
+        "levitation_i_rises" => (8, vec![("give", vec!["effect give {n} minecraft:levitation 3 0 true".into()]), clear_all]),
+        "levitation_ii_rises" => (8, vec![
+            ("give", vec!["effect give {n} minecraft:levitation 30 1 true".into()]),
+            ("clear", vec!["effect clear {n} minecraft:levitation".into()]),
+            clear_all,
+        ]),
+        "slow_falling_fall_20_blocks" => (24, vec![
+            ("give", vec!["effect give {n} minecraft:slow_falling 60 0 true".into()]),
+            ("tp", vec![format!("tp {{n}} {CX} {} {CZ}", FLOOR_Y + 21)]),
+            clear_all,
+        ]),
+        "slow_falling_arrow" => (8, vec![
+            ("summon", vec![format!(
+                "execute at {{n}} run summon minecraft:arrow ~ ~{ARROW_DY} ~ {{item:{{id:\"minecraft:tipped_arrow\",count:1,components:{{\"minecraft:potion_contents\":{{potion:\"minecraft:slow_falling\"}}}}}},Motion:[0.0,-0.6,0.0]}}"
+            )]),
+            ("clear_slow", vec!["effect clear {n} minecraft:slow_falling".into()]),
+            ("kill_arrows", vec![format!("kill @e[type=minecraft:arrow,x={},y={FLOOR_Y},z={},dx=21,dy=10,dz=21]", AREA.0, AREA.1)]),
+        ]),
+        _ => panic!("no air scene for row {row}"),
+    }
+}
+
+/// Sets the scene of row `row` for a vanilla client (`--prepare-scene A17:<row>`) and returns the
+/// row's RCON actions. The disconnect rows have no vanilla counterpart (the vanilla client would
+/// not disconnect), and the respawn row is `respawn_acts`.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) -> Acts {
+    cx.scene_in(AREA, &[], (CX, (FLOOR_Y + 1) as f64, CZ));
+    if row == "respawn_keeps_base_attribute" {
+        return respawn_scene(cx);
+    }
+    let (tall, acts) = air_acts(row);
+    stand(cx, tall);
+    acts
+}
+
 // Spec: specs/B1-movement.md §4.2 (Levitation in air travel)
 fn levitation_row(cx: &mut Ctx, name: &str, amp: i32, clear: bool) -> Outcome {
-    stand(cx, 8);
+    let (tall, acts) = air_acts(name);
+    stand(cx, tall);
     cx.run("A17", name, |cx| {
         trace_start();
         sleep(Duration::from_millis(400));
         // 3 s: the server removes it itself (ClientboundRemoveMobEffect); the other row clears it
-        bot_effect(cx, &format!("give {{n}} minecraft:levitation {} {amp} true", if clear { 30 } else { 3 }));
+        cx.act(&acts, "give");
         let enough = wait_until(8, || TRACE.lock().unwrap().iter().filter(|t| t.lev.is_some()).count() >= 40);
         let server_y = bot_pos(cx)[1];
         let (lo, hi) = {
@@ -320,7 +359,7 @@ fn levitation_row(cx: &mut Ctx, name: &str, amp: i32, clear: bool) -> Outcome {
             (last.iter().cloned().fold(f64::MAX, f64::min), last.iter().cloned().fold(f64::MIN, f64::max))
         };
         if clear {
-            bot_effect(cx, "clear {n} minecraft:levitation");
+            cx.act(&acts, "clear");
         } else {
             // wait for the 3 s to run out on the server
             sleep(Duration::from_millis(3500));
@@ -330,7 +369,7 @@ fn levitation_row(cx: &mut Ctx, name: &str, amp: i32, clear: bool) -> Outcome {
         let trace = trace_stop();
         let landed_y = bot_pos(cx)[1];
         let grounded = on_ground_server(cx);
-        bot_effect(cx, "clear {n}");
+        cx.act(&acts, "clear_all");
         let first = trace.iter().position(|t| t.lev.is_some());
         let n_lev = trace.iter().filter(|t| t.lev.is_some()).count();
         let (checked, worst, miss, _) = compare(&trace, false);
@@ -357,20 +396,20 @@ fn levitation_row(cx: &mut Ctx, name: &str, amp: i32, clear: bool) -> Outcome {
 
 // Spec: specs/B1-movement.md §4.2 (Slow Falling caps gravity)
 fn slow_falling_fall(cx: &mut Ctx) -> Outcome {
-    stand(cx, 24);
+    let (tall, acts) = air_acts("slow_falling_fall_20_blocks");
+    stand(cx, tall);
     cx.run("A17", "slow_falling_fall_20_blocks", |cx| {
-        let n = cx.name.clone();
-        bot_effect(cx, "give {n} minecraft:slow_falling 60 0 true");
+        cx.act(&acts, "give");
         sleep(Duration::from_millis(900));
         let hp0 = health(cx);
         trace_start();
-        cx.r(&format!("tp {n} {CX} {} {CZ}", FLOOR_Y + 21));
+        cx.act(&acts, "tp");
         let down = wait_until(15, || landed());
         sleep(Duration::from_millis(300));
         let trace = trace_stop();
         let hp1 = health(cx);
         let grounded = on_ground_server(cx);
-        bot_effect(cx, "clear {n}");
+        cx.act(&acts, "clear_all");
         // from the first tick after the teleport
         let from = trace.iter().position(|t| t.y > (FLOOR_Y + 5) as f64).unwrap_or(0);
         let trace = trace[from..].to_vec();
@@ -437,7 +476,8 @@ const ARROW_DY: f64 = 2.6;
 
 // Spec: specs/B1-movement.md §4.2 (Slow Falling from a tipped arrow, the case AD-F5.5 names)
 fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
-    stand(cx, 8);
+    let (tall, acts) = air_acts("slow_falling_arrow");
+    stand(cx, tall);
     cx.run("A17", "slow_falling_arrow", |cx| {
         let n = cx.name.clone();
         let hp0 = health(cx);
@@ -468,9 +508,7 @@ fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
             // damage (a player is not hurt by 0 damage and then no effect is applied).
             // where the server holds the bot at the summon (a miss on Grim needs this to be told apart)
             let srv = cx.r(&format!("data get entity {n} Pos"));
-            cx.r(&format!(
-                "execute at {n} run summon minecraft:arrow ~ ~{ARROW_DY} ~ {{item:{{id:\"minecraft:tipped_arrow\",count:1,components:{{\"minecraft:potion_contents\":{{potion:\"minecraft:slow_falling\"}}}}}},Motion:[0.0,-0.6,0.0]}}"
-            ));
+            cx.act(&acts, "summon");
             // Every attempt keeps RCON samples of the server's arrow and the bot's HurtTime (taken
             // in place of the old 150 ms sleep); they are printed only if the attempt misses.
             let summon_tick = TRACE.lock().unwrap().last().map(|t| t.tick);
@@ -505,12 +543,12 @@ fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
         // packet can arrive after `revive` put a new skill in, and the next call then waits 60 s
         // for a skill that is gone (seen once, 2026-10-24). So clear the effect first and wait
         // until the bot's own trace shows it gone; only then stop the trace and revive.
-        let effect = cx.r(&format!("effect clear {n} minecraft:slow_falling"));
+        let effect = cx.act(&acts, "clear_slow").remove(0);
         let gone = wait_until(5, || TRACE.lock().unwrap().last().is_some_and(|t| !t.slow));
         sleep(Duration::from_millis(300));
         let trace = trace_stop();
         let hp1 = health(cx);
-        cx.r(&format!("kill @e[type=minecraft:arrow,x={},y={FLOOR_Y},z={},dx=21,dy=10,dz=21]", AREA.0, AREA.1));
+        cx.act(&acts, "kill_arrows");
         let first_slow = trace.iter().position(|t| t.slow);
         let airborne_at_hit = first_slow.is_some_and(|i| !trace[i].on_ground);
         let slow_ticks_in_air = trace.iter().filter(|t| t.slow && !t.on_ground).count();
@@ -526,16 +564,39 @@ fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
     })
 }
 
+/// The respawn row's RCON actions: the lane (air and the lane start), the attribute and the
+/// respawn point, the kill, and the attribute reset.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1 (one scene, two clients)
+fn respawn_acts() -> Acts {
+    vec![
+        ("lane", vec![
+            format!("fill {} {} {} {} {} {} minecraft:air", AREA.0, FLOOR_Y + 1, AREA.1 + 2, AREA.0 + 4, FLOOR_Y + 5, AREA.1 + 20),
+            format!("tp {{n}} {}.5 {} {}.5 0 0", AREA.0 + 2, FLOOR_Y + 1, AREA.1 + 3),
+        ]),
+        ("attribute", vec![
+            "attribute {n} minecraft:movement_speed base set 0.15".into(),
+            // respawn at the lane start: world spawn is in the air, and the fall there kills the bot again
+            format!("spawnpoint {{n}} {} {} {}", AREA.0 + 2, FLOOR_Y + 1, AREA.1 + 3),
+        ]),
+        ("kill", vec!["kill {n}".into()]),
+        ("reset_attribute", vec!["attribute {n} minecraft:movement_speed base reset".into()]),
+    ]
+}
+
+/// The lane's stone floor and the first lane, settled; returns the row's actions.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+fn respawn_scene(cx: &mut Ctx) -> Acts {
+    cx.r(&format!("fill {} {FLOOR_Y} {} {} {FLOOR_Y} {} minecraft:stone", AREA.0, AREA.1 + 2, AREA.0 + 4, AREA.1 + 20));
+    let acts = respawn_acts();
+    cx.run_act(&acts, "lane");
+    sleep(Duration::from_millis(1500));
+    acts
+}
+
 // Spec: specs/B1-movement.md §4.2 (the bot walks with the same speed as vanilla after a respawn)
 fn respawn_keeps_base_attribute(cx: &mut Ctx) -> Outcome {
     let n = cx.name.clone();
-    cx.r(&format!("fill {} {FLOOR_Y} {} {} {FLOOR_Y} {} minecraft:stone", AREA.0, AREA.1 + 2, AREA.0 + 4, AREA.1 + 20));
-    let lane = |cx: &mut Ctx| {
-        cx.r(&format!("fill {} {} {} {} {} {} minecraft:air", AREA.0, FLOOR_Y + 1, AREA.1 + 2, AREA.0 + 4, FLOOR_Y + 5, AREA.1 + 20));
-        cx.r(&format!("tp {n} {}.5 {} {}.5 0 0", AREA.0 + 2, FLOOR_Y + 1, AREA.1 + 3));
-        sleep(Duration::from_millis(1500));
-    };
-    lane(cx);
+    let acts = respawn_scene(cx);
     cx.run("A17", "respawn_keeps_base_attribute", |cx| {
         let start_z = AREA.1 as f64 + 3.5;
         let plain = 0.1 * 0.98;
@@ -553,13 +614,12 @@ fn respawn_keeps_base_attribute(cx: &mut Ctx) -> Outcome {
             .map(|k| (k, (walk_model(start_z, k, plain) - control[2]).abs()))
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .unwrap();
-        lane(cx);
-        cx.r(&format!("attribute {n} minecraft:movement_speed base set 0.15"));
-        // respawn at the lane start: world spawn is in the air, and the fall there kills the bot again
-        cx.r(&format!("spawnpoint {n} {} {} {}", AREA.0 + 2, FLOOR_Y + 1, AREA.1 + 3));
+        cx.act(&acts, "lane");
+        sleep(Duration::from_millis(1500));
+        cx.act(&acts, "attribute");
         sleep(Duration::from_millis(800));
         while cx.events.try_recv().is_ok() {}
-        cx.r(&format!("kill {n}"));
+        cx.act(&acts, "kill");
         // the death screen holds 20 ticks, then the node plugin respawns the bot
         let back = wait_until(20, || {
             while let Ok(e) = cx.events.try_recv() {
@@ -575,10 +635,11 @@ fn respawn_keeps_base_attribute(cx: &mut Ctx) -> Outcome {
         let base = cx.r(&format!("attribute {n} minecraft:movement_speed base get")).trim().to_string();
         // the node plugin gave the new life a fresh skill
         let _ = cx.snap();
-        lane(cx);
+        cx.act(&acts, "lane");
+        sleep(Duration::from_millis(1500));
         let before = bot_pos(cx);
         let after = walk(cx);
-        cx.r(&format!("attribute {n} minecraft:movement_speed base reset"));
+        cx.act(&acts, "reset_attribute");
         let want = walk_model(start_z, k, plain * 1.5);
         let def = walk_model(start_z, k, plain);
         let dx = (after[0] - (AREA.0 as f64 + 2.5)).abs();
@@ -593,11 +654,11 @@ fn respawn_keeps_base_attribute(cx: &mut Ctx) -> Outcome {
 /// effect is involved.
 // Spec: specs/B1-movement.md §4.2
 fn control_free_fall(cx: &mut Ctx) -> Outcome {
-    stand(cx, 10);
+    let (tall, acts) = air_acts("control_free_fall_matches_the_model");
+    stand(cx, tall);
     cx.run("A17", "control_free_fall_matches_the_model", |cx| {
-        let n = cx.name.clone();
         trace_start();
-        cx.r(&format!("tp {n} {CX} {} {CZ}", FLOOR_Y + 7));
+        cx.act(&acts, "tp");
         let down = wait_until(10, landed);
         sleep(Duration::from_millis(300));
         // Ticks before the teleport arrives (RCON answers before the bot sees it) are not part of the fall.

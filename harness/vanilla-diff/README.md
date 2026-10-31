@@ -43,14 +43,71 @@ Spec: `specs/plans/VANILLA_DIFF_PLAN.md` VD1. Same input into Null and into the 
 - **Scene for the vanilla player**: `null-abilitycheck --prepare-scene A15 --player NAME` waits for the player to join, then runs the module's own scene code (`prepare_control`: `scene_in` and lane 0) with that name, with no bot. Only A15 so far. A fresh name per run (`VD<MMDDhhmmss>`) gives a fresh start.
 - **`run_replay.sh`**: starts the tap, the client and the scene, touches the control file, waits for the client to quit. **`run_null.sh`**: tap plus `null-abilitycheck` with the input log. **`differ/vd_diff.py`** (`uv run`, tests: `cd differ && uv run python -m unittest test_vd_diff`, 8 tests with a negative control): aligns the windows by tick (`replay_start_tick - first_input_tick`), compares serverbound game packets in order (summary strings, so coordinates must be equal), reports the first difference with both packet lists, the clientbound arrivals and the inputs around it. A difference at or after the first different clientbound arrival (timer packets excluded) is labelled "server timing". Ignored serverbound packets, each with its vanilla sender: `KeepAlive` (`ClientCommonPacketListenerImpl#handleKeepAlive`), `Pong` (`#handlePing`), `ClientInformation` (`Options#broadcastOptions`), `ChunkBatchReceived` (`ClientPacketListener#handleChunkBatchFinished`). `ClientTickEnd` is checked as one per tick.
 
-### Hand-written check (`inputs/hand_written.jsonl`, 66 ticks, vanilla server, run-logs/vd1a/hand_vtap.jsonl)
+### Hand-written check (`inputs/hand_written.jsonl`, 66 ticks, vanilla server, ~/Desktop/null-spikes/run-logs/vd1a/hand_vtap.jsonl)
 
 Read by hand against the input (tick = replay tick): forward from 5 gives one `PlayerInput{forward}` and `MovePlayerPos` the same tick; yaw 18, 36, 54 with movement give `MovePlayerPosRot` at 15 to 17, then `MovePlayerRot` at 18 and 19 when the player stands against a wall (`horizontal_collision` true); pitch 20 at 23 gives one `MovePlayerRot`; jump at 25 gives `PlayerInput{jump}` with y 71.42, released at 26; sneak at 34 gives `PlayerInput{shift}`, released at 42; sprint at 44 gives `PlayerInput{sprint}` and `PlayerCommand StartSprinting` the same tick, and `StopSprinting` at 54 when the key goes; back at 58 gives `PlayerInput{backward}`; the idle ticks send nothing until the 20-tick position reminder at 86 and 106. Every packet is where the input puts it. The player started against a wall and stepped up a block while jumping; that is the world there, not the replay.
 
 ### Result (A15 control row, vanilla server)
 
-Null: `run_null.sh --scenario A15 --account vd1a_null` (`run-logs/vd1a/a15_null.log`, 9/9 pass; input log has 892 lines for 892 `ClientTickEnd`, so the counts agree). Vanilla: `run_replay.sh --row A15:plain_stone_walk_matches_the_model --scene A15` (`a15_replay.out`, replay began at client tick 75; Null's window starts at 71). Differ: `MATCH: 55 ticks compared, serverbound packets identical` (30 packets: 28 `MovePlayerPos`, 2 `PlayerInput`, equal down to the last digit of each coordinate). Negative control: the same logs with the offset moved by one tick report `DIFF: 30 of 55 ticks differ`. No finding: Null and vanilla agree on this row. The first replay run failed in `--prepare-scene` (`wait_block` asked the missing bot); fixed and rerun once.
+Null: `run_null.sh --scenario A15 --account vd1a_null` (`~/Desktop/null-spikes/run-logs/vd1a/a15_null.log`, 9/9 pass; input log has 892 lines for 892 `ClientTickEnd`, so the counts agree). Vanilla: `run_replay.sh --row A15:plain_stone_walk_matches_the_model --scene A15` (`a15_replay.out`, replay began at client tick 75; Null's window starts at 71). Differ: `MATCH: 55 ticks compared, serverbound packets identical` (30 packets: 28 `MovePlayerPos`, 2 `PlayerInput`, equal down to the last digit of each coordinate). Negative control: the same logs with the offset moved by one tick report `DIFF: 30 of 55 ticks differ`. No finding: Null and vanilla agree on this row. The first replay run failed in `--prepare-scene` (`wait_block` asked the missing bot); fixed and rerun once.
 
 ### For VD1b
 
 The scene for the other A15 rows (they need `lane` with their setup) and A17 rows; rows that end in a disconnect or use `goto` (the pathfinder's input is recorded, but the row window includes RCON sleeps); the 20-tick position reminder phase at the window start was equal here by luck of a settled start, check on rows that start moving later; Grim alert lists (VD3).
+
+## VD1b: all A15 and A17 rows (2026-10-31)
+
+Spec: `specs/plans/VANILLA_DIFF_PLAN.md` VD1. The same pipeline as VD1a over every A15 and A17 row. Null runs `--scenario A15,A17` once on the vanilla server through the tap (`~/Desktop/null-spikes/run-logs/vd1b/null_a15_a17.log`, 18/18); each row is then replayed once in a fresh vanilla client and diffed.
+
+### Parts added
+
+- **`run_rows.py`** with **`rows.json`**: for every row of the Null run, reads the row window from the input log marks, takes the position-reminder phase from the tap, runs `run_replay.sh` (fresh player, scene, mod, tap) and then the differ. `--rows`, `--module`, and `--diff-only` (re-diff the logs already on disk when only the differ changed; costs nothing live). `rows.json` gives each row its scene, its anchors, and a `skip` reason for the three A17 disconnect rows (Null refuses on purpose, patch 30; the vanilla client would not disconnect).
+- **Acts and `--progress`**: a row's RCON actions (`effect give`, `kill`, `summon`...) run in the scene process, not in the mod. The mod writes its replay tick to the progress file and `--prepare-scene` runs each act when the replay reaches the tick that Null ran it at.
+- **`--prepare-scene MODULE:ROW`** (A15 and A17): runs one row's own setup code on the vanilla player, so the vanilla client stands where Null stood.
+- **Differ anchors** (`--anchor NAME`, `--stop-at-anchor`): a clientbound packet that the row's RCON action causes (`UpdateMobEffect`, `RemoveMobEffect`, `PlayerPosition`, `Respawn`, `PlayerCombatKill`). The k-th arrival in each run is matched, and each stretch is compared from its own anchor, so a server reply that lands a tick later does not shift the rest. The shift is printed.
+- **`ClientPlayerAccessor`** (mixin accessor): sets vanilla's position-reminder counter (`LocalPlayer#positionReminder`) so the 20-tick reminder has the phase Null's client had at the window start. Client state only; it sends nothing.
+- **Ability check change**: A15 runs the two powdered-snow rows last (see finding 3). Selective reruns A15 on vanilla and A15 + A17 on Paper + Grim passed.
+
+### Result
+
+| Row | Result |
+| --- | --- |
+| A15 plain_stone_walk_matches_the_model | MATCH (56 ticks) |
+| A15 walk_into_cobweb_is_slowed_like_vanilla | MATCH (55) |
+| A15 walk_into_sweet_berry_bush_is_slowed_like_vanilla | MATCH (54) |
+| A15 walk_across_soul_sand_is_slowed_like_vanilla | MATCH (54) |
+| A15 walk_across_honey_block_is_slowed_like_vanilla | MATCH (54) |
+| A15 walk_into_powder_snow_is_slowed_like_vanilla | DIFF 8 of 54, server timing (finding 1) |
+| A15 powder_snow_without_boots_does_not_lift_the_bot_at_a_wall | DIFF 36 of 104, server timing (finding 2) |
+| A15 goto_over_the_same_ground_without_a_cobweb | first run DIFF 37 of 42, harness artefact; after the fix MATCH (40 ticks; `~/Desktop/null-spikes/run-logs/vd1b/rerun_a15/rows/`, the copy in `rows/` is the pre-fix run) (finding 3) |
+| A15 goto_across_a_cobweb_goes_around_it | MATCH (44) |
+| A17 control_free_fall_matches_the_model | MATCH (27) |
+| A17 levitation_i_rises | MATCH (144) |
+| A17 levitation_ii_rises | MATCH (86) |
+| A17 slow_falling_fall_20_blocks | MATCH (127) |
+| A17 slow_falling_arrow | MATCH (8, window cut before the effect) |
+| A17 respawn_keeps_base_attribute | DIFF 4 of 244, server timing (finding 4) |
+| A17 disconnect_on_scale, disconnect_on_ride, disconnect_in_bubble_column | NOT COMPARED on purpose |
+
+Every difference is a clientbound packet that reaches the two clients at different client ticks, or state the Null bot carried between rows. No difference is a Null/fork departure from vanilla. Logs: `~/Desktop/null-spikes/run-logs/vd1b/rows/*_diff.txt`, `*_vtap.jsonl`; the Null tap is `~/Desktop/null-spikes/run-logs/vd1b/null_tap.jsonl.3` (the row bot is the third connection, the others are idle spare accounts).
+
+### Findings
+
+1. **walk_into_powder_snow: server timing.** The first 13 moves are equal to the last digit. The server freezes the player (`SetEntityData` index 7 = ticks frozen, then `UpdateAttributes` with the `powder_snow` movement-speed modifier, vanilla `LivingEntity#tryAddFrost`, amount -0.05 * frozen / 140, ADD_VALUE) one tick later in Null's run: vanilla's client has the first packet pair at its tick 109 before it builds the move, Null at 543, one tick after the aligned tick 542 (Null: the pair arrives 5 ms after tick 542 ended, vanilla: 25 ms after tick 108 ended). The packet contents are the same (ticks frozen 1, 2, 3, 4; amounts -0.000357, -0.000714, ...). Vanilla given the packet computes what Null computed: at the tick where vanilla has the first modifier and Null does not, z differs by 0.000315 = 0.000357 (the modifier) * 0.98 (input) * 0.9 (the powdered-snow stuck multiplier), exactly (348.24089839 against 348.24058339). The divergence starts at the arrival. Why the server freezes one tick earlier relative to the move count is the server's tick phase against the client's.
+2. **powder_snow_without_boots: server timing.** The bot is thawed (ticks frozen 0) when the row starts in both runs. Freeze packets begin at Null 627 and vanilla 88 (aligned 628) and go equal for 8 ticks; at tick 635 / 95 Null has two server ticks in one client tick (modifiers -0.002857 and -0.003571, 45 ms and 15 ms before the tick end) and vanilla one (-0.003214). z differs by 0.000315, again one freeze step * 0.98 * 0.9. Packets that arrive within 2 ms of a tick end count for the next tick (Null 627, 631, 633: z equal to vanilla one tick later). After the first bunched pair the lag stays.
+3. **goto_over_the_same_ground_without_a_cobweb: harness artefact.** The Null bot runs all rows of A15 on one player, and the two powder-snow rows came before this one. At the row start (tick 759) the bot still had 46 frozen ticks, thawing 2 per tick (`LivingEntity#aiStep`), so the server sent `SetEntityData` + `UpdateAttributes` with a decaying `powder_snow` modifier for 23 ticks (until tick 782, ticks frozen 0). The vanilla replay uses a fresh player and gets none. First sprint tick: Null z +0.11011, vanilla +0.1274; vanilla's formula gives (0.1 - 0.0135714) * 1.3 * 0.98 = 0.11011 and 0.1 * 1.3 * 0.98 = 0.1274, with the modifier of the packet the bot had (-0.0135714). Lead's check on the sprint modifier: vanilla `ClientPacketListener#handleUpdateAttributes` does remove every modifier (sprint too), but `LocalPlayer#aiStep` calls `setSprinting(true)` every tick while the sprint key is held, and that puts the modifier back before `travel`; and the fork keeps its sprint modifier. So there is no difference on that point. **Fix:** A15 runs the powdered-snow rows after the goto rows (`scenarios_block_effects.rs`, comment at the call). A15 reran once on vanilla (9/9, `~/Desktop/null-spikes/run-logs/vd1b/rerun_a15/`), the row was replayed once: `MATCH: 40 ticks compared`.
+4. **respawn_keeps_base_attribute: server timing.** First run: the `PerformRespawn` command looked one tick off. Vanilla's death screen (`DeathScreen`) enables its button after 20 ticks and the replay presses it then; it comes 19 ticks after `PlayerCombatKill` in both runs (Null 1682 to 1701, vanilla 180 to 199). The command was only misplaced because the kill itself landed one client tick earlier in the vanilla run (a server reply); `PlayerCombatKill` is now an anchor in `rows.json`, and a re-diff (`--diff-only`, nothing live) shows the command equal. What is left, 4 ticks: the server sent the new chunk batch (`ChunkBatchStart`, 20 `LevelChunkWithLight`) in the same client tick as `Respawn` in the vanilla run (200) and one tick later in Null's (1703). Both clients send `PlayerLoaded` in the tick the batch arrives (vanilla method: `LevelLoadTracker`), so Null's `PlayerLoaded` and the fall that follows are one tick behind: Null 1703 `MovePlayerPos` y 200.1, 1704 y 200.0216, 1705 y 200.0 on ground, against vanilla 200 / 201 / 202 with the same values. The sequences are equal shifted by one tick. Not a Null difference; it would need the chunk batch as an anchor (many packets per tick, left for VD2).
+
+### Review of the earlier VD1b edits
+
+No defect needed a code fix beyond the row order above; two functions lacked a spec link (`effect_row`, `Ctx::run_act`) and got one (comment only). `cargo check -p null-abilitycheck` clean, differ 20 tests pass.
+
+### Grim run (Paper + GrimAC, port 25568)
+
+`null-abilitycheck --scenario A15,A17 --account vd1b_grim` once, after the row-order change: 18 scenarios, 18 passed, 0 failed, every row line ends "no Grim alerts" (`~/Desktop/null-spikes/run-logs/vd1b/grim_a15_a17.log`).
+
+### For VD2
+
+- Chunk batch as an anchor, or a rule that treats a one-tick shift of a whole equal sequence as timing, to close finding 4 and 1 without reading by hand.
+- A tick-phase check in the differ for packets that arrive within 2 ms of a tick end (finding 2): decide which tick they count for from the time, as the anchors already do.
+- Rows still outside the pipeline: the three A17 disconnect rows (Null's refusal has no vanilla counterpart), and Grim alert lists (VD3).

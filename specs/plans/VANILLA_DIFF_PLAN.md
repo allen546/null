@@ -1,6 +1,6 @@
 # Vanilla diff: compare Null with a real vanilla client
 
-Plan, 2026-10-25 (Allen: "plan option 1"). Status: VD0 done 2026-10-28 (`harness/vanilla-diff/`, result in its README); VD1a done 2026-10-29 (input log, replay, differ; A15 control row matches packet for packet); VD1b next. Open item (g) in OPEN.md.
+Plan, 2026-10-25 (Allen: "plan option 1"). Status: VD0 done 2026-10-28 (`harness/vanilla-diff/`, result in its README); VD1a done 2026-10-29 (input log, replay, differ; A15 control row matches packet for packet); VD1b done 2026-10-31 (all A15 and A17 rows replayed: 12 match, 3 A17 disconnect rows not compared on purpose, 3 differences are server timing; one more was a harness artefact, fixed by the A15 row order; no Null/fork difference; README "VD1b"). VD2 next. Open item (g) in OPEN.md.
 
 ## Why
 

@@ -51,7 +51,7 @@ use scenarios::{Ctx, Outcome};
 use skill::RemoteSkill;
 
 const USAGE: &str = "usage: null-abilitycheck [--server 127.0.0.1:25567] [--account null_check] \
-[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|A16|A17|A18|A19|A20|A21|A22|A23|AT[,..]] [--shuffle SEED] [--companion [--companion-first]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH] [--input-log DIR] [--prepare-scene A15 --player NAME]";
+[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|A16|A17|A18|A19|A20|A21|A22|A23|AT[,..]] [--shuffle SEED] [--companion [--companion-first]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH] [--input-log DIR] [--prepare-scene A15|A15:ROW|A17:ROW --player NAME [--progress FILE]]";
 
 struct Args {
     server: String,
@@ -74,8 +74,11 @@ struct Args {
     /// and exit; no bot runs.
     prepare_scene: Option<String>,
     player: Option<String>,
+    /// The replay mod's progress file, read by `--prepare-scene` to run a row's RCON actions.
+    progress: Option<PathBuf>,
 }
 
+// Spec: specs/plans/ABILITY_CHECK.md "How to run"
 fn parse_args() -> Result<Args, String> {
     let mut a = Args {
         server: "127.0.0.1:25567".into(),
@@ -89,6 +92,7 @@ fn parse_args() -> Result<Args, String> {
         input_log: None,
         prepare_scene: None,
         player: None,
+        progress: None,
         log: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../harness/skeleton-server/server/server.log"),
     };
     let mut it = std::env::args().skip(1);
@@ -105,7 +109,15 @@ fn parse_args() -> Result<Args, String> {
             "--rcon-password" => a.rcon_pass = val()?,
             "--server-log" => a.log = PathBuf::from(val()?),
             "--input-log" => a.input_log = Some(PathBuf::from(val()?)),
-            "--prepare-scene" => a.prepare_scene = Some(val()?.to_uppercase()),
+            "--prepare-scene" => {
+                // MODULE or MODULE:ROW (the row name keeps its case)
+                let v = val()?;
+                a.prepare_scene = Some(match v.split_once(':') {
+                    Some((m, r)) => format!("{}:{r}", m.to_uppercase()),
+                    None => v.to_uppercase(),
+                });
+            }
+            "--progress" => a.progress = Some(PathBuf::from(val()?)),
             "--player" => a.player = Some(val()?),
             _ => return Err(USAGE.into()),
         }
@@ -209,19 +221,22 @@ fn prepare_scene(rc: rcon::Rcon, module: &str, player: &str, log: PathBuf) -> ! 
         eprintln!("player {player} did not join within 240 s");
         std::process::exit(2);
     }
-    match module {
-        "A15" => {
-            scenarios_block_effects::prepare_control(&mut cx);
-        }
+    let (m, row) = module.split_once(':').unwrap_or((module, "plain_stone_walk_matches_the_model"));
+    let acts = match m {
+        "A15" => scenarios_block_effects::prepare_row(&mut cx, row),
+        "A17" => scenarios_envelope::prepare_row(&mut cx, row),
         m => {
-            eprintln!("--prepare-scene: no scene for {m} yet (VD1b)");
+            eprintln!("--prepare-scene: no scene for {m}");
             std::process::exit(2);
         }
-    }
+    };
     println!("scene {module} ready for {player}");
+    // Rows with RCON actions inside their window: run each when the replay reaches its mark.
+    cx.serve_acts(&acts);
     std::process::exit(0);
 }
 
+// Spec: specs/plans/ABILITY_CHECK.md
 fn main() {
     let args = match parse_args() {
         Ok(a) => a,
@@ -236,6 +251,7 @@ fn main() {
     });
 
     if let (Some(module), Some(player)) = (args.prepare_scene.clone(), args.player.clone()) {
+        *scenarios::PROGRESS.lock().unwrap() = args.progress.clone();
         prepare_scene(rc, &module, &player, args.log);
     }
     scenarios::INPUT_LOG.store(args.input_log.is_some(), std::sync::atomic::Ordering::Relaxed);

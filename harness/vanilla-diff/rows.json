@@ -1,0 +1,82 @@
+{
+  "A15:plain_stone_walk_matches_the_model": {
+    "scene": "A15:plain_stone_walk_matches_the_model"
+  },
+  "A15:walk_into_cobweb_is_slowed_like_vanilla": {
+    "scene": "A15:walk_into_cobweb_is_slowed_like_vanilla"
+  },
+  "A15:walk_into_sweet_berry_bush_is_slowed_like_vanilla": {
+    "scene": "A15:walk_into_sweet_berry_bush_is_slowed_like_vanilla"
+  },
+  "A15:walk_across_soul_sand_is_slowed_like_vanilla": {
+    "scene": "A15:walk_across_soul_sand_is_slowed_like_vanilla"
+  },
+  "A15:walk_across_honey_block_is_slowed_like_vanilla": {
+    "scene": "A15:walk_across_honey_block_is_slowed_like_vanilla"
+  },
+  "A15:walk_into_powder_snow_is_slowed_like_vanilla": {
+    "scene": "A15:walk_into_powder_snow_is_slowed_like_vanilla"
+  },
+  "A15:powder_snow_without_boots_does_not_lift_the_bot_at_a_wall": {
+    "scene": "A15:powder_snow_without_boots_does_not_lift_the_bot_at_a_wall"
+  },
+  "A15:goto_over_the_same_ground_without_a_cobweb": {
+    "scene": "A15:goto_over_the_same_ground_without_a_cobweb"
+  },
+  "A15:goto_across_a_cobweb_goes_around_it": {
+    "scene": "A15:goto_across_a_cobweb_goes_around_it"
+  },
+  "A17:control_free_fall_matches_the_model": {
+    "scene": "A17:control_free_fall_matches_the_model",
+    "anchors": [
+      "PlayerPosition"
+    ]
+  },
+  "A17:levitation_i_rises": {
+    "scene": "A17:levitation_i_rises",
+    "anchors": [
+      "UpdateMobEffect",
+      "RemoveMobEffect"
+    ]
+  },
+  "A17:levitation_ii_rises": {
+    "scene": "A17:levitation_ii_rises",
+    "anchors": [
+      "UpdateMobEffect",
+      "RemoveMobEffect"
+    ]
+  },
+  "A17:slow_falling_fall_20_blocks": {
+    "scene": "A17:slow_falling_fall_20_blocks",
+    "anchors": [
+      "UpdateMobEffect",
+      "PlayerPosition",
+      "RemoveMobEffect"
+    ]
+  },
+  "A17:slow_falling_arrow": {
+    "scene": "A17:slow_falling_arrow",
+    "anchors": [
+      "UpdateMobEffect",
+      "RemoveMobEffect"
+    ],
+    "stop_at_anchor": "UpdateMobEffect"
+  },
+  "A17:respawn_keeps_base_attribute": {
+    "scene": "A17:respawn_keeps_base_attribute",
+    "anchors": [
+      "PlayerPosition",
+      "PlayerCombatKill",
+      "Respawn"
+    ]
+  },
+  "A17:disconnect_on_scale": {
+    "skip": "Null refuses on purpose: after the Scale attribute the fork closes the connection before the next position (patch 30), and the vanilla client would not disconnect. The row's only input is the idle spare account."
+  },
+  "A17:disconnect_on_ride": {
+    "skip": "Null refuses on purpose: after the boat mount the fork closes the connection (patch 30); the vanilla client would ride. The row's only input is the idle spare account."
+  },
+  "A17:disconnect_in_bubble_column": {
+    "skip": "Null refuses on purpose: in a bubble column the fork closes the connection (patch 30); the vanilla client would be pushed. The row's only input is the idle spare account."
+  }
+}

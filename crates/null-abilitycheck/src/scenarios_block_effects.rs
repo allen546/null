@@ -173,8 +173,38 @@ fn lane_fill(y0: i32, y1: i32, z0: i32, z1: i32, block: &str) -> String {
     format!("fill {{x}} {y0} {z0} {{x}} {y1} {z1} minecraft:{block}")
 }
 
-/// One walking row: the lane built by `setup`, the model `lane_model`, the control's input ticks.
-fn effect_row(cx: &mut Ctx, i: i32, name: &str, ticks: u32, setup: Vec<String>, lane_model: Lane, z0: f64, min_gap: f64) -> Outcome {
+/// The lane, the start z and the lane's setup commands of each row after the control, by row name.
+/// The vanilla client's scene (`prepare_row`) is built from the same table.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1 (one scene, two clients)
+fn lane_scene(name: &str) -> (i32, f64, Vec<String>) {
+    match name {
+        "walk_into_cobweb_is_slowed_like_vanilla" => (1, START_Z, vec![lane_fill(FLOOR_Y + 1, FLOOR_Y + 2, BLOCKS.0, BLOCKS.1, "cobweb")]),
+        // A bush needs dirt under it to stay, and age 0 does not hurt.
+        "walk_into_sweet_berry_bush_is_slowed_like_vanilla" => (2, START_Z, vec![
+            lane_fill(FLOOR_Y, FLOOR_Y, BLOCKS.0, BLOCKS.1, "dirt"),
+            lane_fill(FLOOR_Y + 1, FLOOR_Y + 1, BLOCKS.0, BLOCKS.1, "sweet_berry_bush[age=0]"),
+        ]),
+        // The whole lane is the block, so the bot stands on it from the start (its top is lower than
+        // stone's, and the bot settles onto it before the walk).
+        "walk_across_soul_sand_is_slowed_like_vanilla" => (3, START_Z, vec![lane_fill(FLOOR_Y, FLOOR_Y, 342, 362, "soul_sand")]),
+        "walk_across_honey_block_is_slowed_like_vanilla" => (7, START_Z, vec![lane_fill(FLOOR_Y, FLOOR_Y, 342, 362, "honey_block")]),
+        "walk_into_powder_snow_is_slowed_like_vanilla" => (4, START_Z, vec![lane_fill(FLOOR_Y + 1, FLOOR_Y + 1, BLOCKS.0, BLOCKS.1, "powder_snow")]),
+        // The bot starts three cells before a wall and walks into it inside the snow. Touching a wall in
+        // powdered snow lifted a bot with or without boots before the patch.
+        "powder_snow_without_boots_does_not_lift_the_bot_at_a_wall" => (5, 353.5, vec![
+            lane_fill(FLOOR_Y + 1, FLOOR_Y + 1, 355, 358, "powder_snow"),
+            lane_fill(FLOOR_Y + 1, FLOOR_Y + 3, 359, 359, "stone"),
+        ]),
+        "goto_across_a_cobweb_goes_around_it" => (6, START_Z, vec![lane_fill(FLOOR_Y + 1, FLOOR_Y + 2, 349, 349, "cobweb")]),
+        "goto_over_the_same_ground_without_a_cobweb" => (8, START_Z, vec![]),
+        _ => panic!("no lane scene for row {name}"),
+    }
+}
+
+/// One walking row: the lane built by `lane_scene`, the model `lane_model`, the control's input ticks.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+fn effect_row(cx: &mut Ctx, name: &str, ticks: u32, lane_model: Lane, min_gap: f64) -> Outcome {
+    let (i, z0, setup) = lane_scene(name);
     let x = lane(cx, i, z0, &setup);
     cx.run("A15", name, |cx| {
         let before = bot_pos(cx);
@@ -213,6 +243,20 @@ pub(crate) fn prepare_control(cx: &mut Ctx) -> i32 {
     lane(cx, 0, START_Z, &[])
 }
 
+/// Sets the scene of row `row` for a vanilla client (`--prepare-scene A15:<row>`): the module's
+/// own area, then the row's own lane. A15 rows have no RCON action inside their window.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) -> crate::scenarios::Acts {
+    if row == "plain_stone_walk_matches_the_model" {
+        prepare_control(cx);
+    } else {
+        let (i, z0, setup) = lane_scene(row);
+        cx.scene_in(AREA, &[], (LANE0 as f64 + 2.0 * i as f64 + 0.5, (FLOOR_Y + 1) as f64, z0));
+        lane(cx, i, z0, &setup);
+    }
+    Vec::new()
+}
+
 // Spec: specs/B1-movement.md §4.2 (a walk the model can be fitted to)
 fn control(cx: &mut Ctx, x: i32) -> (Outcome, u32) {
     let mut ticks = 0;
@@ -235,44 +279,29 @@ fn control(cx: &mut Ctx, x: i32) -> (Outcome, u32) {
 
 // Spec: specs/B1-movement.md §4.2 (WebBlock#entityInside, Entity#move)
 fn cobweb(cx: &mut Ctx, ticks: u32) -> Outcome {
-    let setup = vec![lane_fill(FLOOR_Y + 1, FLOOR_Y + 2, BLOCKS.0, BLOCKS.1, "cobweb")];
-    effect_row(cx, 1, "walk_into_cobweb_is_slowed_like_vanilla", ticks, setup, Lane { stuck: Some((0.25, false)), ..PLAIN }, START_Z, 1.0)
+    effect_row(cx, "walk_into_cobweb_is_slowed_like_vanilla", ticks, Lane { stuck: Some((0.25, false)), ..PLAIN }, 1.0)
 }
 
 // Spec: specs/B1-movement.md §4.2 (SweetBerryBushBlock#entityInside)
 fn berry_bush(cx: &mut Ctx, ticks: u32) -> Outcome {
-    // A bush needs dirt under it to stay, and age 0 does not hurt.
-    let setup = vec![
-        lane_fill(FLOOR_Y, FLOOR_Y, BLOCKS.0, BLOCKS.1, "dirt"),
-        lane_fill(FLOOR_Y + 1, FLOOR_Y + 1, BLOCKS.0, BLOCKS.1, "sweet_berry_bush[age=0]"),
-    ];
-    effect_row(cx, 2, "walk_into_sweet_berry_bush_is_slowed_like_vanilla", ticks, setup, Lane { stuck: Some((0.8_f32 as f64, false)), ..PLAIN }, START_Z, 0.5)
+    effect_row(cx, "walk_into_sweet_berry_bush_is_slowed_like_vanilla", ticks, Lane { stuck: Some((0.8_f32 as f64, false)), ..PLAIN }, 0.5)
 }
 
 // Spec: specs/B1-movement.md §4.2 (Entity#getBlockSpeedFactor)
-fn slow_floor(cx: &mut Ctx, ticks: u32, i: i32, block: &str) -> Outcome {
-    // The whole lane is the block, so the bot stands on it from the start (its top is lower than
-    // stone's, and the bot settles onto it before the walk).
-    let setup = vec![lane_fill(FLOOR_Y, FLOOR_Y, 342, 362, block)];
-    effect_row(cx, i, &format!("walk_across_{block}_is_slowed_like_vanilla"), ticks, setup, Lane { speed: 0.4, ..PLAIN }, START_Z, 1.0)
+fn slow_floor(cx: &mut Ctx, ticks: u32, block: &str) -> Outcome {
+    effect_row(cx, &format!("walk_across_{block}_is_slowed_like_vanilla"), ticks, Lane { speed: 0.4, ..PLAIN }, 1.0)
 }
 
 // Spec: specs/B1-movement.md §4.2 (PowderSnowBlock#entityInside, in-block state)
 fn powder_snow(cx: &mut Ctx, ticks: u32) -> Outcome {
-    let setup = vec![lane_fill(FLOOR_Y + 1, FLOOR_Y + 1, BLOCKS.0, BLOCKS.1, "powder_snow")];
-    effect_row(cx, 4, "walk_into_powder_snow_is_slowed_like_vanilla", ticks, setup, Lane { stuck: Some((0.9_f32 as f64, true)), frost: true, ..PLAIN }, START_Z, 0.2)
+    effect_row(cx, "walk_into_powder_snow_is_slowed_like_vanilla", ticks, Lane { stuck: Some((0.9_f32 as f64, true)), frost: true, ..PLAIN }, 0.2)
 }
 
 // Spec: specs/B1-movement.md §4.2 (PowderSnowBlock#canEntityWalkOnPowderSnow: no boots, no climbing)
 fn powder_snow_no_climb(cx: &mut Ctx) -> Outcome {
-    // The bot starts three cells before a wall and walks into it inside the snow. Touching a wall in
-    // powdered snow lifted a bot with or without boots before the patch.
-    let z0 = 353.5;
-    let setup = vec![
-        lane_fill(FLOOR_Y + 1, FLOOR_Y + 1, 355, 358, "powder_snow"),
-        lane_fill(FLOOR_Y + 1, FLOOR_Y + 3, 359, 359, "stone"),
-    ];
-    let x = lane(cx, 5, z0, &setup);
+    let name = "powder_snow_without_boots_does_not_lift_the_bot_at_a_wall";
+    let (i, z0, setup) = lane_scene(name);
+    let x = lane(cx, i, z0, &setup);
     cx.run("A15", "powder_snow_without_boots_does_not_lift_the_bot_at_a_wall", |cx| {
         // About 4 blocks at the snow's 0.09 blocks per tick.
         walk(cx, 70);
@@ -294,10 +323,10 @@ fn powder_snow_no_climb(cx: &mut Ctx) -> Outcome {
 // Spec: specs/B1-movement.md §4.3 (a cobweb is not passable for the planner)
 fn goto_around_cobweb(cx: &mut Ctx, with_web: bool) -> Outcome {
     let web_z = 349;
-    let setup = if with_web { vec![lane_fill(FLOOR_Y + 1, FLOOR_Y + 2, web_z, web_z, "cobweb")] } else { vec![] };
-    let x = lane(cx, if with_web { 6 } else { 8 }, START_Z, &setup);
-    let goal = pos(x, FLOOR_Y + 1, 353);
     let name = if with_web { "goto_across_a_cobweb_goes_around_it" } else { "goto_over_the_same_ground_without_a_cobweb" };
+    let (i, z0, setup) = lane_scene(name);
+    let x = lane(cx, i, z0, &setup);
+    let goal = pos(x, FLOOR_Y + 1, 353);
     cx.run("A15", name, |cx| {
         let mark = cx.log_len();
         let mut alert_at: Option<String> = None;
@@ -352,12 +381,14 @@ pub fn a15(cx: &mut Ctx) -> Vec<Outcome> {
     let mut out = vec![control_row];
     out.push(cobweb(cx, ticks));
     out.push(berry_bush(cx, ticks));
-    out.push(slow_floor(cx, ticks, 3, "soul_sand"));
-    out.push(slow_floor(cx, ticks, 7, "honey_block"));
-    out.push(powder_snow(cx, ticks));
-    out.push(powder_snow_no_climb(cx));
+    out.push(slow_floor(cx, ticks, "soul_sand"));
+    out.push(slow_floor(cx, ticks, "honey_block"));
+    // Powdered snow goes last: the freeze it leaves on the bot thaws for ~3 s and the server keeps
+    // sending its slowdown meanwhile; a vanilla replay starts on a fresh player (VD1b, README).
     out.push(goto_around_cobweb(cx, false));
     out.push(goto_around_cobweb(cx, true));
+    out.push(powder_snow(cx, ticks));
+    out.push(powder_snow_no_climb(cx));
     cx.clean_in(AREA);
     out
 }

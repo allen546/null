@@ -59,6 +59,15 @@ pub struct Ctx {
 /// `--input-log` is on: each row marks its window in the bot's input log. Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
 pub(crate) static INPUT_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The RCON actions inside a row's window, by label. Each is a list of commands (`{n}` is the
+/// player's name). The Null run marks `act:<label>` in the input log when it runs one; the vanilla
+/// client's scene (`--prepare-scene`) runs it when the replay reaches that mark.
+pub(crate) type Acts = Vec<(&'static str, Vec<String>)>;
+
+/// `--prepare-scene --progress FILE`: the file the replay mod writes one line to per mark it
+/// passes (`act:<label>`) and `end` when the window is over. Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+pub(crate) static PROGRESS: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
 /// Attributes the suite sets (A16, A17) and neighbours a row could meet; `base reset` on each.
 const RESET_ATTRIBUTES: [&str; 20] = [
     "movement_speed", "sneaking_speed", "jump_strength", "gravity", "step_height", "scale", "block_break_speed",
@@ -230,6 +239,46 @@ impl Ctx {
             Err(RecvTimeoutError::Timeout) => panic!("bot did not answer in 60 s"),
             Err(e) => panic!("bot gone: {e}"),
         }
+    }
+
+    /// Runs the commands of act `label` inside a row, after marking the input log so the vanilla
+    /// replay can run the same commands at the same input tick. Returns the replies.
+    // Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+    pub(crate) fn act(&mut self, acts: &Acts, label: &str) -> Vec<String> {
+        if INPUT_LOG.load(std::sync::atomic::Ordering::Relaxed) {
+            mc_adapter::mark_input(&self.name, &format!("act:{label}"));
+        }
+        self.run_act(acts, label)
+    }
+
+    // Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+    pub(crate) fn run_act(&mut self, acts: &Acts, label: &str) -> Vec<String> {
+        let n = self.name.clone();
+        let cmds = &acts.iter().find(|(l, _)| *l == label).unwrap_or_else(|| panic!("no act {label}")).1;
+        cmds.iter().map(|c| self.r(&c.replace("{n}", &n))).collect()
+    }
+
+    /// `--prepare-scene`: runs each act when the replay reaches its mark, until the replay ends.
+    // Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+    pub(crate) fn serve_acts(&mut self, acts: &Acts) {
+        let Some(path) = PROGRESS.lock().unwrap().clone() else { return };
+        let (mut seen, started) = (0, Instant::now());
+        while started.elapsed() < Duration::from_secs(600) {
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            for line in lines.iter().skip(seen) {
+                if *line == "end" {
+                    return;
+                }
+                if let Some(label) = line.strip_prefix("act:") {
+                    self.run_act(acts, label);
+                    println!("act {label} done");
+                }
+            }
+            seen = lines.len();
+            sleep(Duration::from_millis(5));
+        }
+        eprintln!("--prepare-scene: the replay did not end in 600 s");
     }
 
     pub(crate) fn snap(&mut self) -> Snap {
