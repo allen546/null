@@ -557,10 +557,20 @@ impl Ctx {
 
 // ---- A1 ------------------------------------------------------------------------------------
 
+/// The scene of an A1 row (also set for a vanilla client by `--prepare-scene`).
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn a1_scene(cx: &mut Ctx, row: &str) {
+    match row {
+        "select_slot" => cx.scene(&[(3, "diamond_sword", 1), (8, "apple", 4)]),
+        "swap_offhand" => cx.scene(&[(3, "diamond_sword", 1)]),
+        _ => panic!("no A1 scene for row {row}"),
+    }
+}
+
 // Spec: specs/B2-survival-upkeep.md §4.4, specs/B3-inventory-crafting.md §4.1 (select a slot; offhand swap)
 pub fn a1(cx: &mut Ctx) -> Vec<Outcome> {
     let n = cx.name.clone();
-    cx.scene(&[(3, "diamond_sword", 1), (8, "apple", 4)]);
+    a1_scene(cx, "select_slot");
     let mut out = Vec::new();
     out.push(cx.run("A1", "select_slot", |cx| {
         let mut ev = Vec::new();
@@ -582,7 +592,7 @@ pub fn a1(cx: &mut Ctx) -> Vec<Outcome> {
         }
         (ok, ev.join("; "))
     }));
-    cx.scene(&[(3, "diamond_sword", 1)]);
+    a1_scene(cx, "swap_offhand");
     out.push(cx.run("A1", "swap_offhand", |cx| {
         cx.call(Op::SelectSlot(3));
         cx.call(Op::SwapOffhand);
@@ -608,8 +618,9 @@ pub fn a1(cx: &mut Ctx) -> Vec<Outcome> {
 /// 30 oak logs broken back to back with an iron axe, no Haste: each break must take vanilla's
 /// ticks, and the gaps must satisfy Grim's FastBreak (it flagged after ~22 when the bot started
 /// each break like a fresh click, one tick early and with no destroy delay).
-// Spec: specs/B6-placement-breaking.md §4.4 (break timing over a chain of breaks)
-fn chain_of_breaks(cx: &mut Ctx) -> Outcome {
+/// The scene of the chain row: two walls of logs. Returns the logs in the order they are broken.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn chain_scene(cx: &mut Ctx) -> Vec<BlockPos> {
     // The companion (companion mode) parks 5 blocks east, clear of both walls: at its default spot it stands in the
     // crosshair line to the first log of the second wall, and a vanilla click would hit it (found by p41_full).
     cx.scene_in_spot((X0, Z0), &[(0, "iron_axe", 1)], SPAWN, Some((5.0, 0.0)));
@@ -625,6 +636,12 @@ fn chain_of_breaks(cx: &mut Ctx) -> Outcome {
     cx.r("fill 478 200 354 482 202 354 minecraft:oak_log");
     cx.r("fill 478 200 350 482 202 350 minecraft:oak_log");
     cx.wait_block(pos(482, 202, 350), "minecraft:oak_log");
+    list
+}
+
+// Spec: specs/B6-placement-breaking.md §4.4 (break timing over a chain of breaks)
+fn chain_of_breaks(cx: &mut Ctx) -> Outcome {
+    let list = chain_scene(cx);
     let n = vanilla_ticks(2.0, 6.0, true);
     let want = ticks_between_packets(n) as u64;
     cx.run("A2", "chain_of_30_breaks", |cx| {
@@ -668,15 +685,46 @@ const BREAKS: [(&str, &str, Option<&str>, f32, f32); 3] = [
     ("stone_iron_pickaxe", "stone", Some("iron_pickaxe"), 1.5, 6.0),
 ];
 
+/// The scene of a timed break row: the tool in slot 0 and the block in front of the bot.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn a2_break_scene(cx: &mut Ctx, block: &str, tool: Option<&str>) -> BlockPos {
+    cx.scene(&tool.map(|t| vec![(0, t, 1)]).unwrap_or_default());
+    let target = pos(480, FLOOR_Y + 1, 355);
+    // Stone is both the floor and the target; the target sits on the floor.
+    cx.r(&format!("setblock {} {} {} minecraft:{block}", target.x, target.y, target.z));
+    cx.wait_block(target, if block == "oak_log" { "minecraft:oak_log" } else { "minecraft:stone" });
+    target
+}
+
+/// The scene of the A2 row `name`, for a vanilla client (`--prepare-scene A2:<row>`).
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn a2_scene(cx: &mut Ctx, name: &str) {
+    match name {
+        "refused_by_client_break_out_of_reach" => {
+            cx.scene(&[(0, "iron_axe", 1)]);
+            cx.r("setblock 480 200 361 minecraft:oak_log");
+            cx.wait_block(pos(480, FLOOR_Y + 1, 361), "minecraft:oak_log");
+        }
+        "chain_of_30_breaks" => {
+            chain_scene(cx);
+        }
+        "cancel_break" => {
+            cx.scene(&[]);
+            cx.r("setblock 480 200 355 minecraft:oak_log");
+            cx.wait_block(pos(480, FLOOR_Y + 1, 355), "minecraft:oak_log");
+        }
+        _ => {
+            let (_, block, tool, ..) = BREAKS.iter().find(|b| b.0 == name).unwrap_or_else(|| panic!("no A2 scene for row {name}"));
+            a2_break_scene(cx, block, *tool);
+        }
+    }
+}
+
 // Spec: specs/B6-placement-breaking.md §4.4 (break at vanilla speed; measured on the server)
 pub fn a2(cx: &mut Ctx) -> Vec<Outcome> {
     let mut out = Vec::new();
     for (name, block, tool, hardness, speed) in BREAKS {
-        cx.scene(&tool.map(|t| vec![(0, t, 1)]).unwrap_or_default());
-        let target = pos(480, FLOOR_Y + 1, 355);
-        // Stone is both the floor and the target; the target sits on the floor.
-        cx.r(&format!("setblock {} {} {} minecraft:{block}", target.x, target.y, target.z));
-        cx.wait_block(target, if block == "oak_log" { "minecraft:oak_log" } else { "minecraft:stone" });
+        let target = a2_break_scene(cx, block, tool);
         out.push(cx.run("A2", name, |cx| {
             let n = vanilla_ticks(hardness, speed, true);
             let air = format!("execute if block {} {} {} minecraft:air run time query gametime", target.x, target.y, target.z);
@@ -722,10 +770,8 @@ pub fn a2(cx: &mut Ctx) -> Vec<Outcome> {
         }));
     }
     // Refusal: the log is 9 blocks away; the server must refuse and the bot must say so.
-    cx.scene(&[(0, "iron_axe", 1)]);
+    a2_scene(cx, "refused_by_client_break_out_of_reach");
     let far = pos(480, FLOOR_Y + 1, 361);
-    cx.r("setblock 480 200 361 minecraft:oak_log");
-    cx.wait_block(far, "minecraft:oak_log");
     out.push(cx.run("A2", "refused_by_client_break_out_of_reach", |cx| {
         let r = cx.call(Op::Break(far));
         let Info::Action(a) = r.info else { return (false, format!("bot reported {:?}", r.info)) };
@@ -737,10 +783,8 @@ pub fn a2(cx: &mut Ctx) -> Vec<Outcome> {
     }));
     out.push(chain_of_breaks(cx));
     // Cancel: abort a long break half-way; the block must stay and the bot must say cancelled.
-    cx.scene(&[]);
+    a2_scene(cx, "cancel_break");
     let target = pos(480, FLOOR_Y + 1, 355);
-    cx.r("setblock 480 200 355 minecraft:oak_log");
-    cx.wait_block(target, "minecraft:oak_log");
     out.push(cx.run("A2", "cancel_break", |cx| {
         let r = cx.call(Op::BreakThenCancel(target, 20));
         sleep(Duration::from_millis(500));
@@ -756,12 +800,19 @@ pub fn a2(cx: &mut Ctx) -> Vec<Outcome> {
 
 // ---- A3 ------------------------------------------------------------------------------------
 
-// Spec: specs/B6-placement-breaking.md §4.5 (drop collection)
-pub fn a3(cx: &mut Ctx) -> Vec<Outcome> {
+/// The scene of A3, also for a vanilla client (`--prepare-scene A3:pickup_drop`).
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn a3_scene(cx: &mut Ctx) -> BlockPos {
     cx.scene(&[(0, "iron_axe", 1)]);
     let log = pos(480, FLOOR_Y + 1, 355);
     cx.r("setblock 480 200 355 minecraft:oak_log");
     cx.wait_block(log, "minecraft:oak_log");
+    log
+}
+
+// Spec: specs/B6-placement-breaking.md §4.5 (drop collection)
+pub fn a3(cx: &mut Ctx) -> Vec<Outcome> {
+    let log = a3_scene(cx);
     vec![cx.run("A3", "pickup_drop", |cx| {
         let before = cx.count("oak_log");
         let b = cx.call(Op::Break(log));
@@ -830,25 +881,50 @@ const PLACES: [Place; 6] = [
     Place { name: "refused_by_server_no_support_sapling_on_stone", item: "oak_sapling", expect_placed: false, ..P },
 ];
 
+/// The scene of a placement row: the bot at `p.at` with the item, the floor block, the pillar, the stand.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn a4_scene(cx: &mut Ctx, p: &Place) {
+    cx.scene_at(&[(0, p.item, 8)], p.at);
+    let (cx_, cy, cz) = p.click;
+    let clicked = pos(cx_, cy, cz);
+    let target = clicked.offset(p.face);
+    if p.floor_block != "stone" {
+        cx.r(&format!("setblock {cx_} {cy} {cz} minecraft:{}", p.floor_block));
+    }
+    if p.side_pillar {
+        cx.r(&format!("setblock {cx_} {cy} {cz} minecraft:stone"));
+        cx.wait_block(clicked, "minecraft:stone");
+    }
+    if p.summon_stand {
+        cx.r(&format!("summon minecraft:armor_stand {}.5 {} {}.5 {{NoGravity:1b}}", target.x, target.y, target.z));
+    }
+    cx.wait_block(target, "minecraft:air");
+}
+
+/// Sets the scene of row `row` of module `module` (A1-A4) for a vanilla client (`--prepare-scene
+/// A2:<row>`). None of these rows has an RCON action inside its window (RCON only reads there).
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+pub(crate) fn prepare_row(cx: &mut Ctx, module: &str, row: &str) -> Acts {
+    match module {
+        "A1" => a1_scene(cx, row),
+        "A2" => a2_scene(cx, row),
+        "A3" => {
+            a3_scene(cx);
+        }
+        "A4" => a4_scene(cx, PLACES.iter().find(|p| p.name == row).unwrap_or_else(|| panic!("no A4 scene for row {row}"))),
+        m => panic!("no scene for {m}"),
+    }
+    Vec::new()
+}
+
 // Spec: specs/B6-placement-breaking.md §4.2, §4.6 (place on a chosen face; read the ack)
 pub fn a4(cx: &mut Ctx) -> Vec<Outcome> {
     let mut out = Vec::new();
     for p in PLACES {
-        cx.scene_at(&[(0, p.item, 8)], p.at);
+        a4_scene(cx, &p);
         let (cx_, cy, cz) = p.click;
         let clicked = pos(cx_, cy, cz);
         let target = clicked.offset(p.face);
-        if p.floor_block != "stone" {
-            cx.r(&format!("setblock {cx_} {cy} {cz} minecraft:{}", p.floor_block));
-        }
-        if p.side_pillar {
-            cx.r(&format!("setblock {cx_} {cy} {cz} minecraft:stone"));
-            cx.wait_block(clicked, "minecraft:stone");
-        }
-        if p.summon_stand {
-            cx.r(&format!("summon minecraft:armor_stand {}.5 {} {}.5 {{NoGravity:1b}}", target.x, target.y, target.z));
-        }
-        cx.wait_block(target, "minecraft:air");
         out.push(cx.run("A4", p.name, |cx| {
             let before = cx.count(p.item);
             let r = cx.call(Op::Place { pos: clicked, face: p.face, aim: Vec3::new(p.aim.0, p.aim.1, p.aim.2) });

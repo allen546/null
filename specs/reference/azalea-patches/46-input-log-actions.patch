@@ -1,0 +1,503 @@
+diff --git a/azalea-client/src/plugins/attack.rs b/azalea-client/src/plugins/attack.rs
+index 8256414..0e7e663 100644
+--- a/azalea-client/src/plugins/attack.rs
++++ b/azalea-client/src/plugins/attack.rs
+@@ -97,6 +97,7 @@ pub fn handle_attack_queued(
+                 using_secondary_action: **crouching,
+             },
+         ));
++        crate::input_log::note(client_entity, crate::input_log::InputEvent::AttackClick);
+         commands.trigger(SwingArmEvent {
+             entity: client_entity,
+         });
+diff --git a/azalea-client/src/plugins/block_actions.rs b/azalea-client/src/plugins/block_actions.rs
+index 529c711..1493aaa 100644
+--- a/azalea-client/src/plugins/block_actions.rs
++++ b/azalea-client/src/plugins/block_actions.rs
+@@ -911,6 +911,7 @@ pub fn handle_place_block_queued(
+                     entity,
+                     ServerboundUseItemOn { hand: InteractionHand::MainHand, block_hit: r.into(), seq },
+                 ));
++                crate::input_log::note(entity, crate::input_log::InputEvent::UseClick);
+                 commands.trigger(SwingArmEvent { entity });
+             }
+         }
+@@ -1047,6 +1048,7 @@ pub fn handle_use_block_queued(
+                     entity,
+                     ServerboundUseItemOn { hand: InteractionHand::MainHand, block_hit: r.into(), seq },
+                 ));
++                crate::input_log::note(entity, crate::input_log::InputEvent::UseClick);
+                 commands.trigger(SwingArmEvent { entity });
+             }
+         }
+diff --git a/azalea-client/src/plugins/entity_actions.rs b/azalea-client/src/plugins/entity_actions.rs
+index d5c3e12..101e4b8 100644
+--- a/azalea-client/src/plugins/entity_actions.rs
++++ b/azalea-client/src/plugins/entity_actions.rs
+@@ -751,6 +751,7 @@ pub fn handle_use_entity_queued(
+         for p in packets {
+             commands.trigger(SendGamePacketEvent::new(entity, p));
+         }
++        crate::input_log::note(entity, crate::input_log::InputEvent::UseClick);
+         commands.trigger(SwingArmEvent { entity });
+     }
+ }
+diff --git a/azalea-client/src/plugins/input_log.rs b/azalea-client/src/plugins/input_log.rs
+index cac4741..da72598 100644
+--- a/azalea-client/src/plugins/input_log.rs
++++ b/azalea-client/src/plugins/input_log.rs
+@@ -4,7 +4,7 @@
+ //!
+ //! One JSON line per client tick,
+ //! `{"tick":N,"f":..,"b":..,"l":..,"r":..,"jump":..,"sneak":.., "sprint":..,"
+-//! yaw":..,"pitch":..,"slot":..}`. `N` counts the client ticks of the
++//! yaw":..,"pitch":..,"slot":..,"attack":..}`. `N` counts the client ticks of the
+ //! connection from 0, the same way the vanilla-diff tap counts serverbound
+ //! `ClientTickEnd` packets, so the two logs align. The line is written where
+ //! vanilla's `LocalPlayer#aiStep` has just read the keys (`KeyboardInput#
+@@ -12,12 +12,28 @@
+ //! decision and the physics step, so it is the input the step used. [`mark`]
+ //! adds `{"mark":"..","tick":N}` lines, where `N` is the tick of the next
+ //! sample.
++//!
++//! Patch 46 adds what the player does besides moving. `"attack"` on the sample line is the attack
++//! key held down in that tick (vanilla's `Minecraft#continueAttack`): Null holds it while it mines
++//! (`continueDestroyBlock`), waits out the 5-tick destroy delay, or starts a break (the start
++//! comes from the held key, so it has no click). Discrete actions are `{"ev":"..","tick":N}`
++//! lines before the sample of tick `N`, noted by [`note`] where the fork sends the action (a
++//! click the client refuses is not noted, it sends nothing): `use_click` (the use key,
++//! `Minecraft#startUseItem`, for a block, an entity or an item), `use_item` (Null sends
++//! `UseItem` for a hand whatever the crosshair shows: no key press does that with a block in
++//! view), `attack_click` (`Minecraft#startAttack` on an entity), `swap_offhand`, `open_inventory`,
++//! `click` (`win`, `slot`, `button`, `type`: the arguments of vanilla's
++//! `MultiPlayerGameMode#handleInventoryMouseClick`) and `close` (`win`). Screen clicks happen
++//! between ticks in vanilla, so the replay does them before the tick `N` starts.
+ 
+ use std::{
+     fs::{self, File},
+     io::Write,
+     path::PathBuf,
+-    sync::Mutex,
++    sync::{
++        Mutex,
++        atomic::{AtomicBool, Ordering},
++    },
+ };
+ 
+ use azalea_core::tick::GameTick;
+@@ -50,6 +66,70 @@ pub fn mark(player: &str, label: &str) {
+         .push((player.to_owned(), label.to_owned()));
+ }
+ 
++/// Set once the log is on, so [`note`] and [`hold_attack`] cost nothing without `InputLogDir`.
++static ARMED: AtomicBool = AtomicBool::new(false);
++
++/// What the player did in a tick besides moving, noted by the fork where it sends it.
++#[derive(Clone, Debug, PartialEq)]
++pub enum InputEvent {
++    /// The use key, for a block, an entity or an item in view.
++    UseClick,
++    /// `UseItem` for a hand, sent whatever the crosshair shows.
++    UseItem { off_hand: bool },
++    /// The attack key, on an entity.
++    AttackClick,
++    SwapOffhand,
++    OpenInventory,
++    /// `MultiPlayerGameMode#handleInventoryMouseClick` arguments.
++    Click { window: i32, slot: i16, button: u8, kind: u8 },
++    Close { window: i32 },
++}
++
++impl InputEvent {
++    /// The `{"ev":..}` line of this action.
++    // Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
++    fn json(&self, tick: u64) -> String {
++        match self {
++            Self::UseClick => format!("{{\"ev\":\"use_click\",\"tick\":{tick}}}"),
++            Self::UseItem { off_hand } => format!(
++                "{{\"ev\":\"use_item\",\"hand\":\"{}\",\"tick\":{tick}}}",
++                if *off_hand { "off" } else { "main" }
++            ),
++            Self::AttackClick => format!("{{\"ev\":\"attack_click\",\"tick\":{tick}}}"),
++            Self::SwapOffhand => format!("{{\"ev\":\"swap_offhand\",\"tick\":{tick}}}"),
++            Self::OpenInventory => format!("{{\"ev\":\"open_inventory\",\"tick\":{tick}}}"),
++            Self::Click { window, slot, button, kind } => format!(
++                "{{\"ev\":\"click\",\"win\":{window},\"slot\":{slot},\"button\":{button},\"type\":{kind},\"tick\":{tick}}}"
++            ),
++            Self::Close { window } => format!("{{\"ev\":\"close\",\"win\":{window},\"tick\":{tick}}}"),
++        }
++    }
++}
++
++/// What the systems noted for each player since its last sample: the events, and whether the
++/// attack key is held in this tick.
++struct Noted {
++    events: Vec<(Entity, InputEvent)>,
++    attack: Vec<Entity>,
++}
++static NOTED: Mutex<Noted> = Mutex::new(Noted { events: Vec::new(), attack: Vec::new() });
++
++/// Notes that `entity` did `event` in this tick. A no-op when the log is off.
++// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
++pub fn note(entity: Entity, event: InputEvent) {
++    if ARMED.load(Ordering::Relaxed) {
++        NOTED.lock().unwrap().events.push((entity, event));
++    }
++}
++
++/// Notes that `entity` holds the attack key in this tick. A no-op when the log is off.
++// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
++pub fn hold_attack(entity: Entity) {
++    if ARMED.load(Ordering::Relaxed) {
++        NOTED.lock().unwrap().attack.push(entity);
++    }
++}
++
+ /// What a player did in one tick.
+ #[derive(Clone, Copy, Debug, PartialEq)]
+ pub struct InputSample {
+@@ -63,6 +143,8 @@ pub struct InputSample {
+     pub yaw: f32,
+     pub pitch: f32,
+     pub slot: u8,
++    /// The attack key is held (see the module doc).
++    pub attack: bool,
+ }
+ 
+ /// The log file of one connection.
+@@ -77,15 +159,18 @@ impl InputLog {
+         Self { out, tick: 0 }
+     }
+ 
+-    /// Writes the mark lines, then the sample line for the next tick.
+-    // Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+-    pub fn write(&mut self, marks: &[String], s: &InputSample) {
++    /// Writes the mark lines, the event lines, then the sample line for the next tick.
++    // Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
++    pub fn write(&mut self, marks: &[String], events: &[InputEvent], s: &InputSample) {
+         for m in marks {
+             let _ = writeln!(self.out, "{{\"mark\":{m:?},\"tick\":{}}}", self.tick);
+         }
++        for e in events {
++            let _ = writeln!(self.out, "{}", e.json(self.tick));
++        }
+         let _ = writeln!(
+             self.out,
+-            "{{\"tick\":{},\"f\":{},\"b\":{},\"l\":{},\"r\":{},\"jump\":{},\"sneak\":{},\"sprint\":{},\"yaw\":{:?},\"pitch\":{:?},\"slot\":{}}}",
++            "{{\"tick\":{},\"f\":{},\"b\":{},\"l\":{},\"r\":{},\"jump\":{},\"sneak\":{},\"sprint\":{},\"yaw\":{:?},\"pitch\":{:?},\"slot\":{},\"attack\":{}}}",
+             self.tick,
+             s.forward,
+             s.backward,
+@@ -96,7 +181,8 @@ impl InputLog {
+             s.sprint,
+             s.yaw,
+             s.pitch,
+-            s.slot
++            s.slot,
++            s.attack
+         );
+         let _ = self.out.flush();
+         self.tick += 1;
+@@ -107,6 +193,7 @@ pub struct InputLogPlugin;
+ impl Plugin for InputLogPlugin {
+     // Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+     fn build(&self, app: &mut App) {
++        app.add_systems(GameTick, arm_log.run_if(resource_exists::<InputLogDir>));
+         app.add_systems(
+             GameTick,
+             record_input
+@@ -118,6 +205,11 @@ impl Plugin for InputLogPlugin {
+     }
+ }
+ 
++// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
++fn arm_log() {
++    ARMED.store(true, Ordering::Relaxed);
++}
++
+ /// Opens `<dir>/<player>.jsonl`, or `<player>.2.jsonl` and so on when that
+ /// exists: a new connection never overwrites an older log.
+ fn open_log(dir: &PathBuf, player: &str) -> std::io::Result<File> {
+@@ -167,7 +259,18 @@ pub fn record_input(
+             yaw: look.y_rot(),
+             pitch: look.x_rot(),
+             slot: inventory.selected_hotbar_slot,
++            attack: false,
++        };
++        let (events, attack) = {
++            let mut noted = NOTED.lock().unwrap();
++            let events: Vec<InputEvent> =
++                noted.events.iter().filter(|(e, _)| *e == entity).map(|(_, ev)| ev.clone()).collect();
++            noted.events.retain(|(e, _)| *e != entity);
++            let attack = noted.attack.contains(&entity);
++            noted.attack.retain(|e| *e != entity);
++            (events, attack)
+         };
++        let sample = InputSample { attack, ..sample };
+         let marks: Vec<String> = {
+             let mut all = MARKS.lock().unwrap();
+             let (mine, rest) = all.drain(..).partition(|(n, _)| *n == profile.name);
+@@ -175,11 +278,11 @@ pub fn record_input(
+             mine.into_iter().map(|(_, l)| l).collect()
+         };
+         match log {
+-            Some(mut log) => log.write(&marks, &sample),
++            Some(mut log) => log.write(&marks, &events, &sample),
+             None => match open_log(&dir.0, &profile.name) {
+                 Ok(f) => {
+                     let mut log = InputLog::new(Box::new(f));
+-                    log.write(&marks, &sample);
++                    log.write(&marks, &events, &sample);
+                     commands.entity(entity).insert(log);
+                 }
+                 Err(e) => tracing::warn!("input log: cannot open a file in {:?}: {e}", dir.0),
+@@ -218,6 +321,7 @@ mod tests {
+             yaw,
+             pitch: -12.5,
+             slot: 3,
++            attack: false,
+         }
+     }
+ 
+@@ -225,8 +329,8 @@ mod tests {
+     fn lines_count_ticks_from_zero_and_marks_take_the_next_tick() {
+         let buf = Buf::default();
+         let mut log = InputLog::new(Box::new(buf.clone()));
+-        log.write(&[], &sample(false, 0.0));
+-        log.write(&["start".to_owned()], &sample(true, 90.0));
++        log.write(&[], &[], &sample(false, 0.0));
++        log.write(&["start".to_owned()], &[], &sample(true, 90.0));
+         let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+         let lines: Vec<&str> = text.lines().collect();
+         assert_eq!(lines.len(), 3);
+@@ -234,7 +338,22 @@ mod tests {
+         assert_eq!(lines[1], "{\"mark\":\"start\",\"tick\":1}");
+         assert_eq!(
+             lines[2],
+-            "{\"tick\":1,\"f\":true,\"b\":false,\"l\":false,\"r\":false,\"jump\":false,\"sneak\":false,\"sprint\":true,\"yaw\":90.0,\"pitch\":-12.5,\"slot\":3}"
++            "{\"tick\":1,\"f\":true,\"b\":false,\"l\":false,\"r\":false,\"jump\":false,\"sneak\":false,\"sprint\":true,\"yaw\":90.0,\"pitch\":-12.5,\"slot\":3,\"attack\":false}"
+         );
+     }
++
++    // Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
++    #[test]
++    fn events_come_before_the_sample_of_their_tick() {
++        let buf = Buf::default();
++        let mut log = InputLog::new(Box::new(buf.clone()));
++        log.write(&[], &[], &sample(false, 0.0));
++        let events = [InputEvent::SwapOffhand, InputEvent::Click { window: 0, slot: -999, button: 1, kind: 4 }];
++        log.write(&[], &events, &InputSample { attack: true, ..sample(false, 0.0) });
++        let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
++        let lines: Vec<&str> = text.lines().collect();
++        assert_eq!(lines[1], "{\"ev\":\"swap_offhand\",\"tick\":1}");
++        assert_eq!(lines[2], "{\"ev\":\"click\",\"win\":0,\"slot\":-999,\"button\":1,\"type\":4,\"tick\":1}");
++        assert!(lines[3].starts_with("{\"tick\":1,") && lines[3].ends_with("\"attack\":true}"));
++    }
+ }
+diff --git a/azalea-client/src/plugins/interact/mod.rs b/azalea-client/src/plugins/interact/mod.rs
+index a04369d..9f14fb2 100644
+--- a/azalea-client/src/plugins/interact/mod.rs
++++ b/azalea-client/src/plugins/interact/mod.rs
+@@ -300,6 +300,7 @@ pub fn handle_start_use_item_queued(
+         if mining.is_some() {
+             warn!("Got a StartUseItemEvent for a client that was mining");
+         }
++        crate::input_log::note(entity, crate::input_log::InputEvent::UseClick);
+ 
+         // TODO: this also skips if LocalPlayer.handsBusy is true, which is used when
+         // rowing a boat
+diff --git a/azalea-client/src/plugins/inventory/mod.rs b/azalea-client/src/plugins/inventory/mod.rs
+index 764c7bb..9c207ae 100644
+--- a/azalea-client/src/plugins/inventory/mod.rs
++++ b/azalea-client/src/plugins/inventory/mod.rs
+@@ -208,6 +208,7 @@ fn handle_open_inventory_event(
+         }
+     }
+     if refusal.is_none() {
++        crate::input_log::note(event.entity, crate::input_log::InputEvent::OpenInventory);
+         commands.entity(event.entity).insert(OpenScreen::default());
+     }
+ }
+@@ -271,6 +272,7 @@ fn handle_container_close_event(
+         return;
+     }
+ 
++    crate::input_log::note(entity, crate::input_log::InputEvent::Close { window: inventory.id });
+     commands.trigger(SendGamePacketEvent::new(
+         entity,
+         ServerboundContainerClose {
+@@ -396,6 +398,15 @@ pub fn handle_container_click_event(
+     let Some(world) = worlds.get(world_name) else {
+         return;
+     };
++    crate::input_log::note(
++        entity,
++        crate::input_log::InputEvent::Click {
++            window: container_click.window_id,
++            slot: slot_num,
++            button: container_click.operation.button_num(),
++            kind: container_click.operation.click_type() as u8,
++        },
++    );
+ 
+     let old_slots = inventory.menu().slots();
+     inventory.simulate_click(
+diff --git a/azalea-client/src/plugins/item_use.rs b/azalea-client/src/plugins/item_use.rs
+index ec530ca..be93953 100644
+--- a/azalea-client/src/plugins/item_use.rs
++++ b/azalea-client/src/plugins/item_use.rs
+@@ -161,6 +161,10 @@ pub fn handle_use_item_queued(
+                 y_rot: look.y_rot(),
+             },
+         ));
++        crate::input_log::note(
++            entity,
++            crate::input_log::InputEvent::UseItem { off_hand: queued.hand == InteractionHand::OffHand },
++        );
+         if starts_using(stack, hunger, abilities, mode.current) {
+             commands.entity(entity).insert(ItemInUse {
+                 hand: queued.hand,
+@@ -195,6 +199,7 @@ pub fn handle_swap_offhand_queued(
+ ) {
+     for entity in &query {
+         send_player_action(&mut commands, entity, Action::SwapItemWithOffhand);
++        crate::input_log::note(entity, crate::input_log::InputEvent::SwapOffhand);
+         commands
+             .entity(entity)
+             .remove::<SwapOffhandQueued>()
+diff --git a/azalea-client/src/plugins/mining.rs b/azalea-client/src/plugins/mining.rs
+index bf193b0..c771fc6 100644
+--- a/azalea-client/src/plugins/mining.rs
++++ b/azalea-client/src/plugins/mining.rs
+@@ -271,6 +271,8 @@ pub fn handle_mining_queued(
+         ) {
+             continue;
+         }
++        // Patch 46: a start is the attack key held down (`Minecraft#continueAttack`).
++        crate::input_log::hold_attack(entity);
+         // TODO (when world border is implemented): vanilla ignores if the block
+         // is outside of the worldborder
+ 
+@@ -593,9 +595,11 @@ pub fn handle_stop_mining_block_event(
+ #[derive(Component, Debug)]
+ pub struct SkipStartTickProgress;
+ 
+-pub fn decrement_mine_delay(mut query: Query<&mut MineDelay>) {
+-    for mut mine_delay in &mut query {
++// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2 (patch 46: the delay counts down in `continueDestroyBlock`, so the key is held)
++pub fn decrement_mine_delay(mut query: Query<(Entity, &mut MineDelay)>) {
++    for (entity, mut mine_delay) in &mut query {
+         if **mine_delay > 0 {
++            crate::input_log::hold_attack(entity);
+             **mine_delay -= 1;
+         }
+     }
+@@ -642,6 +646,7 @@ pub fn continue_mining_block(
+         (mut prediction_handler, skip_start_tick),
+     ) in query.iter_mut()
+     {
++        crate::input_log::hold_attack(entity);
+         if skip_start_tick {
+             commands.entity(entity).remove::<SkipStartTickProgress>();
+             continue;
+diff --git a/azalea-client/tests/simulation/input_log.rs b/azalea-client/tests/simulation/input_log.rs
+index 4ce2cd1..ff46ef0 100644
+--- a/azalea-client/tests/simulation/input_log.rs
++++ b/azalea-client/tests/simulation/input_log.rs
+@@ -83,3 +83,96 @@ fn test_input_log_one_line_per_tick() {
+     );
+     assert!(lines[at + 1].contains("\"f\":true"));
+ }
++
++// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2 (patch 46: the attack key held while mining, and the
++// discrete actions the player did)
++#[test]
++fn test_input_log_actions() {
++    use azalea_client::{
++        inventory::{ContainerClickEvent, OpenInventoryEvent},
++        item_use::SwapOffhandQueued,
++        mining::StartMiningBlockEvent,
++    };
++    use azalea_inventory::operations::{ClickOperation, PickupClick};
++
++    let _lock = init();
++    let dir = std::env::temp_dir().join(format!("null-input-log-actions-{}", std::process::id()));
++    let _ = std::fs::remove_dir_all(&dir);
++
++    let mut s = Simulation::new(ConnectionProtocol::Game);
++    s.app.insert_resource(InputLogDir(dir.clone()));
++    s.receive_packet(default_login_packet());
++    s.receive_packet(make_basic_empty_chunk(ChunkPos::new(0, 0), (384 + 64) / 16));
++    let stone = BlockPos::new(0, 2, 0);
++    s.receive_packet(ClientboundBlockUpdate { pos: stone, block_state: BlockKind::Stone.into() });
++    s.receive_packet(ClientboundPlayerPosition {
++        id: 1,
++        change: PositionMoveRotation {
++            pos: stone.up(1).center_bottom(),
++            delta: Vec3::ZERO,
++            look_direction: LookDirection::default(),
++        },
++        relative: RelativeMovements::all_absolute(),
++    });
++    s.tick();
++    s.with_component_mut::<LookDirection>(|mut look| look.update_x_rot(90.));
++    s.tick();
++    s.tick();
++    s.tick();
++    input_log::mark("azalea", "idle-end");
++    s.tick();
++    input_log::mark("azalea", "mining");
++    s.write_message(StartMiningBlockEvent { entity: s.entity, position: stone, force: false });
++    for _ in 0..3 {
++        s.tick();
++    }
++    input_log::mark("azalea", "swap");
++    let e = s.entity;
++    s.app.world_mut().entity_mut(e).insert(SwapOffhandQueued);
++    s.tick();
++    input_log::mark("azalea", "stop");
++    s.app.world_mut().entity_mut(e).insert(azalea_client::block_actions::StopMiningQueued);
++    s.tick();
++    s.tick();
++    input_log::mark("azalea", "screen");
++    s.trigger(OpenInventoryEvent { entity: e });
++    s.tick();
++    s.tick();
++    s.trigger(ContainerClickEvent {
++        entity: e,
++        window_id: 0,
++        operation: ClickOperation::Pickup(PickupClick::Left { slot: Some(36) }),
++    });
++    s.tick();
++
++    let text = std::fs::read_to_string(dir.join("azalea.jsonl")).expect("the log file exists");
++    let _ = std::fs::remove_dir_all(&dir);
++    // The lines between two marks.
++    let part = |from: &str, to: Option<&str>| -> Vec<String> {
++        let lines: Vec<&str> = text.lines().collect();
++        let a = lines.iter().position(|l| l.starts_with(&format!("{{\"mark\":\"{from}\""))).unwrap();
++        let b = to
++            .and_then(|t| lines.iter().position(|l| l.starts_with(&format!("{{\"mark\":\"{t}\""))))
++            .unwrap_or(lines.len());
++        lines[a + 1..b].iter().map(|l| l.to_string()).collect()
++    };
++    let held = |lines: &[String]| {
++        lines.iter().filter(|l| l.starts_with("{\"tick\"")).map(|l| l.contains("\"attack\":true")).collect::<Vec<_>>()
++    };
++    // Nothing held before the break; held from the tick it starts; no events from mining.
++    assert!(held(&part("idle-end", Some("mining"))).iter().all(|h| !h), "{text}");
++    let mining = part("mining", Some("swap"));
++    assert_eq!(held(&mining), [true, true, true], "{text}");
++    assert!(mining.iter().all(|l| !l.contains("\"ev\"")), "{text}");
++    // The swap sits before the sample of its tick and holds no key.
++    let swap = part("swap", Some("stop"));
++    assert!(swap[0].starts_with("{\"ev\":\"swap_offhand\",\"tick\":"), "{text}");
++    // The abort lets the key go: not held from the tick after the stop on.
++    assert_eq!(held(&part("stop", Some("screen"))), [false, false], "{text}");
++    // The screen opens at a tick; the click is a later one and names its window, slot and type.
++    let screen = part("screen", None);
++    assert!(screen[0].starts_with("{\"ev\":\"open_inventory\""), "{text}");
++    let click = screen.iter().find(|l| l.contains("\"ev\":\"click\"")).expect("a click line");
++    assert!(click.contains("\"win\":0,\"slot\":36,\"button\":0,\"type\":0"), "{text}");
++    assert!(screen.iter().position(|l| l == click) > Some(2), "{text}");
++}

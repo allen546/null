@@ -166,6 +166,55 @@ class PhaseTests(unittest.TestCase):
         r = recs({3: [MOVE], 5: [("S", "AcceptTeleportation", ""), ("S", "MovePlayerPosRot", ""), MOVE]})
         self.assertEqual(d.phase_at(r, 8), 2)
 
+class SeqTests(unittest.TestCase):
+    # Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+    def act(self, seq):
+        return ("S", "PlayerAction", f"(action: StartDestroyBlock, seq: {seq})")
+
+    def test_a_connection_that_ran_other_rows_has_the_same_sequence_numbers_from_the_window(self):
+        null = run({5: [self.act(67)], 6: [self.act(68)], 7: [("S", "PlayerAction", "(action: AbortDestroyBlock, seq: 0)")]})
+        van = run({5: [self.act(1)], 6: [self.act(2)], 7: [("S", "PlayerAction", "(action: AbortDestroyBlock, seq: 0)")]})
+        diffs, n, problems = d.compare(null, van, (5, 8), 0)
+        self.assertEqual(diffs, [])
+
+    def test_negative_control_a_missing_predicted_action_is_still_a_difference(self):
+        null = run({5: [self.act(67)], 6: [self.act(69)]})
+        van = run({5: [self.act(1)], 6: [self.act(2)]})
+        diffs, n, problems = d.compare(null, van, (5, 7), 0)
+        self.assertEqual([x["tick"] for x in diffs], [6])
+
+class InputLogTests(unittest.TestCase):
+    # Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+    def test_events_go_with_the_sample_that_follows_and_do_not_replace_it(self):
+        import json
+        import os
+        import tempfile
+
+        base = {"f": False, "b": False, "l": False, "r": False, "jump": False, "sneak": False, "sprint": False, "yaw": 0.0, "pitch": 0.0, "slot": 0}
+        lines = [
+            {**base, "tick": 0, "attack": False},
+            {"ev": "swap_offhand", "tick": 1},
+            {"mark": "start:x", "tick": 1},
+            {"ev": "click", "win": 0, "slot": 36, "button": 0, "type": 0, "tick": 1},
+            {**base, "tick": 1, "attack": True},
+        ]
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+            f.write("\n".join(json.dumps(x) for x in lines) + "\n")
+        try:
+            samples, marks = d.load_input(f.name)
+        finally:
+            os.unlink(f.name)
+        self.assertEqual(marks, {"start:x": 1})
+        self.assertEqual(samples[0]["events"], [])
+        self.assertEqual([e["ev"] for e in samples[1]["events"]], ["swap_offhand", "click"])
+        text = d.describe(samples[1])
+        self.assertIn("ATTACK", text)
+        self.assertIn("swap_offhand", text)
+        self.assertIn("slot=36", text)
+        # Negative control: describe says nothing of an action that was not logged.
+        self.assertNotIn("ATTACK", d.describe(samples[0]))
+
+
 
 if __name__ == "__main__":
     unittest.main()

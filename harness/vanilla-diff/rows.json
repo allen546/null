@@ -78,5 +78,50 @@
   },
   "A17:disconnect_in_bubble_column": {
     "skip": "Null refuses on purpose: in a bubble column the fork closes the connection (patch 30); the vanilla client would be pushed. The row's only input is the idle spare account."
+  },
+  "A1:select_slot": {
+    "scene": "A1:select_slot"
+  },
+  "A1:swap_offhand": {
+    "scene": "A1:swap_offhand"
+  },
+  "A2:oak_log_by_hand": {
+    "scene": "A2:oak_log_by_hand"
+  },
+  "A2:oak_log_iron_axe": {
+    "scene": "A2:oak_log_iron_axe"
+  },
+  "A2:stone_iron_pickaxe": {
+    "scene": "A2:stone_iron_pickaxe"
+  },
+  "A2:refused_by_client_break_out_of_reach": {
+    "scene": "A2:refused_by_client_break_out_of_reach"
+  },
+  "A2:chain_of_30_breaks": {
+    "scene": "A2:chain_of_30_breaks"
+  },
+  "A2:cancel_break": {
+    "scene": "A2:cancel_break"
+  },
+  "A3:pickup_drop": {
+    "scene": "A3:pickup_drop"
+  },
+  "A4:place_top_face": {
+    "scene": "A4:place_top_face"
+  },
+  "A4:place_side_face": {
+    "scene": "A4:place_side_face"
+  },
+  "A4:sapling_on_grass": {
+    "scene": "A4:sapling_on_grass"
+  },
+  "A4:refused_by_server_entity_in_the_way": {
+    "scene": "A4:refused_by_server_entity_in_the_way"
+  },
+  "A4:refused_by_client_out_of_reach": {
+    "scene": "A4:refused_by_client_out_of_reach"
+  },
+  "A4:refused_by_server_no_support_sapling_on_stone": {
+    "scene": "A4:refused_by_server_no_support_sapling_on_stone"
   }
 }

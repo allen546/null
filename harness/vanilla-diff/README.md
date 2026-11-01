@@ -1,4 +1,4 @@
-# Vanilla diff: clean client, tap, driver (VD0), replay and differ (VD1a)
+# Vanilla diff: clean client, tap, driver (VD0), replay and differ (VD1a), A15 and A17 (VD1b), actions A1-A4 (VD2a)
 
 Spec: `specs/plans/VANILLA_DIFF_PLAN.md` VD0. A real vanilla 1.21.11 client joins `skeleton-server` through a packet tap, and our own minimal mod drives it. The replay driver and the differ are VD1/VD2.
 
@@ -111,3 +111,60 @@ No defect needed a code fix beyond the row order above; two functions lacked a s
 - Chunk batch as an anchor, or a rule that treats a one-tick shift of a whole equal sequence as timing, to close finding 4 and 1 without reading by hand.
 - A tick-phase check in the differ for packets that arrive within 2 ms of a tick end (finding 2): decide which tick they count for from the time, as the anchors already do.
 - Rows still outside the pipeline: the three A17 disconnect rows (Null's refusal has no vanilla counterpart), and Grim alert lists (VD3).
+
+## VD2a: actions, rows A1 to A4 (2026-11-01)
+
+Spec: `specs/plans/VANILLA_DIFF_PLAN.md` VD2. The same pipeline as VD1b over the 15 rows of A1 (select slot, offhand swap), A2 (timed breaks, a client refusal, a chain of 30, a cancel), A3 (break and pick up) and A4 (six placements). Null runs `--scenario A1,A2,A3,A4` once on the vanilla server through the tap (`~/Desktop/null-spikes/run-logs/vd2a/null_a1_a4.log`, 15/15); each row is then replayed once in a fresh vanilla client and diffed. A Grim run of the same modules with the log on follows (`grim_a1_a4.log`).
+
+### Parts added
+
+- **Fork patch 46 `input-log-actions`** (`input_log.rs`, one-line notes in the places that send; local commit `19e61ed`, not pushed; `AZALEA_PATCHES.md` row 46). The sample line has `"attack"`, the attack key held in that tick. Discrete actions are `{"ev":..,"tick":N}` lines before the sample of tick `N`: `use_click`, `use_item`, `attack_click`, `swap_offhand`, `open_inventory`, `click` (`win`, `slot`, `button`, `type`), `close`. They are written where the fork sends the action, so a click the client refuses (out of reach, no screen) leaves no line: the bot sent nothing, and the replay sends nothing either.
+  - **Attack key.** The fork models mining as a held button: a break starts from `continueDestroyBlock` and adds no progress in its start tick (`SkipStartTickProgress`). So the log has no click for a break. The key is held in a tick when a break starts, when mining goes on, and while the 5-tick destroy delay counts down (vanilla's `MultiPlayerGameMode#continueDestroyBlock` decrements `destroyDelay` only while the key is held, so a release there would stretch the chain). A cancel (`StopMiningQueued`) lets the key go: vanilla then calls `stopDestroyBlock` and sends the abort, as Null does.
+  - **Drop key.** The fork has no drop-key path; the bot drops through container clicks (`Throw`, or a click outside the window), which the `click` line covers. Nothing to record for the key.
+  - **Not reproducible by a key.** `use_item` (`UseItemQueued`: Null sends `UseItem` whatever the crosshair shows) is logged as it is; the replay presses the use key, so with a block in view the diff will show the difference. No A1-A4 row uses it (A5 and later do).
+- **Replay mod** (`Replay.java`). Per tick: the attack key follows `attack`; a `use_click`, `swap_offhand`, `open_inventory` or `attack_click` adds one click to that key's counter (`KeyBindingAccessor`, vanilla `KeyMapping#clickCount`) and leaves the key up, as a key event between two ticks does, so `Minecraft#handleKeybinds` runs `startUseItem` and the rest itself. `MouseAccessor` sets vanilla's "mouse grabbed" flag: `Minecraft#continueAttack` treats the attack key as up without it, and a window that never had focus (the GL stub) never grabs the mouse. The crosshair needs no extra step: `Minecraft#tick` calls `GameRenderer#pick` itself before `handleKeybinds`, after the mod has set the look at the head of the tick.
+  - **Container clicks and the tick.** `click` calls `MultiPlayerGameMode#handleInventoryMouseClick` (`clickSlot`) on the open screen's menu and `close` calls the screen's `close()`, both at the head of the tick, before vanilla's tick body. In vanilla a screen click is frame input between two ticks, so its packet follows the last `ClientTickEnd` and comes before the new tick's input packets; Null's click is sent when its host applies the command, which is expected to be before that tick's position packet (not checked live, no A1-A4 row has a window), and the log writes the event with the tick of the next sample. The open (`open_inventory`) is a key press handled inside the tick, so the first click can come in the tick after, which is Null's `ScreenJustOpened` rule. Untested live: no A1-A4 row opens a window (A9 and A13 in VD2b).
+- **Differ.** `load_input` keeps the `ev` lines with the sample that follows (`describe` shows `ATTACK` and the events in the inputs line). New `rebase_seq`: the block-prediction `seq` of `UseItemOn` and `PlayerAction` (vanilla `ClientLevel#getBlockStatePredictionHandler`) is a counter of the connection, and Null's row bot has run other rows before the window while the replay is a fresh connection (the first run of A2 to A4 showed Null seq 3, 5, 7, 67, 68 against vanilla 1). Both sides are counted from the first predicted action of the window; a `seq` of 0 stays 0. The report notes when the clientbound packets of the differing tick are equal in both runs. 23 tests (3 new, with negative controls).
+- **Scenes.** `--prepare-scene A1..A4:ROW` runs the row's own setup (`a1_scene`, `a2_scene`, `a3_scene`, `a4_scene`, shared with the scenario code). No A1-A4 row has an RCON action inside its window (RCON only reads there), so there are no acts. `rows.json` has the 15 rows; none is skipped.
+
+### Result
+
+| Row | Result |
+| --- | --- |
+| A1 select_slot | MATCH (12 ticks) |
+| A1 swap_offhand | MATCH (12) |
+| A2 oak_log_by_hand | MATCH (69) |
+| A2 oak_log_iron_axe | MATCH (17) |
+| A2 stone_iron_pickaxe | MATCH (16) |
+| A2 refused_by_client_break_out_of_reach | MATCH (6, nothing sent on either side) |
+| A2 chain_of_30_breaks | DIFF 145 of 491 ticks: vanilla sends a `Swing` in each destroy-delay tick, Null none (finding 1) |
+| A2 cancel_break | MATCH (36) |
+| A3 pickup_drop | MATCH (39) |
+| A4 place_top_face | MATCH (14) |
+| A4 place_side_face | MATCH (11) |
+| A4 sapling_on_grass | MATCH (14) |
+| A4 refused_by_server_entity_in_the_way | DIFF 1 of 13: Null sends a `Swing` after `UseItemOn`, vanilla none (finding 2) |
+| A4 refused_by_client_out_of_reach | MATCH (12, nothing sent on either side) |
+| A4 refused_by_server_no_support_sapling_on_stone | DIFF 1 of 13: the same extra `Swing` (finding 2) |
+
+Logs: `~/Desktop/null-spikes/run-logs/vd2a/` (`null_a1_a4.log`, `null_tap.jsonl`, `inputlog/`, `rows/*_diff.txt`, `rows/*_vtap.jsonl`, `rows_A*.log`, `grim_a1_a4.log`). The MATCH rows are not empty: the A1 swap window holds `SetCarriedItem` and two `SwapItemWithOffhand`, the break rows the start, the swings and the stop, the placements the `UseItemOn` with the hit point to the last digit.
+
+### Findings
+
+1. **chain_of_30_breaks: Null does not swing during the destroy delay.** All 145 differing ticks are the same: vanilla has a `Swing` that Null lacks (110 ticks with the `Swing` alone, 29 with a `MovePlayerRot`, 6 with a `MovePlayerPos`); the breaks themselves (start and stop packets, positions, sequence order) are equal for the 30 blocks. Cause: while the key is held and `destroyDelay` is above 0, vanilla's `MultiPlayerGameMode#continueDestroyBlock` decrements it and returns true, and `Minecraft#continueAttack` then calls `LocalPlayer#swing`, which sends `ServerboundSwing` on every call. The fork swings in `continue_mining_block` (while mining) and at the start, but `decrement_mine_delay` does not (`mining.rs`). So between two blocks vanilla sends 5 swings and Null none. The differ labels the first tick "server timing" because an earlier tick had a different clientbound list; the clientbound packets of the differing tick are equal, so it is a client difference. Not a Grim alert so far (no alert in the run); a fix is one `SwingArmEvent` in `decrement_mine_delay` when the delay is above 0 and a break was held, with a sim test. For the lead to decide; not changed here.
+2. **Placement that fails on the client: Null sends a `Swing`, vanilla does not.** Rows `refused_by_server_entity_in_the_way` and `refused_by_server_no_support_sapling_on_stone`: the `UseItemOn` is identical to the last digit (block, face, hit point, `seq` after rebase), Null follows it with `Swing`. Cause: vanilla's `Minecraft#startUseItem` swings only for `InteractionResult.Success` with the client swing source; the client's own try (`BlockItem#place`: an entity in the cell, or a sapling that cannot stay) fails, so no swing and the next hand is not tried. `handle_place_block_queued` (`block_actions.rs`) sends `SwingArmEvent` after every `UseItemOn`. The patch 33 prediction already knows the verdict for the cells it can read (`Verdict`), so the fix is to swing only when the client-side result would be a success; the entity case needs the entity check of `BlockItem#canPlace`. For the lead to decide; not changed here. In the entity row the server side differed too (Null got `RotateHead`, vanilla `SetEntityMotion`/`MoveEntityPos*` for the entity in the cell), so the differ says "server timing"; the `Swing` finding rests on the vanilla rule and the packet text, not on that label. Verified (Haiku, 2026-11-01).
+3. **Harness note.** The row bot carries the prediction counter from earlier rows (see `rebase_seq`). The `UseItemOn`/`PlayerAction` `seq` values are the only values of this kind in A1-A4.
+
+### Grim run (Paper + GrimAC, port 25568)
+
+`null-abilitycheck --scenario A1,A2,A3,A4 --account vd2a_grim --input-log DIR` once, patch on, no tap: 15 scenarios, 15 passed, 0 failed, every row line ends "no Grim alerts" (`grim_a1_a4.log`); the log holds the same 7 `ev` lines (2 swaps, 5 use clicks).
+
+### Tests
+
+Fork: `test_input_log_actions` (sim) and `events_come_before_the_sample_of_their_tick` (lib); azalea-client 50 lib + 85 sim pass; negative control: without the note in `continue_mining_block` the sim test fails. Differ: `uv run python -m unittest test_vd_diff` 23 tests (new: events with the next sample, `rebase_seq` and its negative control). Null: `cargo build --workspace --all-targets` ok, `null-abilitycheck` 16 tests, boundary ok.
+
+### For VD2b
+
+- A9 (inventory window), A13 (result mailbox), A22 (place prediction): the `click`, `close` and `open_inventory` replay is built and untested live. A5 and later use `use_item` (see above) and `attack_click`.
+- A decision for the lead: fix findings 1 and 2 in the fork (both change what is sent, so a Grim run and the Pi pair apply) or accept them as known departures. Finding 2 follows the rule "the bot sends what vanilla sends".
+- The differ's "server timing" label is a coarse rule (any earlier clientbound difference in the row); the report now says when the tick's own clientbound packets are equal.

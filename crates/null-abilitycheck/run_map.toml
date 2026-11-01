@@ -428,6 +428,11 @@ modules = ["A5", "A6", "A7", "A8", "A12"]
 why = "use item and release (eating, shield); A12 eats an apple after a death"
 
 [[entry]]
+path = "azalea:azalea-client/src/plugins/input_log.rs"
+modules = ["A1", "A2", "A3", "A4", "A9", "A13", "A15", "A17", "A22"]
+why = "the vanilla-diff input log (off without InputLogDir); the modules diffed with it so far"
+
+[[entry]]
 path = "azalea:azalea-client/src/plugins/attack.rs"
 modules = ["A6", "A7", "A8"]
 why = "attack op"

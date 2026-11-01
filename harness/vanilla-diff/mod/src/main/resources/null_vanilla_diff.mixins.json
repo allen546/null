@@ -3,6 +3,6 @@
   "minVersion": "0.8",
   "package": "null_vd.mixin",
   "compatibilityLevel": "JAVA_21",
-  "client": ["ClientTickMixin", "ClientPlayerAccessor"],
+  "client": ["ClientTickMixin", "ClientPlayerAccessor", "MouseAccessor", "KeyBindingAccessor"],
   "injectors": { "defaultRequire": 1 }
 }

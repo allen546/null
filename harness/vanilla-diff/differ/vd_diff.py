@@ -130,7 +130,7 @@ def phase_at(records, start):
 
 def load_input(path):
     """(samples {tick: line dict}, marks {label: tick})."""
-    samples, marks = {}, {}
+    samples, marks, pending = {}, {}, []
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -139,7 +139,12 @@ def load_input(path):
             d = json.loads(line)
             if "mark" in d:
                 marks[d["mark"]] = d["tick"]
+            elif "ev" in d:
+                # VD2: a discrete action; it goes with the sample of its tick, which follows it.
+                pending.append(d)
             else:
+                d["events"] = pending
+                pending = []
                 samples[d["tick"]] = d
     return samples, marks
 
@@ -149,10 +154,36 @@ def describe(sample):
         return "-"
     keys = "".join(k.upper() for k in ("f", "b", "l", "r") if sample[k])
     flags = "".join(n for n, k in (("J", "jump"), ("S", "sneak"), ("R", "sprint")) if sample[k])
-    return f"{keys or '.'}{'+' + flags if flags else ''} yaw {sample['yaw']} pitch {sample['pitch']} slot {sample['slot']}"
+    acts = "".join(" " + e["ev"] + "".join(f" {k}={v}" for k, v in e.items() if k not in ("ev", "tick")) for e in sample.get("events", []))
+    attack = " ATTACK" if sample.get("attack") else ""
+    return f"{keys or '.'}{'+' + flags if flags else ''} yaw {sample['yaw']} pitch {sample['pitch']} slot {sample['slot']}{attack}{acts}"
 
 
 # Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+SEQ = re.compile(r"seq: (\d+)")
+
+
+# Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+def rebase_seq(ticks, a, b):
+    """`ticks` with the block-prediction sequence numbers of ticks [a, b) counted from the window.
+
+    `seq` comes from `BlockStatePredictionHandler` (vanilla `ClientLevel#getBlockStatePredictionHandler`),
+    a counter of the connection that every predicted action raises. Null's row bot has run other
+    rows before this one; the vanilla replay is a fresh connection. So the first predicted action of
+    the window is 1 on both sides, the next is as far on as the counter went. A `seq` of 0 (an
+    action that is not predicted, such as `AbortDestroyBlock`) stays 0."""
+    seqs = [int(m) for t in range(a, b) for _, sm in ticks.get(t, ([],))[0] for m in SEQ.findall(sm) if int(m) != 0]
+    if not seqs:
+        return ticks
+    base = min(seqs) - 1
+    out = dict(ticks)
+    for t in range(a, b):
+        if t in ticks:
+            s, c, e = ticks[t]
+            out[t] = ([(n, SEQ.sub(lambda m: m.group(0) if m.group(1) == "0" else f"seq: {int(m.group(1)) - base}", sm)) for n, sm in s], c, e)
+    return out
+
+
 def compare(null, vanilla, window, offset, samples=None):
     """Compares Null ticks [a, b) with vanilla ticks shifted by `offset`.
 
@@ -160,6 +191,7 @@ def compare(null, vanilla, window, offset, samples=None):
     both packet lists, the clientbound names that arrived in each run and its label.
     """
     a, b = window
+    null, vanilla = rebase_seq(null, a, b), rebase_seq(vanilla, a + offset, b + offset)
     diffs, problems = [], []
     first_server_diff = None
     for t in range(a, b):
@@ -272,7 +304,9 @@ def report(diffs, n, problems, show_all=False):
         return "\n".join(lines)
     lines.append(f"DIFF: {len(diffs)} of {n} ticks differ")
     for d in (diffs if show_all else diffs[:1]):
-        lines.append(f"tick {d['tick']} (vanilla tick {d['vanilla_tick']}): {d['label']}")
+        # VD2: "server timing" is the rule "a different arrival came earlier in the row"; say when this tick's own arrivals are equal.
+        same = " (clientbound packets of this tick are equal in both runs)" if sorted(d["null_clientbound"]) == sorted(d["vanilla_clientbound"]) else ""
+        lines.append(f"tick {d['tick']} (vanilla tick {d['vanilla_tick']}): {d['label']}{same}")
         lines.append("  Null:    " + (" | ".join(f"{x} {y}" for x, y in d["null"]) or "(nothing)"))
         lines.append("  vanilla: " + (" | ".join(f"{x} {y}" for x, y in d["vanilla"]) or "(nothing)"))
         lines.append(f"  clientbound this tick: Null {d['null_clientbound']}, vanilla {d['vanilla_clientbound']}")
