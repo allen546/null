@@ -319,7 +319,7 @@ fn air_acts(row: &str) -> (i32, Acts) {
         ]),
         "slow_falling_arrow" => (8, vec![
             ("summon", vec![format!(
-                "execute at {{n}} run summon minecraft:arrow ~ ~{ARROW_DY} ~ {{item:{{id:\"minecraft:tipped_arrow\",count:1,components:{{\"minecraft:potion_contents\":{{potion:\"minecraft:slow_falling\"}}}}}},Motion:[0.0,-0.6,0.0]}}"
+                "execute at {{n}} run summon minecraft:arrow ~ ~{ARROW_DY} ~ {{item:{{id:\"minecraft:tipped_arrow\",count:1,components:{{\"minecraft:potion_contents\":{{potion:\"minecraft:slow_falling\"}}}}}},Motion:[0.0,{ARROW_VY:.1},0.0]}}"
             )]),
             ("clear_slow", vec!["effect clear {n} minecraft:slow_falling".into()]),
             ("kill_arrows", vec![format!("kill @e[type=minecraft:arrow,x={},y={FLOOR_Y},z={},dx=21,dy=10,dz=21]", AREA.0, AREA.1)]),
@@ -471,8 +471,12 @@ fn miss_trace(trace: &[TraceTick], from: Option<u64>, attempt: u32, rcon: &[Stri
     }
 }
 
-/// Arrow start height above the server's feet: over the inflated box top (2.1) plus one tick of rise (0.42).
-const ARROW_DY: f64 = 2.6;
+/// Arrow start height above the server's feet, and its downward speed. A new arrow tests the plain
+/// box (top at feet + 1.8): `ProjectileUtil#computeMargin` grows the 0.3 margin only from tick 2.
+/// Its first tick spans feet + 2.8 down to feet + 0.8, so it enters the top face from above while
+/// the bot is within 1 block of the summon height (any jump tick, plus one tick of server lag).
+const ARROW_DY: f64 = 2.8;
+const ARROW_VY: f64 = -2.0;
 
 // Spec: specs/B1-movement.md §4.2 (Slow Falling from a tipped arrow, the case AD-F5.5 names)
 fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
@@ -500,11 +504,11 @@ fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
             p = bot_pos(cx);
             // The server's own position of the bot decides the hit, and it can lead or lag the
             // client view `p` by a tick or more of the jump. The arrow's hit test
-            // (`AABB#clip` on the box inflated by 0.3, top at feet + 2.1) finds only a box the
-            // path enters from outside; an arrow that starts inside it passes through (q1 repro:
-            // 39 missed arrows, 7 of 30 Grim runs failed). So the arrow is summoned `~ ~ARROW_DY` from the bot as the server
-            // holds it at that moment: above feet + 2.1 + the largest one-tick rise (about 0.42),
-            // and with Motion -0.6 it crosses the top face in its first tick. It still deals
+            // (`AABB#clip`) finds only a box the path enters from outside; an arrow that starts
+            // inside it passes through (q1 repro: 39 missed arrows, 7 of 30 Grim runs failed;
+            // p45_full vanilla: +2.6 with Motion -0.6 stopped above the plain box in its first
+            // tick, then started inside it, 3 of 3 attempts). So the arrow is summoned `~ ~ARROW_DY`
+            // from the bot as the server holds it at that moment (see `ARROW_DY`). It still deals
             // damage (a player is not hurt by 0 damage and then no effect is applied).
             // where the server holds the bot at the summon (a miss on Grim needs this to be told apart)
             let srv = cx.r(&format!("data get entity {n} Pos"));
@@ -530,7 +534,7 @@ fn slow_falling_arrow(cx: &mut Ctx) -> Outcome {
             if !got {
                 miss_trace(&TRACE.lock().unwrap(), summon_tick, attempts, &rcon);
             }
-            hits.push(format!("#{attempts}: arrow start +{ARROW_DY} above the server's feet, server pos {}, bot pos y {:.2}, server effect {on_server}, health {hp_before} -> {}, arrow after 150 ms {}", srv.trim().rsplit(':').next().unwrap_or("").trim(), p[1], health(cx), arrow.trim()));
+            hits.push(format!("#{attempts}: arrow start +{ARROW_DY} above the server's feet (vy {ARROW_VY}), server pos {}, bot pos y {:.2}, server effect {on_server}, health {hp_before} -> {}, arrow after 150 ms {}", srv.trim().rsplit(':').next().unwrap_or("").trim(), p[1], health(cx), arrow.trim()));
             let _ = cx.recv(jump, Duration::from_secs(3));
             if !got {
                 wait_until(5, landed);
