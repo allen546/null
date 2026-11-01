@@ -403,6 +403,11 @@ modules = ["A1", "A2", "A2S", "A3", "A4", "A4C", "A4S", "A10", "A10E", "A11", "A
 why = "place, break and use-block queues, results, evidence: every module with a Break, Place*, open-container or gather op"
 
 [[entry]]
+path = "azalea:azalea-client/src/plugins/place_prediction.rs"
+modules = ["A1", "A2", "A2S", "A3", "A4", "A4C", "A4S", "A10", "A10E", "A11", "A12", "A13", "A14", "A16", "A22", "AT"]
+why = "the place verdict (patch 33) and the swing that follows it (patch 48): every module that places, plus A22 (prediction)"
+
+[[entry]]
 path = "azalea:azalea-client/src/plugins/mining.rs"
 modules = ["A1", "A2", "A2S", "A3", "A12", "A13", "A14", "A16"]
 why = "break progress and timing (Break, BreakAim, BreakChain, BreakSpam, gather, A16 break-speed rows)"
@@ -659,3 +664,13 @@ modules = ["A5", "A6", "A7", "A8", "A12", "A22"]
 patch = 45
 modules = ["A15"]
 # input log: off unless enabled; the A15 control row ran with it on (VD1a), A15 and A17 ran with it off on both servers
+
+[[history]]
+patch = 47
+modules = ["A1", "A2", "A2S", "A3", "A12", "A13", "A14", "A16"]
+# swings in the destroy delay (mining.rs); the A2 chain row is the one that shows it
+
+[[history]]
+patch = 48
+modules = ["A4", "A4C", "A4S", "A13", "A22"]
+# swing follows the client result of a place (block_actions.rs, place_prediction.rs); A4 refused rows show it

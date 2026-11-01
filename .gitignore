@@ -10,3 +10,5 @@ harness/skeleton-server/runs/
 harness/grim-server/server/
 harness/grim-server/runs/
 .claude/worktrees/
+.agents/
+.worktrees/

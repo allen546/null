@@ -149,11 +149,30 @@ Spec: `specs/plans/VANILLA_DIFF_PLAN.md` VD2. The same pipeline as VD1b over the
 
 Logs: `~/Desktop/null-spikes/run-logs/vd2a/` (`null_a1_a4.log`, `null_tap.jsonl`, `inputlog/`, `rows/*_diff.txt`, `rows/*_vtap.jsonl`, `rows_A*.log`, `grim_a1_a4.log`). The MATCH rows are not empty: the A1 swap window holds `SetCarriedItem` and two `SwapItemWithOffhand`, the break rows the start, the swings and the stop, the placements the `UseItemOn` with the hit point to the last digit.
 
-### Findings
+### Findings (first run, 2026-11-01; both fixed, see "Fixes" below)
 
 1. **chain_of_30_breaks: Null does not swing during the destroy delay.** All 145 differing ticks are the same: vanilla has a `Swing` that Null lacks (110 ticks with the `Swing` alone, 29 with a `MovePlayerRot`, 6 with a `MovePlayerPos`); the breaks themselves (start and stop packets, positions, sequence order) are equal for the 30 blocks. Cause: while the key is held and `destroyDelay` is above 0, vanilla's `MultiPlayerGameMode#continueDestroyBlock` decrements it and returns true, and `Minecraft#continueAttack` then calls `LocalPlayer#swing`, which sends `ServerboundSwing` on every call. The fork swings in `continue_mining_block` (while mining) and at the start, but `decrement_mine_delay` does not (`mining.rs`). So between two blocks vanilla sends 5 swings and Null none. The differ labels the first tick "server timing" because an earlier tick had a different clientbound list; the clientbound packets of the differing tick are equal, so it is a client difference. Not a Grim alert so far (no alert in the run); a fix is one `SwingArmEvent` in `decrement_mine_delay` when the delay is above 0 and a break was held, with a sim test. For the lead to decide; not changed here.
 2. **Placement that fails on the client: Null sends a `Swing`, vanilla does not.** Rows `refused_by_server_entity_in_the_way` and `refused_by_server_no_support_sapling_on_stone`: the `UseItemOn` is identical to the last digit (block, face, hit point, `seq` after rebase), Null follows it with `Swing`. Cause: vanilla's `Minecraft#startUseItem` swings only for `InteractionResult.Success` with the client swing source; the client's own try (`BlockItem#place`: an entity in the cell, or a sapling that cannot stay) fails, so no swing and the next hand is not tried. `handle_place_block_queued` (`block_actions.rs`) sends `SwingArmEvent` after every `UseItemOn`. The patch 33 prediction already knows the verdict for the cells it can read (`Verdict`), so the fix is to swing only when the client-side result would be a success; the entity case needs the entity check of `BlockItem#canPlace`. For the lead to decide; not changed here. In the entity row the server side differed too (Null got `RotateHead`, vanilla `SetEntityMotion`/`MoveEntityPos*` for the entity in the cell), so the differ says "server timing"; the `Swing` finding rests on the vanilla rule and the packet text, not on that label. Verified (Haiku, 2026-11-01).
 3. **Harness note.** The row bot carries the prediction counter from earlier rows (see `rebase_seq`). The `UseItemOn`/`PlayerAction` `seq` values are the only values of this kind in A1-A4.
+
+
+### Fixes: patches 47 and 48 (2026-11-01)
+
+Fork commits `921e023` `47-mine-delay-swings` (`decrement_mine_delay` swings in a delay tick when the crosshair block is not air and no item is in use, as `Minecraft#continueAttack` does) and `9da5e25` `48-place-swing-on-success` (the swing after `UseItemOn` follows the client result of the place: `Predict` swings, `Nothing` does not; saplings and armor stands are now decidable; an `Unknown` verdict keeps the swing, a known gap, see ledger row 48). Local, not pushed. Selective run of 15 modules (A1 A2 A2S A3 A4 A4C A4S A10 A10E A11 A12 A13 A14 A16 AT), chosen from the map entries of `mining.rs` and `block_actions.rs` (the helper answered `all` because `place_prediction.rs` has no entry and patch 46's notes touch `inventory/mod.rs`).
+
+Result: all 15 A1-A4 rows MATCH. Null ran through the tap once (`~/Desktop/null-spikes/run-logs/p47_48/null_van.log`, 328/330: two A16 jump rows off by 0.03, jumps do not touch these patches; A4 + A16 rerun once with the final code, 22/22, `null_van_rerun.log`); the rows were replayed once each (`rows/`). The first diff of the 14 other rows read the wrong tap file: the run has one connection per helper bot and the row bot's is the one whose `Hello` names the account (here `.2`), so `run_rows.py --null-tap` must name that file, not the base file. The replays were redone with the right file (`rows_wrongtap/` is the discarded first attempt). One row, `refused_by_server_entity_in_the_way`, still differed after patch 48: the stand is an armor stand, and the first version treated its box as "unsure"; it blocks building unless its marker flag arrived, so the final code decides it, and the row matches in the rerun (`rows_rerun/`). Paper + Grim: 330/330, zero alerts (`grim.log`).
+
+| Row | Result |
+| --- | --- |
+| A1 select_slot, swap_offhand | MATCH (12, 13 ticks) |
+| A2 oak_log_by_hand, oak_log_iron_axe, stone_iron_pickaxe, refused_by_client_break_out_of_reach, cancel_break | MATCH (69, 18, 15, 7, 37) |
+| A2 chain_of_30_breaks | MATCH (492 ticks; was DIFF 145) |
+| A3 pickup_drop | MATCH (38) |
+| A4 place_top_face, place_side_face, sapling_on_grass, refused_by_client_out_of_reach | MATCH (14, 12, 13, 11) |
+| A4 refused_by_server_entity_in_the_way | MATCH (12; was DIFF 1) |
+| A4 refused_by_server_no_support_sapling_on_stone | MATCH (13; was DIFF 1) |
+
+Verified (Sonnet, 2026-11-01): claims match the logs; both patches follow vanilla in the source; the new tests fail without their fix; A22 (patch 48 changes the patch-33 prediction) ran once per server, 7/7 each, zero Grim alerts (`p47_48/verify_a22_*.log`). The two A16 failures are most likely the apex sampling of `apex_row` (y polled over RCON can miss the apex tick; both read low, one 0.0004 over the limit; exact on the rerun and on Grim); not proven. Gaps left, none reached by a current row: the fork counts the destroy delay down when the crosshair is on no block or air (vanilla only inside `continueDestroyBlock`), and skips neither vanilla's `missTime > 0` nor the spear (`PIERCING_WEAPON`) case; an `Unknown` place verdict and `handle_use_block_queued` still swing after every `UseItemOn`; `UnknownWhy::EntityUnsure` is now unreachable.
 
 ### Grim run (Paper + GrimAC, port 25568)
 
@@ -166,5 +185,5 @@ Fork: `test_input_log_actions` (sim) and `events_come_before_the_sample_of_their
 ### For VD2b
 
 - A9 (inventory window), A13 (result mailbox), A22 (place prediction): the `click`, `close` and `open_inventory` replay is built and untested live. A5 and later use `use_item` (see above) and `attack_click`.
-- A decision for the lead: fix findings 1 and 2 in the fork (both change what is sent, so a Grim run and the Pi pair apply) or accept them as known departures. Finding 2 follows the rule "the bot sends what vanilla sends".
+- Findings 1 and 2 are fixed in the fork (patches 47 and 48, above); the Pi pair for 46-48 is due before the push.
 - The differ's "server timing" label is a coarse rule (any earlier clientbound difference in the row); the report now says when the tick's own clientbound packets are equal.
