@@ -51,7 +51,7 @@ use scenarios::{Ctx, Outcome};
 use skill::RemoteSkill;
 
 const USAGE: &str = "usage: null-abilitycheck [--server 127.0.0.1:25567] [--account null_check] \
-[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|A16|A17|A18|A19|A20|A21|A22|A23|AT[,..]] [--shuffle SEED] [--companion [--companion-first]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH] [--input-log DIR] [--prepare-scene A15|A15:ROW|A17:ROW|A1..A4:ROW --player NAME [--progress FILE]]";
+[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|A16|A17|A18|A19|A20|A21|A22|A23|AT[,..]] [--shuffle SEED] [--companion [--companion-first]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH] [--input-log DIR] [--prepare-scene A15|A15:ROW|A17:ROW|A1..A4|A9|A13|A22:ROW --player NAME [--progress FILE]]";
 
 struct Args {
     server: String,
@@ -226,6 +226,18 @@ fn prepare_scene(rc: rcon::Rcon, module: &str, player: &str, log: PathBuf) -> ! 
         "A15" => scenarios_block_effects::prepare_row(&mut cx, row),
         "A17" => scenarios_envelope::prepare_row(&mut cx, row),
         "A1" | "A2" | "A3" | "A4" => scenarios::prepare_row(&mut cx, m, row),
+        "A9" => {
+            scenarios_inventory::prepare_row(&mut cx, row);
+            Vec::new()
+        }
+        "A13" => {
+            scenarios_mailbox::prepare_row(&mut cx, row);
+            Vec::new()
+        }
+        "A22" => {
+            scenarios_prediction::prepare_row(&mut cx, row);
+            Vec::new()
+        }
         m => {
             eprintln!("--prepare-scene: no scene for {m}");
             std::process::exit(2);
@@ -234,6 +246,9 @@ fn prepare_scene(rc: rcon::Rcon, module: &str, player: &str, log: PathBuf) -> ! 
     println!("scene {module} ready for {player}");
     // Rows with RCON actions inside their window: run each when the replay reaches its mark.
     cx.serve_acts(&acts);
+    if m == "A22" {
+        scenarios_prediction::prepare_done(&mut cx, row);
+    }
     std::process::exit(0);
 }
 

@@ -184,6 +184,84 @@ def rebase_seq(ticks, a, b):
     return out
 
 
+STATE_ID = re.compile(r"state_id: (\d+)")
+
+
+# Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+def rebase_state_id(ticks, a, b):
+    """`ticks` with the `state_id` of `ContainerClick` in ticks [a, b) counted from the window.
+
+    `state_id` is the server's revision counter of the open menu (vanilla `AbstractContainerMenu#getStateId`,
+    raised by every change the server sends). The player's menu lives as long as the connection, so
+    Null's row bot, which has run other rows, is further on than a fresh vanilla client. The first
+    click of the window is 0 on both sides; the later ones differ from it as far as the server's
+    sends did. A click with a different number of server sends between still shows."""
+    ids = [int(m) for t in range(a, b) for n, sm in ticks.get(t, ([],))[0] if n == "ContainerClick" for m in STATE_ID.findall(sm)]
+    if not ids:
+        return ticks
+    base = ids[0]
+    out = dict(ticks)
+    for t in range(a, b):
+        if t in ticks:
+            s, c, e = ticks[t]
+            out[t] = ([(n, STATE_ID.sub(lambda m: f"state_id: {int(m.group(1)) - base}", sm) if n == "ContainerClick" else sm) for n, sm in s], c, e)
+    return out
+
+
+# Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+def _sort_group(summary, key, sort_key):
+    """`summary` with the entries after every `key` (which ends in an opening bracket) sorted by `sort_key`."""
+    out, pos = "", 0
+    while True:
+        i = summary.find(key, pos)
+        if i < 0:
+            return out + summary[pos:]
+        start = i + len(key)
+        depth, j, parts, cut = 1, start, [], start
+        while j < len(summary) and depth:
+            c = summary[j]
+            if c in "{([":
+                depth += 1
+            elif c in "})]":
+                depth -= 1
+                if depth == 0:
+                    break
+            elif c == "," and depth == 1:
+                parts.append(summary[cut:j].strip())
+                cut = j + 1
+            j += 1
+        tail = summary[cut:j].strip()
+        if tail:
+            parts.append(tail)
+        parts.sort(key=sort_key)
+        out += summary[pos:start] + ", ".join(parts)
+        pos = j
+
+
+# Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+def canon_changed_slots(summary):
+    """`summary` with the entries of a click's `changed_slots` and of each item's `added_components` and
+    `removed_components` sorted.
+
+    These are hash maps. Their Debug order differs from run to run (Rust's hash seed; vanilla's
+    identity hashes of the component types), so the same click prints its entries in different
+    orders. The server reads them into a map: the set of entries is what the client sends."""
+    summary = _sort_group(summary, "changed_slots: {", lambda p: int(p.split(":", 1)[0]))
+    summary = _sort_group(summary, "added_components: [", lambda p: p)
+    return _sort_group(summary, "removed_components: [", lambda p: p)
+
+
+# Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+def canon_clicks(ticks, a, b):
+    """`ticks` with `canon_changed_slots` applied to every ContainerClick in ticks [a, b)."""
+    out = dict(ticks)
+    for t in range(a, b):
+        if t in ticks:
+            s, c, e = ticks[t]
+            out[t] = ([(n, canon_changed_slots(sm) if n == "ContainerClick" else sm) for n, sm in s], c, e)
+    return out
+
+
 def compare(null, vanilla, window, offset, samples=None):
     """Compares Null ticks [a, b) with vanilla ticks shifted by `offset`.
 
@@ -192,6 +270,8 @@ def compare(null, vanilla, window, offset, samples=None):
     """
     a, b = window
     null, vanilla = rebase_seq(null, a, b), rebase_seq(vanilla, a + offset, b + offset)
+    null, vanilla = rebase_state_id(null, a, b), rebase_state_id(vanilla, a + offset, b + offset)
+    null, vanilla = canon_clicks(null, a, b), canon_clicks(vanilla, a + offset, b + offset)
     diffs, problems = [], []
     first_server_diff = None
     for t in range(a, b):

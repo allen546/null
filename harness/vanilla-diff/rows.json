@@ -123,5 +123,176 @@
   },
   "A4:refused_by_server_no_support_sapling_on_stone": {
     "scene": "A4:refused_by_server_no_support_sapling_on_stone"
+  },
+  "A9:pickup_and_place": {
+    "scene": "A9:pickup_and_place"
+  },
+  "A9:split_half": {
+    "scene": "A9:split_half"
+  },
+  "A9:place_one_at_a_time": {
+    "scene": "A9:place_one_at_a_time"
+  },
+  "A9:swap_with_carried": {
+    "scene": "A9:swap_with_carried"
+  },
+  "A9:merge_onto_a_stack": {
+    "scene": "A9:merge_onto_a_stack"
+  },
+  "A9:quick_move_main_to_hotbar": {
+    "scene": "A9:quick_move_main_to_hotbar"
+  },
+  "A9:quick_move_hotbar_to_main": {
+    "scene": "A9:quick_move_hotbar_to_main"
+  },
+  "A9:quick_move_armour": {
+    "scene": "A9:quick_move_armour"
+  },
+  "A9:swap_hotbar_key": {
+    "scene": "A9:swap_hotbar_key"
+  },
+  "A9:swap_offhand_key": {
+    "scene": "A9:swap_offhand_key"
+  },
+  "A9:drop_one": {
+    "scene": "A9:drop_one"
+  },
+  "A9:drop_stack": {
+    "scene": "A9:drop_stack"
+  },
+  "A9:drop_carried_outside": {
+    "scene": "A9:drop_carried_outside"
+  },
+  "A9:drop_one_carried_outside": {
+    "scene": "A9:drop_one_carried_outside"
+  },
+  "A9:double_click_gathers": {
+    "scene": "A9:double_click_gathers"
+  },
+  "A9:hash_shield_slow_blocks_attacks": {
+    "scene": "A9:hash_shield_slow_blocks_attacks"
+  },
+  "A9:hash_pickaxe_custom_tool": {
+    "scene": "A9:hash_pickaxe_custom_tool"
+  },
+  "A9:hash_sword_damaged_enchanted": {
+    "scene": "A9:hash_sword_damaged_enchanted"
+  },
+  "A9:hash_named_with_lore": {
+    "scene": "A9:hash_named_with_lore"
+  },
+  "A9:hash_repair_cost": {
+    "scene": "A9:hash_repair_cost"
+  },
+  "A9:hash_damage_resistant_tag": {
+    "scene": "A9:hash_damage_resistant_tag"
+  },
+  "A9:hash_repairable_tag": {
+    "scene": "A9:hash_repairable_tag"
+  },
+  "A9:hash_potion": {
+    "scene": "A9:hash_potion"
+  },
+  "A9:hash_potion_custom_effects": {
+    "scene": "A9:hash_potion_custom_effects"
+  },
+  "A9:hash_tipped_arrow": {
+    "scene": "A9:hash_tipped_arrow"
+  },
+  "A9:hash_dyed_leather": {
+    "scene": "A9:hash_dyed_leather"
+  },
+  "A9:hash_enchanted_book": {
+    "scene": "A9:hash_enchanted_book"
+  },
+  "A9:hash_trimmed_armour": {
+    "scene": "A9:hash_trimmed_armour"
+  },
+  "A9:hash_firework": {
+    "scene": "A9:hash_firework"
+  },
+  "A9:hash_written_book": {
+    "scene": "A9:hash_written_book"
+  },
+  "A9:hash_writable_book": {
+    "scene": "A9:hash_writable_book"
+  },
+  "A9:hash_shulker_with_contents": {
+    "scene": "A9:hash_shulker_with_contents"
+  },
+  "A9:hash_banner_patterns": {
+    "scene": "A9:hash_banner_patterns"
+  },
+  "A9:hash_shield_with_patterns": {
+    "scene": "A9:hash_shield_with_patterns"
+  },
+  "A9:hash_attribute_modifiers": {
+    "scene": "A9:hash_attribute_modifiers"
+  },
+  "A9:hash_unbreakable": {
+    "scene": "A9:hash_unbreakable"
+  },
+  "A9:hash_custom_data": {
+    "scene": "A9:hash_custom_data"
+  },
+  "A9:hash_food_and_consumable": {
+    "scene": "A9:hash_food_and_consumable"
+  },
+  "A9:hash_max_stack_size": {
+    "scene": "A9:hash_max_stack_size"
+  },
+  "A9:hash_glint_and_rarity": {
+    "scene": "A9:hash_glint_and_rarity"
+  },
+  "A9:hash_suspicious_stew": {
+    "scene": "A9:hash_suspicious_stew"
+  },
+  "A9:hash_goat_horn": {
+    "scene": "A9:hash_goat_horn"
+  },
+  "A9:hash_lodestone_compass": {
+    "scene": "A9:hash_lodestone_compass"
+  },
+  "A9:hash_charged_crossbow": {
+    "scene": "A9:hash_charged_crossbow"
+  },
+  "A9:hash_can_break": {
+    "scene": "A9:hash_can_break"
+  },
+  "A9:hash_tooltip_display": {
+    "scene": "A9:hash_tooltip_display"
+  },
+  "A13:chain_of_breaks_sent_without_waiting_for_acks": {
+    "scene": "A13:chain_of_breaks_sent_without_waiting_for_acks"
+  },
+  "A13:place_sent_right_after_a_break_both_results_read": {
+    "scene": "A13:place_sent_right_after_a_break_both_results_read"
+  },
+  "A13:instamine_chain_one_break_per_tick_all_done": {
+    "scene": "A13:instamine_chain_one_break_per_tick_all_done"
+  },
+  "A13:two_places_on_consecutive_ticks_both_done": {
+    "scene": "A13:two_places_on_consecutive_ticks_both_done"
+  },
+  "A22:pillar_jump_places_under_feet": {
+    "scene": "A22:pillar_jump_places_under_feet"
+  },
+  "A22:bridge_three_blocks": {
+    "scene": "A22:bridge_three_blocks"
+  },
+  "A22:write_precedes_the_physics_step": {
+    "scene": "A22:write_precedes_the_physics_step"
+  },
+  "A22:rejected_place_rolls_back": {
+    "scene": "A22:rejected_place_rolls_back"
+  },
+  "A22:unknown_family_in_zone_refused": {
+    "scene": "A22:unknown_family_in_zone_refused"
+  },
+  "A22:unknown_family_outside_zone_sent_unpredicted": {
+    "scene": "A22:unknown_family_outside_zone_sent_unpredicted"
+  },
+  "A22:place_beside_a_fence_in_zone_refused": {
+    "scene": "A22:place_beside_a_fence_in_zone_refused"
   }
 }

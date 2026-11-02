@@ -26,10 +26,11 @@ fn block(s: &ActionState) -> Option<null_bot_api::BlockAction> {
     }
 }
 
-// Spec: specs/B6-placement-breaking.md §4.6 (results read by id after the next command was sent)
-fn chain_without_waiting(cx: &mut Ctx) -> Outcome {
+/// The scene of the chain row: four rows of four logs, level with the bot's eyes (y = floor + 2),
+/// one row per direction. Returns the rows and all cells (also set for a vanilla client by `--prepare-scene`).
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn chain_scene(cx: &mut Ctx) -> (Vec<Vec<null_bot_api::BlockPos>>, Vec<null_bot_api::BlockPos>) {
     cx.scene_in(AREA, &[(0, "iron_axe", 1)], STAND);
-    // Four rows of four logs, level with the bot's eyes (y = floor + 2), one row per direction.
     let (sx, sz) = (STAND.0 as i32, STAND.2 as i32);
     let y = FLOOR_Y + 2;
     let lines: Vec<Vec<_>> = vec![
@@ -44,6 +45,12 @@ fn chain_without_waiting(cx: &mut Ctx) -> Outcome {
         cx.r(&format!("fill {} {} {} {} {} {} minecraft:oak_log", a.x, a.y, a.z, b.x, b.y, b.z));
     }
     cx.wait_block(*all.last().unwrap(), "minecraft:oak_log");
+    (lines, all)
+}
+
+// Spec: specs/B6-placement-breaking.md §4.6 (results read by id after the next command was sent)
+fn chain_without_waiting(cx: &mut Ctx) -> Outcome {
+    let (lines, all) = chain_scene(cx);
     let n = vanilla_ticks(2.0, 6.0, true);
     let want = ticks_between_packets(n) as u64;
     cx.run("A13", "chain_of_breaks_sent_without_waiting_for_acks", |cx| {
@@ -84,8 +91,9 @@ fn chain_without_waiting(cx: &mut Ctx) -> Outcome {
     })
 }
 
-// Spec: specs/B6-placement-breaking.md §4.6 (a break and a place in flight together)
-fn place_right_after_break(cx: &mut Ctx) -> Outcome {
+/// The scene of the break-then-place row: sand beside the bot, floor beneath it (also set for a vanilla client by `--prepare-scene`).
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn sand_scene(cx: &mut Ctx) -> (null_bot_api::BlockPos, null_bot_api::BlockPos) {
     cx.scene_in(AREA, &[(0, "dirt", 4)], STAND);
     // Sand by hand takes 15 ticks. The bot looks past it at the floor beneath: once the sand is
     // gone the crosshair falls on the floor's top face, and the placement fills the hole.
@@ -94,6 +102,12 @@ fn place_right_after_break(cx: &mut Ctx) -> Outcome {
     let floor = pos(sx + 1, FLOOR_Y, sz);
     cx.r(&format!("setblock {} {} {} minecraft:sand", sand.x, sand.y, sand.z));
     cx.wait_block(sand, "minecraft:sand");
+    (sand, floor)
+}
+
+// Spec: specs/B6-placement-breaking.md §4.6 (a break and a place in flight together)
+fn place_right_after_break(cx: &mut Ctx) -> Outcome {
+    let (sand, floor) = sand_scene(cx);
     cx.run("A13", "place_sent_right_after_a_break_both_results_read", |cx| {
         let before = cx.count("dirt");
         let aim = Vec3::new(floor.x as f64 + 0.5, floor.y as f64 + 1.0, floor.z as f64 + 0.5);
@@ -123,8 +137,9 @@ fn place_right_after_break(cx: &mut Ctx) -> Outcome {
     })
 }
 
-// Spec: specs/B6-placement-breaking.md §4.6 (instant breaks one per tick, all acks still pending)
-fn instamine_chain(cx: &mut Ctx) -> Outcome {
+/// The scene of the instamine row: netherrack in four rows, an Efficiency V pickaxe (also set for a vanilla client by `--prepare-scene`).
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn instamine_scene(cx: &mut Ctx) -> (Vec<Vec<null_bot_api::BlockPos>>, Vec<null_bot_api::BlockPos>) {
     // Efficiency V diamond pickaxe on netherrack (hardness 0.4): speed 8 + 26 = 34, so
     // 34 / 0.4 / 30 >= 1 and a block breaks in the tick it is started, with no destroy delay.
     let tool = "diamond_pickaxe[enchantments={\"minecraft:efficiency\":5}]";
@@ -143,6 +158,12 @@ fn instamine_chain(cx: &mut Ctx) -> Outcome {
         cx.r(&format!("fill {} {} {} {} {} {} minecraft:netherrack", a.x, a.y, a.z, b.x, b.y, b.z));
     }
     cx.wait_block(*all.last().unwrap(), "minecraft:netherrack");
+    (lines, all)
+}
+
+// Spec: specs/B6-placement-breaking.md §4.6 (instant breaks one per tick, all acks still pending)
+fn instamine_chain(cx: &mut Ctx) -> Outcome {
+    let (lines, all) = instamine_scene(cx);
     let n = vanilla_ticks(0.4, 34.0, true);
     cx.run("A13", "instamine_chain_one_break_per_tick_all_done", |cx| {
         let rep = cx.call(Op::Mail(MailOp::ChainNoWait(lines.clone())));
@@ -184,9 +205,15 @@ fn instamine_chain(cx: &mut Ctx) -> Outcome {
     })
 }
 
+/// The scene of the two-places row: dirt in the hotbar on the bare floor (also set for a vanilla client by `--prepare-scene`).
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn two_places_scene(cx: &mut Ctx) {
+    cx.scene_in(AREA, &[(0, "dirt", 8)], STAND);
+}
+
 // Spec: specs/B6-placement-breaking.md §4.6 (two places in consecutive ticks, one ack pending)
 fn two_places_consecutive_ticks(cx: &mut Ctx) -> Outcome {
-    cx.scene_in(AREA, &[(0, "dirt", 8)], STAND);
+    two_places_scene(cx);
     // The bot looks at the top of the floor block two cells east. The first placement stands on it;
     // the crosshair then falls on that block's west face, and the second placement goes there.
     let (sx, sz) = (STAND.0 as i32, STAND.2 as i32);
@@ -226,6 +253,24 @@ fn two_places_consecutive_ticks(cx: &mut Ctx) -> Outcome {
             ),
         )
     })
+}
+
+/// Sets the scene of A13 row `row` for a vanilla client (`--prepare-scene A13:<row>`). No row has an RCON action inside its window.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) {
+    match row {
+        "chain_of_breaks_sent_without_waiting_for_acks" => {
+            chain_scene(cx);
+        }
+        "place_sent_right_after_a_break_both_results_read" => {
+            sand_scene(cx);
+        }
+        "instamine_chain_one_break_per_tick_all_done" => {
+            instamine_scene(cx);
+        }
+        "two_places_on_consecutive_ticks_both_done" => two_places_scene(cx),
+        _ => panic!("no A13 scene for row {row}"),
+    }
 }
 
 // Spec: specs/B6-placement-breaking.md §4.6

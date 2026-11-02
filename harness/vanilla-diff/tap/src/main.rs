@@ -64,10 +64,12 @@ impl Shared {
 }
 
 /// Split a Debug string like `Name(Inner { .. })` into the variant name and a short summary.
-fn name_and_summary(dbg: &str) -> (String, String) {
+/// Serverbound summaries are what the differ compares, so they keep up to 4000 characters
+/// (VD2b: at 240 a ContainerClick lost its item hashes); clientbound ones stay short (chunks).
+fn name_and_summary(dbg: &str, limit: usize) -> (String, String) {
     let end = dbg.find(['(', ' ', '{']).unwrap_or(dbg.len());
     let name = dbg[..end].to_string();
-    let mut summary: String = dbg[end..].chars().take(240).collect();
+    let mut summary: String = dbg[end..].chars().take(limit).collect();
     if dbg.len() - end > summary.len() {
         summary.push_str("...");
     }
@@ -93,7 +95,7 @@ fn handle_packet(sh: &mut Shared, dir: Dir, body: &[u8]) {
     }
     macro_rules! emit {
         ($p:expr) => {{
-            let (n, s) = name_and_summary(&format!("{:?}", $p));
+            let (n, s) = name_and_summary(&format!("{:?}", $p), if matches!(dir, Dir::Serverbound) { 4000 } else { 240 });
             sh.log(dir, &n, &s);
         }};
     }

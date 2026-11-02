@@ -183,6 +183,53 @@ class SeqTests(unittest.TestCase):
         diffs, n, problems = d.compare(null, van, (5, 7), 0)
         self.assertEqual([x["tick"] for x in diffs], [6])
 
+class StateIdTests(unittest.TestCase):
+    # Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+    def click(self, state):
+        return ("S", "ContainerClick", f"(container_id: 0, state_id: {state}, slot_num: 9)")
+
+    def test_a_connection_that_ran_other_rows_has_the_same_state_ids_from_the_window(self):
+        null = run({5: [self.click(6)], 6: [self.click(8)]})
+        van = run({5: [self.click(3)], 6: [self.click(5)]})
+        diffs, n, problems = d.compare(null, van, (5, 7), 0)
+        self.assertEqual(diffs, [])
+
+    def test_negative_control_a_different_number_of_server_sends_is_still_a_difference(self):
+        null = run({5: [self.click(6)], 6: [self.click(8)]})
+        van = run({5: [self.click(3)], 6: [self.click(4)]})
+        diffs, n, problems = d.compare(null, van, (5, 7), 0)
+        self.assertEqual([x["tick"] for x in diffs], [6])
+
+class ChangedSlotsTests(unittest.TestCase):
+    # Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+    def click(self, order):
+        entries = {9: "HashedStack(None)", 36: "HashedStack(Some(HashedActualItem { kind: Stone, count: 64, components: HashedPatchMap { added_components: [], removed_components: [] } }))", 37: "HashedStack(Some(HashedActualItem { kind: Stone, count: 8 }))"}
+        body = ", ".join(f"{k}: {entries[k]}" for k in order)
+        return ("S", "ContainerClick", f"(ServerboundContainerClick {{ container_id: 0, state_id: 0, slot_num: 9, changed_slots: {{{body}}}, carried_item: HashedStack(None) }})")
+
+    def test_the_same_entries_in_another_order_are_equal(self):
+        diffs, n, problems = d.compare(run({5: [self.click([9, 36, 37])]}), run({5: [self.click([37, 9, 36])]}), (5, 6), 0)
+        self.assertEqual(diffs, [])
+
+    def test_negative_control_a_different_entry_is_still_a_difference(self):
+        other = ("S", "ContainerClick", self.click([9, 36, 37])[2].replace("count: 8", "count: 7"))
+        diffs, n, problems = d.compare(run({5: [self.click([9, 36, 37])]}), run({5: [other]}), (5, 6), 0)
+        self.assertEqual(len(diffs), 1)
+
+class ComponentOrderTests(unittest.TestCase):
+    # Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+    def click(self, comps):
+        body = ", ".join(f"({n}, Checksum({v}))" for n, v in comps)
+        return ("S", "ContainerClick", f"(ServerboundContainerClick {{ changed_slots: {{9: HashedStack(None)}}, carried_item: HashedStack(Some(HashedActualItem {{ kind: Stick, count: 1, components: HashedPatchMap {{ added_components: [{body}], removed_components: [] }} }})) }})")
+
+    def test_the_same_components_in_another_order_are_equal(self):
+        diffs, n, problems = d.compare(run({5: [self.click([("Damage", 1), ("Enchantments", 2)])]}), run({5: [self.click([("Enchantments", 2), ("Damage", 1)])]}), (5, 6), 0)
+        self.assertEqual(diffs, [])
+
+    def test_negative_control_a_different_checksum_is_still_a_difference(self):
+        diffs, n, problems = d.compare(run({5: [self.click([("Damage", 1), ("Enchantments", 2)])]}), run({5: [self.click([("Enchantments", 3), ("Damage", 1)])]}), (5, 6), 0)
+        self.assertEqual(len(diffs), 1)
+
 class InputLogTests(unittest.TestCase):
     # Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
     def test_events_go_with_the_sample_that_follows_and_do_not_replace_it(self):

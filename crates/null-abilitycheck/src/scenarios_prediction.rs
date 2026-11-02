@@ -176,7 +176,7 @@ fn placed(cx: &mut Ctx, pos: null_bot_api::BlockPos, face: Face) -> Result<Block
 
 // Spec: specs/B6-placement-breaking.md §4.10 (a pillar jump stands on the block it just placed)
 fn pillar_jump(cx: &mut Ctx) -> Outcome {
-    cx.scene_in(AREA, &[(0, "dirt", 8)], STAND);
+    plain_scene(cx, "dirt");
     cx.run("A22", "pillar_jump_places_under_feet", |cx| {
         let before = cx.count("dirt");
         let pi = match predict(cx, PredOp::Pillar { n: 5 }) {
@@ -205,14 +205,27 @@ fn pillar_jump(cx: &mut Ctx) -> Outcome {
     })
 }
 
-// Spec: specs/B6-placement-breaking.md §4.10 (a bridge: walk onto each block as soon as it is placed)
-fn bridge(cx: &mut Ctx) -> Outcome {
-    // Solid ground from z = 350; the cells at z 342..349 are air, with a catch floor far below.
+/// The scene of the bridge row: solid ground from z = 350, the cells at z 342..349 air, a catch floor far below. Returns `edge_z`.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn bridge_scene(cx: &mut Ctx) -> i32 {
     let edge_z = 350;
     cx.scene_in(AREA, &[(0, "dirt", 8)], (STAND.0, STAND.1, edge_z as f64 + 0.5));
     cx.r(&format!("fill {} {FLOOR_Y} {} {} {FLOOR_Y} {} minecraft:air", AREA.0, AREA.1, AREA.0 + 20, edge_z - 1));
     cx.r(&format!("fill {} {} {} {} {} {} minecraft:stone", AREA.0, FLOOR_Y - 9, AREA.1, AREA.0 + 20, FLOOR_Y - 9, AREA.1 + 20));
     cx.wait_block(pos(COL.0, FLOOR_Y, edge_z - 1), "minecraft:air");
+    edge_z
+}
+
+/// The scene of the rows that only need the bot on the bare floor with 8 or 4 of `item` in slot 0.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn plain_scene(cx: &mut Ctx, item: &str) {
+    let count = if item == "dirt" { 8 } else { 4 };
+    cx.scene_in(AREA, &[(0, item, count)], STAND);
+}
+
+// Spec: specs/B6-placement-breaking.md §4.10 (a bridge: walk onto each block as soon as it is placed)
+fn bridge(cx: &mut Ctx) -> Outcome {
+    let edge_z = bridge_scene(cx);
     cx.run("A22", "bridge_three_blocks", |cx| {
         let before = cx.count("dirt");
         let pi = match predict(cx, PredOp::Bridge { support: pos(COL.0, FLOOR_Y, edge_z), count: 3 }) {
@@ -253,7 +266,7 @@ fn bridge(cx: &mut Ctx) -> Outcome {
 /// unacked. A server update cannot be that early (the ack and the update come together, one
 /// round trip after the click), so only the client's own write can make the cell dirt there.
 fn write_before_physics(cx: &mut Ctx) -> Outcome {
-    cx.scene_in(AREA, &[(0, "dirt", 8)], STAND);
+    plain_scene(cx, "dirt");
     let clicked = pos(COL.0 + 1, FLOOR_Y, COL.1);
     let target = (COL.0 + 1, FLOOR_Y + 1, COL.1);
     cx.run("A22", "write_precedes_the_physics_step", |cx| {
@@ -281,19 +294,30 @@ fn write_before_physics(cx: &mut Ctx) -> Outcome {
     })
 }
 
-// Spec: specs/B6-placement-breaking.md §4.10 (write and roll back: the server's state after the ack)
-fn rejected_place_rolls_back(cx: &mut Ctx) -> Outcome {
+/// The scene of the rejected-place row. A border from x 1042 to 1051: the bot's cell is inside, the
+/// clicked block is outside, so the server refuses the use (`ServerLevel#mayInteract`) and resends the
+/// two cells. (The command puts a whole-number centre at the block's middle: x 1046.5, so the border
+/// is x 1042 to 1051 and the cell x 1051 is outside.)
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn border_scene(cx: &mut Ctx) {
     cx.scene_in(AREA, &[(0, "dirt", 8)], STAND);
-    let clicked = pos(COL.0 + 1, FLOOR_Y, COL.1);
-    let target = (COL.0 + 1, FLOOR_Y + 1, COL.1);
-    // A border from x 1042 to 1051: the bot's cell is inside, the clicked block is outside, so
-    // the server refuses the use (`ServerLevel#mayInteract`) and resends the two cells.
-    // (the command puts a whole-number centre at the block's middle: x 1046.5, so the border
-    // is x 1042 to 1051 and the cell x 1051 is outside)
     crate::scenarios_envelope::bring_others_inside(cx, (COL.0 - 7, COL.1 - 3));
     cx.r(&format!("worldborder center {} {}", COL.0 - 4, COL.1));
     cx.r("worldborder set 9");
     std::thread::sleep(std::time::Duration::from_millis(400));
+}
+
+// Spec: specs/B6-placement-breaking.md §4.10
+fn border_reset(cx: &mut Ctx) {
+    cx.r("worldborder set 59999968");
+    cx.r("worldborder center 0.0 0.0");
+}
+
+// Spec: specs/B6-placement-breaking.md §4.10 (write and roll back: the server's state after the ack)
+fn rejected_place_rolls_back(cx: &mut Ctx) -> Outcome {
+    border_scene(cx);
+    let clicked = pos(COL.0 + 1, FLOOR_Y, COL.1);
+    let target = (COL.0 + 1, FLOOR_Y + 1, COL.1);
     let out = cx.run("A22", "rejected_place_rolls_back", |cx| {
         let before = cx.count("dirt");
         watch(&[target]);
@@ -318,14 +342,13 @@ fn rejected_place_rolls_back(cx: &mut Ctx) -> Outcome {
             ),
         )
     });
-    cx.r("worldborder set 59999968");
-    cx.r("worldborder center 0.0 0.0");
+    border_reset(cx);
     out
 }
 
 // Spec: specs/B6-placement-breaking.md §4.10 (the safety rule: inside the zone, predicted or refused)
 fn unknown_family_in_zone_refused(cx: &mut Ctx) -> Outcome {
-    cx.scene_in(AREA, &[(0, "oak_fence", 4)], STAND);
+    plain_scene(cx, "oak_fence");
     let clicked = pos(COL.0 + 1, FLOOR_Y, COL.1);
     let target = pos(COL.0 + 1, FLOOR_Y + 1, COL.1);
     cx.run("A22", "unknown_family_in_zone_refused", |cx| {
@@ -351,7 +374,7 @@ fn unknown_family_in_zone_refused(cx: &mut Ctx) -> Outcome {
 
 // Spec: specs/B6-placement-breaking.md §4.10 (outside the zone a place stage 1 cannot compute is sent as before)
 fn unknown_family_outside_zone_sent(cx: &mut Ctx) -> Outcome {
-    cx.scene_in(AREA, &[(0, "oak_fence", 4)], STAND);
+    plain_scene(cx, "oak_fence");
     let clicked = pos(COL.0 + 3, FLOOR_Y, COL.1);
     let target = pos(COL.0 + 3, FLOOR_Y + 1, COL.1);
     cx.run("A22", "unknown_family_outside_zone_sent_unpredicted", |cx| {
@@ -373,15 +396,20 @@ fn unknown_family_outside_zone_sent(cx: &mut Ctx) -> Outcome {
     })
 }
 
-// Spec: specs/B6-placement-breaking.md §4.10 (neighbour shape updates are stage 3: refuse in the zone)
-fn reactive_neighbour_in_zone_refused(cx: &mut Ctx) -> Outcome {
+/// The scene of the beside-a-fence row: the fence stands beside the target cell, inside the zone, so the dirt would change its shape.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn fence_scene(cx: &mut Ctx) {
     cx.scene_in(AREA, &[(0, "dirt", 8)], STAND);
-    let clicked = pos(COL.0 + 1, FLOOR_Y, COL.1);
-    let target = pos(COL.0 + 1, FLOOR_Y + 1, COL.1);
-    // The fence stands beside the target cell, inside the zone: the dirt would change its shape.
     let fence = pos(COL.0 + 1, FLOOR_Y + 1, COL.1 + 1);
     cx.r(&format!("setblock {} {} {} minecraft:oak_fence", fence.x, fence.y, fence.z));
     cx.wait_block(fence, "minecraft:oak_fence");
+}
+
+// Spec: specs/B6-placement-breaking.md §4.10 (neighbour shape updates are stage 3: refuse in the zone)
+fn reactive_neighbour_in_zone_refused(cx: &mut Ctx) -> Outcome {
+    fence_scene(cx);
+    let clicked = pos(COL.0 + 1, FLOOR_Y, COL.1);
+    let target = pos(COL.0 + 1, FLOOR_Y + 1, COL.1);
     cx.run("A22", "place_beside_a_fence_in_zone_refused", |cx| {
         let before = cx.count("dirt");
         let a = match placed(cx, clicked, Face::Up) {
@@ -401,6 +429,29 @@ fn reactive_neighbour_in_zone_refused(cx: &mut Ctx) -> Outcome {
             ),
         )
     })
+}
+
+/// Sets the scene of A22 row `row` for a vanilla client (`--prepare-scene A22:<row>`). No row has an RCON action inside its window.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) {
+    match row {
+        "pillar_jump_places_under_feet" | "write_precedes_the_physics_step" => plain_scene(cx, "dirt"),
+        "bridge_three_blocks" => {
+            bridge_scene(cx);
+        }
+        "rejected_place_rolls_back" => border_scene(cx),
+        "unknown_family_in_zone_refused" | "unknown_family_outside_zone_sent_unpredicted" => plain_scene(cx, "oak_fence"),
+        "place_beside_a_fence_in_zone_refused" => fence_scene(cx),
+        _ => panic!("no A22 scene for row {row}"),
+    }
+}
+
+/// After the replay: puts back what the row's scene changed outside the area (the world border).
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+pub(crate) fn prepare_done(cx: &mut Ctx, row: &str) {
+    if row == "rejected_place_rolls_back" {
+        border_reset(cx);
+    }
 }
 
 // Spec: specs/B6-placement-breaking.md §4.10

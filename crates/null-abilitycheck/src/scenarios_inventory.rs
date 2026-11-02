@@ -297,16 +297,44 @@ fn click_through(cx: &mut Ctx, clicks: &[(Option<u16>, Click)]) -> (bool, Vec<St
     (ok, ev)
 }
 
+/// The scene of an A9 case: the area, then the stacks the case gives (also set for a vanilla client by `--prepare-scene`).
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn case_scene(cx: &mut Ctx, case: &Case) {
+    let n = cx.name.clone();
+    cx.scene_in(AREA, &[], SPAWN);
+    for (slot, item, count) in case.give {
+        cx.r(&format!("item replace entity {n} container.{slot} with minecraft:{item} {count}"));
+    }
+    sleep(Duration::from_millis(400));
+}
+
+/// The scene of a hash row: the custom item in slot 9. Returns the RCON reply.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+fn hash_scene(cx: &mut Ctx, item: &str) -> String {
+    let n = cx.name.clone();
+    cx.scene_in(AREA, &[], SPAWN);
+    let given = cx.r(&format!("item replace entity {n} container.9 with minecraft:{item} 1"));
+    sleep(Duration::from_millis(400));
+    given
+}
+
+/// Sets the scene of A9 row `row` for a vanilla client (`--prepare-scene A9:<row>`). No row has an RCON action inside its window.
+// Spec: specs/plans/VANILLA_DIFF_PLAN.md VD2
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) {
+    if let Some(name) = row.strip_prefix("hash_") {
+        let (_, item) = HASH_ITEMS.iter().find(|(n, _)| *n == name).unwrap_or_else(|| panic!("no A9 hash row {row}"));
+        hash_scene(cx, item);
+    } else {
+        case_scene(cx, CASES.iter().find(|c| c.name == row).unwrap_or_else(|| panic!("no A9 scene for row {row}")));
+    }
+}
+
 // Spec: specs/B3-inventory-crafting.md §4.1 (move items in the inventory, proven by the server)
 pub fn a9(cx: &mut Ctx) -> Vec<Outcome> {
     let n = cx.name.clone();
     let mut out = Vec::new();
     for case in CASES {
-        cx.scene_in(AREA, &[], SPAWN);
-        for (slot, item, count) in case.give {
-            cx.r(&format!("item replace entity {n} container.{slot} with minecraft:{item} {count}"));
-        }
-        sleep(Duration::from_millis(400));
+        case_scene(cx, case);
         out.push(cx.run("A9", case.name, |cx| {
             let (clicks_ok, mut ev) = click_through(cx, case.clicks);
             sleep(Duration::from_millis(200));
@@ -339,9 +367,7 @@ pub fn a9(cx: &mut Ctx) -> Vec<Outcome> {
         }));
     }
     for (name, item) in HASH_ITEMS {
-        cx.scene_in(AREA, &[], SPAWN);
-        let given = cx.r(&format!("item replace entity {n} container.9 with minecraft:{item} 1"));
-        sleep(Duration::from_millis(400));
+        let given = hash_scene(cx, item);
         out.push(cx.run("A9", &format!("hash_{name}"), |cx| {
             // `if items` with the give string matches those components exactly (vanilla item
             // predicates), so the item must arrive in slot 20 unchanged.
