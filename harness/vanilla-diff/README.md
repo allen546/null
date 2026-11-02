@@ -118,7 +118,7 @@ Spec: `specs/plans/VANILLA_DIFF_PLAN.md` VD2. The same pipeline as VD1b over the
 
 ### Parts added
 
-- **Fork patch 46 `input-log-actions`** (`input_log.rs`, one-line notes in the places that send; local commit `19e61ed`, not pushed; `AZALEA_PATCHES.md` row 46). The sample line has `"attack"`, the attack key held in that tick. Discrete actions are `{"ev":..,"tick":N}` lines before the sample of tick `N`: `use_click`, `use_item`, `attack_click`, `swap_offhand`, `open_inventory`, `click` (`win`, `slot`, `button`, `type`), `close`. They are written where the fork sends the action, so a click the client refuses (out of reach, no screen) leaves no line: the bot sent nothing, and the replay sends nothing either.
+- **Fork patch 46 `input-log-actions`** (`input_log.rs`, one-line notes in the places that send; commit `19e61ed`; `AZALEA_PATCHES.md` row 46). The sample line has `"attack"`, the attack key held in that tick. Discrete actions are `{"ev":..,"tick":N}` lines before the sample of tick `N`: `use_click`, `use_item`, `attack_click`, `swap_offhand`, `open_inventory`, `click` (`win`, `slot`, `button`, `type`), `close`. They are written where the fork sends the action, so a click the client refuses (out of reach, no screen) leaves no line: the bot sent nothing, and the replay sends nothing either.
   - **Attack key.** The fork models mining as a held button: a break starts from `continueDestroyBlock` and adds no progress in its start tick (`SkipStartTickProgress`). So the log has no click for a break. The key is held in a tick when a break starts, when mining goes on, and while the 5-tick destroy delay counts down (vanilla's `MultiPlayerGameMode#continueDestroyBlock` decrements `destroyDelay` only while the key is held, so a release there would stretch the chain). A cancel (`StopMiningQueued`) lets the key go: vanilla then calls `stopDestroyBlock` and sends the abort, as Null does.
   - **Drop key.** The fork has no drop-key path; the bot drops through container clicks (`Throw`, or a click outside the window), which the `click` line covers. Nothing to record for the key.
   - **Not reproducible by a key.** `use_item` (`UseItemQueued`: Null sends `UseItem` whatever the crosshair shows) is logged as it is; the replay presses the use key, so with a block in view the diff will show the difference. No A1-A4 row uses it (A5 and later do).
@@ -185,5 +185,5 @@ Fork: `test_input_log_actions` (sim) and `events_come_before_the_sample_of_their
 ### For VD2b
 
 - A9 (inventory window), A13 (result mailbox), A22 (place prediction): the `click`, `close` and `open_inventory` replay is built and untested live. A5 and later use `use_item` (see above) and `attack_click`.
-- Findings 1 and 2 are fixed in the fork (patches 47 and 48, above); the Pi pair for 46-48 is due before the push.
+- Findings 1 and 2 are fixed in the fork (patches 47 and 48, above); patches 46-48 are pushed (`9da5e25`, 2026-11-02, after Pi pair `p48_full`).
 - The differ's "server timing" label is a coarse rule (any earlier clientbound difference in the row); the report now says when the tick's own clientbound packets are equal.
