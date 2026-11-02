@@ -48,5 +48,5 @@ gamerule immediate_respawn true
 ```
 
 ## Notes
-- `server.properties` differences from combat-server: normal world, seed, ports and password, peaceful, `generate-structures=false`, `pause-when-empty-seconds=-1` (the server never pauses when empty, so tests do not start slow), no `pvp` flag change.
+- `server.properties` differences from combat-server: normal world, seed, ports and password, peaceful, `generate-structures=false`, `pause-when-empty-seconds=-1` (the server never pauses when empty, so tests do not start slow), no `pvp` flag change, `spawn-protection=4` (was 0; the A22 row `place_in_spawn_protection_refused_by_server` needs it; a world spawn outside the border moves the effective spawn to the border centre). Protection only applies when `ops.json` has at least one op, so it lists one op that no bot uses (`allen546`). The Pi copy needs the same two settings.
 - `runs/` holds logs of the S4 acceptance runs (state JSON lines, sampled positions, server log slices).

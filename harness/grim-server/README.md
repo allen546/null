@@ -14,3 +14,4 @@ Difficulty is **normal** (set 2026-10-17 by RCON `difficulty normal`; Paper keep
 - `plugins/GrimAC/punishments.yml` (tracked copy: `config/GrimAC/punishments.yml`; copy it in after a fresh install): every `[alert]` is `1:1`, so each violation prints to the console (the defaults are kept in `punishments.default.yml`). No kick commands are set.
 - An alert in the log: `Grim » <player> failed <Check> (xN)`, with ANSI colour codes.
 - Bots must not be op: Grim exempts players with `grim.exempt`, which ops have.
+- `server.properties` has `spawn-protection=4` (was 0), used by A22 `place_in_spawn_protection_refused_by_server`. Protection applies only when `ops.json` has at least one op, so it lists one op that no bot uses (`allen546`). The Pi copy needs the same two settings.

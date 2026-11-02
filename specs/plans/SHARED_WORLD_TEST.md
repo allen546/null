@@ -8,6 +8,18 @@ Bots of one swarm share one Azalea `World`. A bot writes its predicted block int
 
 The companion bot has no skill and stands 2.5 blocks from the main bot, so 447/447 on the Pi pairs says little about this.
 
+## Details
+
+- **Where:** places in `azalea-client/src/plugins/block_actions.rs` (`handle_place_block_queued`, patch 33); breaks in `mining.rs` (inherited from upstream; upstream `main` has the same write, and a search of its GitHub issues and PRs found no decision); rollback in `interact/mod.rs` (`end_prediction_up_to`).
+- **What can go wrong:** bot B reads bot A's block about one round trip before the server's update could reach B. For a refused action, B reads a state that never existed, and only A gets the snap-back. B can then collide or fall against Grim's view (`Simulation`), click a block it could not know about (a packet a vanilla client could not send), or decide wrongly. B's server update can also overwrite A's pending prediction, because B has no retained state for that cell.
+- **Second leak, same cause:** the first bot to receive a server update writes it for all bots, so B can see a true update before B's own packet arrives. The overlay below does not fix this.
+- **Why nothing caught it:** no spec weighed it. B6 §4.10 treats the bot's world as private, and its movement zone covers only the acting bot. `COMPANION_BRIEF.md` defines shared-world bugs as entity identity bugs. The companion has no skill and stands 2.5 blocks away, so the 447/447 pairs say little here. It is the same family as patches 1, 1b, 2, 40, 41, 43 and 44; patch 38's read of the shared chunk map is a related open gap.
+- **Why it may not matter:** the window is short, harm needs contact with that cell during the window, most actions end up accepted, and claims may keep bots apart. `mine` and building put bots side by side, so these reasons are weakest there.
+
+## Fix if proven
+
+**Fix if proven (lead's recommendation, not decided):** a per-bot overlay: the shared `World` holds server truth only, each bot keeps its short list of pending cells and reads it first, and the ack deletes the entry. Bots with nothing pending pay one empty-check per read (not measured). The cost is one-time: `azalea-physics` passes `&World` through at least 20 signatures, and collision and `clip.rs` read below `World`, so each read path needs a test. Rejected: per-bot section copies (memory), swapping the overlay in during a bot's tick (parallel systems and pathfinder threads could read it). A claim gap is a stopgap only; it avoids the bug without fixing it.
+
 ## Goal (Allen, 2026-11-02)
 
 The test aims to prove that this is a real issue. It is not a neutral survey: build the setup most likely to show harm. It gets 3 chances.

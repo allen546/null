@@ -283,8 +283,14 @@
   "A22:write_precedes_the_physics_step": {
     "scene": "A22:write_precedes_the_physics_step"
   },
-  "A22:rejected_place_rolls_back": {
-    "scene": "A22:rejected_place_rolls_back"
+  "A22:place_in_spawn_protection_refused_by_server": {
+    "scene": "A22:place_in_spawn_protection_refused_by_server"
+  },
+  "A22:place_outside_border_refused_on_client": {
+    "scene": "A22:place_outside_border_refused_on_client"
+  },
+  "A22:break_outside_border_refused_on_client": {
+    "scene": "A22:break_outside_border_refused_on_client"
   },
   "A22:unknown_family_in_zone_refused": {
     "scene": "A22:unknown_family_in_zone_refused"

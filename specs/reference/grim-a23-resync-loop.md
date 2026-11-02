@@ -46,7 +46,7 @@ In the pass trace the last setback arrives before the client sent that tick's po
 - `LocalPlayer#sendPosition`: sends a position only when the move since the last sent position is over 2e-4 blocks (or every 20 ticks). The fork's `send_position` uses the same rule.
 - Grim: `MovementCheckRunner#processAndCheckMovementPacket` resyncs each move while `SetbackTeleportUtil#insideUnloadedChunk`; `blockMovementsUntilResync` sends the last known good position and speed. A setback one tick back, applied after the client already sent that tick, makes the client repeat the tick and end on its last sent position, so vanilla sends nothing for that tick.
 
-Whether the loop starts depends only on when the resync arrives relative to the client's tick, not on anything the client chooses. Later: replace this proof with a stubbed vanilla client on the same scenario, compared alert for alert (OPEN item 0).
+Whether the loop starts depends only on when the resync arrives relative to the client's tick, not on anything the client chooses. Later: replace this proof with a stubbed vanilla client on the same scenario, compared alert for alert (`OPEN.md` §4).
 
 ## The floating kick (Pi pair p38b_full, 2026-10-23)
 
