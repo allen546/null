@@ -219,6 +219,9 @@ impl Plugin for HostPlugin {
                 .before(handle_use_item_queued)
                 .before(hold_still_while_screen_open)
                 .before(age_recent_attackers)
+                // Vanilla runs input (Minecraft#handleKeybinds) before the player's tick, whose baseTick
+                // calls Entity#updateFluidOnEyes.
+                .before(azalea::entity::update_fluid_on_eyes)
                 // A dead bot's commands are refused by the fork's guards, which run after us.
                 .before(azalea::respawn::refuse_input_while_dead)
                 .before(azalea::block_actions::refuse_block_actions_while_dead)
@@ -425,6 +428,7 @@ fn decide(
                 Option<&UnmodelledContacts>,
                 Option<&UnmodelledDisconnect>,
                 Option<&PacketsAfterUnmodelledDisconnect>,
+                Option<&BlockStatePredictionHandler>,
             ),
         ),
         (With<LocalEntity>, With<HasClientLoaded>),
@@ -435,7 +439,7 @@ fn decide(
     mut reflex_off: MessageWriter<ReflexDisabled>,
 ) {
     let now = tick.0;
-    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, attackers, tags, screen, movement, respawn_log, connected, death_screen, attributes, effects, contacts, disconnect, packets_after)) in
+    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, attackers, tags, screen, movement, respawn_log, connected, death_screen, attributes, effects, contacts, disconnect, packets_after, pending)) in
         &mut bots
     {
         let bb = &mut *bb;
@@ -498,6 +502,7 @@ fn decide(
                 effects,
                 contacts,
                 disconnect: disconnect.map(|d| (d, packets_after)),
+                pending,
             },
             &others,
         );
@@ -633,7 +638,6 @@ fn apply(
         &mut LookDirection,
         &mut Jumping,
         &mut Inventory,
-        &mut BlockStatePredictionHandler,
         &EntityIdIndex,
         (
             Option<&DeathScreen>,
@@ -646,7 +650,7 @@ fn apply(
     mut stop_nav: MessageWriter<StopPathfindingEvent>,
     mut respawn: MessageWriter<PerformRespawnEvent>,
 ) {
-    for (entity, mut bb, mut flags, mut mv, mut look, mut jumping, mut inv, _pred, ids, (screen, hardcore, rlog, (qb, qp, qu, qe))) in &mut bots
+    for (entity, mut bb, mut flags, mut mv, mut look, mut jumping, mut inv, ids, (screen, hardcore, rlog, (qb, qp, qu, qe))) in &mut bots
     {
         if flags.jump_pulse {
             **jumping = false;

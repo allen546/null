@@ -289,6 +289,11 @@ modules = ["A23"]
 why = "own row (fall into an unsent chunk, patch 38)"
 
 [[entry]]
+path = "crates/null-abilitycheck/src/scenarios_shared_world.rs"
+modules = []
+why = "own rows (SW1, SW1C, SW1B), run only when named, never in all; the probe samples only while a row turns it on"
+
+[[entry]]
 path = "crates/null-abilitycheck/src/scenarios_tick.rs"
 modules = ["AT"]
 why = "own rows"

@@ -406,10 +406,14 @@ fn slow_falling_fall(cx: &mut Ctx) -> Outcome {
         cx.act(&acts, "tp");
         let down = wait_until(15, || landed());
         sleep(Duration::from_millis(300));
-        let trace = trace_stop();
         let hp1 = health(cx);
         let grounded = on_ground_server(cx);
+        // Clear first and wait for the bot to see it, as in the arrow row: a removal that lands
+        // after `revive` ends the new skill and the next call waits 60 s (p53_full, Grim).
         cx.act(&acts, "clear_all");
+        let gone = wait_until(5, || TRACE.lock().unwrap().last().is_some_and(|t| !t.slow));
+        sleep(Duration::from_millis(300));
+        let trace = trace_stop();
         // from the first tick after the teleport
         let from = trace.iter().position(|t| t.y > (FLOOR_Y + 5) as f64).unwrap_or(0);
         let trace = trace[from..].to_vec();
@@ -432,9 +436,9 @@ fn slow_falling_fall(cx: &mut Ctx) -> Outcome {
         let slow_all = trace.iter().take_while(|t| !t.on_ground).all(|t| t.slow);
         revive(cx);
         (
-            down && checked >= 30 && miss.is_none() && want_ticks == got_ticks && (hp1 - hp0).abs() < 1e-9 && grounded && slow_all,
+            down && gone && checked >= 30 && miss.is_none() && want_ticks == got_ticks && (hp1 - hp0).abs() < 1e-9 && grounded && slow_all,
             format!(
-                "fell 20 blocks with Slow Falling: {checked} airborne ticks match the formula (worst error {worst:.2e}){}; landed after {got_ticks:?} ticks from the first traced tick (formula {want_ticks:?}); health {hp0} before and {hp1} after (no fall damage); server on_ground {grounded}",
+                "fell 20 blocks with Slow Falling: {checked} airborne ticks match the formula (worst error {worst:.2e}){}; landed after {got_ticks:?} ticks from the first traced tick (formula {want_ticks:?}); health {hp0} before and {hp1} after (no fall damage); server on_ground {grounded}; bot saw the effect gone: {gone}",
                 miss.map(|m| format!(", FIRST MISS {m}")).unwrap_or_default(),
             ),
         )

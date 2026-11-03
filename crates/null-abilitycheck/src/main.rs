@@ -21,6 +21,7 @@ mod scenarios_pushes;
 mod scenarios_respawn;
 mod scenarios_shapes;
 mod scenarios_server_attributes;
+mod scenarios_shared_world;
 mod scenarios_tick;
 mod scenarios_unloaded;
 mod scenarios_walls;
@@ -51,7 +52,7 @@ use scenarios::{Ctx, Outcome};
 use skill::RemoteSkill;
 
 const USAGE: &str = "usage: null-abilitycheck [--server 127.0.0.1:25567] [--account null_check] \
-[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|A16|A17|A18|A19|A20|A21|A22|A23|AT[,..]] [--shuffle SEED] [--companion [--companion-first]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH] [--input-log DIR] [--prepare-scene A15|A15:ROW|A17:ROW|A1..A4|A9|A13|A22:ROW --player NAME [--progress FILE]]";
+[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|A16|A17|A18|A19|A20|A21|A22|A23|AT[,..]] (SW1|SW1C|SW1B run only when named: specs/plans/SHARED_WORLD_TEST.md) [--shuffle SEED] [--companion [--companion-first]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH] [--input-log DIR] [--prepare-scene A15|A15:ROW|A17:ROW|A1..A4|A9|A13|A22:ROW --player NAME [--progress FILE]]";
 
 struct Args {
     server: String,
@@ -338,6 +339,7 @@ fn main() {
                     scenarios_pushes::PushProbe { main: probe_main.clone() },
                     scenarios_prediction::PredictionProbe { main: probe_main.clone() },
                     scenarios_refusals::RefusalProbe { main: probe_main },
+                    scenarios_shared_world::SharedWorldProbe,
                     ReviveSkill { account: revive_account, make: Arc::new(move || Box::new(skill::RemoteSkill::new(revive_ops.clone(), revive_rep.clone()))) },
                     NodePlugin { factory, events: ev_tx, backoff: Backoff::default(), respawn: true },
                 ))
@@ -406,7 +408,10 @@ fn main() {
     let mut aborted = false;
     let run_start = Instant::now();
     let mut modules: Vec<(&str, f64)> = Vec::new();
-    let mut chosen: Vec<(&str, Scenario)> = all.into_iter().chain(shapes).chain(items).filter(|(id, _)| wants(id)).collect();
+    // The shared-world rows aim to show harm: never in `all`, only when named.
+    let sw: [(&str, Scenario); 3] = [("SW1", scenarios_shared_world::sw1), ("SW1C", scenarios_shared_world::sw1c), ("SW1B", scenarios_shared_world::sw1b)];
+    let sw_only = args.scenarios.iter().all(|s| s.starts_with("SW"));
+    let mut chosen: Vec<(&str, Scenario)> = all.into_iter().chain(shapes).chain(items).filter(|(id, _)| wants(id)).chain(sw.into_iter().filter(|(id, _)| args.scenarios.iter().any(|s| s == id))).collect();
     if let Some(seed) = args.shuffle {
         shuffle(&mut chosen, seed);
     }
@@ -436,7 +441,7 @@ fn main() {
             }
         }
     }
-    if !aborted {
+    if !aborted && !sw_only {
         cx.clean();
     }
     let failed = results.iter().filter(|o| !o.pass).count();

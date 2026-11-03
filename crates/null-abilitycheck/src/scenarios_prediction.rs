@@ -36,6 +36,7 @@ use azalea::{
     local_player::WorldHolder,
     physics::PhysicsSystems,
     registry::builtin::BlockKind,
+    world::BotWorld,
 };
 use null_bot_api::{ActionRecord, BlockAction, BlockOutcome, Face};
 
@@ -82,18 +83,19 @@ impl Plugin for PredictionProbe {
         let main = self.main.clone();
         app.add_systems(
             GameTick,
-            (move |q: Query<(&Account, &WorldHolder), (With<LocalEntity>, With<HasClientLoaded>)>| {
+            (move |q: Query<(&Account, &WorldHolder, &BlockStatePredictionHandler), (With<LocalEntity>, With<HasClientLoaded>)>| {
                 if !PROBE_ON.load(Ordering::Relaxed) {
                     return;
                 }
-                for (a, w) in &q {
+                for (a, w, p) in &q {
                     if a.username() == main {
                         let world = w.shared.read();
                         let cells = CELLS.lock().unwrap().clone();
                         let row = cells
                             .iter()
                             .map(|&(x, y, z)| {
-                                world
+                                // The bot's own view: its prediction lives in its overlay, not the shared world (patch 53).
+                                BotWorld::new(&world, p)
                                     .get_block_state(azalea::BlockPos::new(x, y, z))
                                     .map_or("unloaded".to_string(), |s| BlockKind::from(s).to_str().trim_start_matches("minecraft:").to_string())
                             })
@@ -125,9 +127,8 @@ impl Plugin for PredictionProbe {
                     if a.username() == main
                         && let Some(&(x, y, z)) = CELLS.lock().unwrap().first()
                     {
-                        let name = w
-                            .shared
-                            .read()
+                        let world = w.shared.read();
+                        let name = BotWorld::new(&world, p)
                             .get_block_state(azalea::BlockPos::new(x, y, z))
                             .map_or("unloaded".to_string(), |s| BlockKind::from(s).to_str().trim_start_matches("minecraft:").to_string());
                         PRE_TRACE.lock().unwrap().push((name, p.seq() > p.acked_seq(), None));

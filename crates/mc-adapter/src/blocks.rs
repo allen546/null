@@ -34,9 +34,9 @@ pub fn block_pos(p: BlockPos) -> ABlockPos {
 }
 
 // Spec: specs/B6-placement-breaking.md §4.6 (read back the block the server left)
-pub fn block_name(w: &azalea::world::World, pos: BlockPos) -> Option<String> {
+pub fn block_name(w: &azalea::world::BotWorld, pos: BlockPos) -> Option<String> {
     use azalea::registry::builtin::BlockKind;
-    let st = w.chunks.get_block_state(block_pos(pos))?;
+    let st = w.get_block_state(block_pos(pos))?;
     Some(BlockKind::from(st).to_str().to_string())
 }
 
@@ -48,8 +48,8 @@ pub fn state_property(st: azalea::block::BlockState, name: &str) -> Option<Strin
 
 // Spec: specs/B4-gathering.md §4.8 (natural check: leaves' `persistent` property)
 /// A property of the block at `pos`; None when the chunk is not loaded or the block lacks it.
-pub fn block_property(w: &azalea::world::World, pos: BlockPos, name: &str) -> Option<String> {
-    state_property(w.chunks.get_block_state(block_pos(pos))?, name)
+pub fn block_property(w: &azalea::world::BotWorld, pos: BlockPos, name: &str) -> Option<String> {
+    state_property(w.get_block_state(block_pos(pos))?, name)
 }
 
 #[cfg(test)]

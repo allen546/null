@@ -9,7 +9,7 @@
 - **Result mailbox (AD-F5.4) done 2026-10-19:** `ActionId`s, `BotView::action`, per-owner pruning and the leak guard (B6 §4.6; `null-bot-api/src/action.rs`, `mc-adapter/src/actions.rs`). New scenario A13 (`scenarios_mailbox.rs`, area (770, 342)): 16 breaks sent without waiting for any ack and read by id at the end (all `Done`, every block air on the server); a place sent the tick after a break's finishing packet (both `Done`, the ids read `Expired` after release). `chain_of_30_breaks` now sends without waiting. Whole suite 360/360 on vanilla (implementer's single final run, ``full_vanilla.log``). On Paper + Grim the single full run was 357/360: `A4S click_button_on_floor_top` (Grim `TimerLimit` x1, client gap 64 ms) and the two `A6 delay_belief_*` rows (Grim `Simulation` x1, client gap 177 ms with 12 catch-up ticks) failed while the machine was loaded (load average about 5 with other work running; neither module touches the mailbox); the rerun of A4S and A6 (148 rows) passed 148/148 with no alert (`rerun_grim_a4s_a6.log`). Null tests 143, boundary check ok. Logs: `/private/tmp/claude-502/-Users-allen-Desktop-null/280819a1-ed69-4939-b890-0d60867ac939/scratchpad/` (`full_vanilla.log`, `full_grim.log`, `rerun_grim_a4s_a6.log`).
 - **`null-belief` done 2026-10-19** (commit `ec8f492`, verified): BUILD_PLAN S5.
 - **`gather` live phase done, verified and committed 2026-10-20** (full suite 380/380 on vanilla and on Paper + Grim, zero Grim alerts; a Sonnet verifier passed it, with a negative control that failed the hut row): `null-skills` fixes (re-read of the target before each aim and break, `ARRIVE` = `STAND_SLACK`, claim validation, `drops_left`), adapter `block_property`, new scenario A14 (9 rows, area (800, 342), 9/9 on vanilla and on Paper + Grim, zero Grim alerts), `STEP_UNITS` 6000 to 1000 after the live measurement. Numbers are in BUILD_PLAN S5. `gather` scans only its claim, so a tree wholly outside it is not reported (Allen, 2026-10-20; B4 §4.10). Rerun only A14 with `--scenario A14` (`A14_ONLY=<text>` for one row).
-- **Fork:** patches 5–51 pushed on `null-main` of `allen546/azalea`; head `33b9a94`, pinned (2026-11-02, after Pi pair `p51_full`).
+- **Fork:** patches 5–53 pushed on `null-main` of `allen546/azalea`; head `f994d4d`, pinned (2026-11-03, after Pi pair `p53_full` and its reruns, ABILITY_CHECK "p53_full results").
 
 ## Standing rules (Allen)
 
@@ -37,7 +37,7 @@ harness/grim-server/scripts/stop_server.sh; harness/skeleton-server/scripts/stop
 
 A scenario passes only when it passes on both servers (F5 §4.6). Run them one after the other, vanilla first: two suites at once stalled the client and drew Grim `Timer` alerts (2026-10-18). Each takes about 10 minutes. Rows print as they finish; if the bot stops answering, the runner prints a `RUN <module>_aborted` FAIL row and stops.
 
-`--scenario A1,A5,...` runs a subset; `SHAPES_ONLY=<text>` reruns the shape rows whose name contains the text. Several runs can share the server with different `--account` names (the log check skips other `null_` accounts) as long as each scenario module uses its own test area (`Ctx::scene_in`).
+`--scenario A1,A5,...` runs a subset; `SHAPES_ONLY=<text>` reruns the shape rows whose name contains the text. Several runs can share the server with different `--account` names (the log check skips other `null_` accounts) as long as each scenario module uses its own test area (`Ctx::scene_in`). The shared-world rows `SW1` and `SW1C` run only when named, never in `all`, and need `--companion`.
 
 ## Open
 

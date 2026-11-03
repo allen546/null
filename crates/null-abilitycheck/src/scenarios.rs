@@ -134,7 +134,7 @@ fn names(line: &str, who: &str) -> bool {
 
 /// Server-log slice to (warning lines, Grim alerts as "Check xN"). Lines naming another `null_`
 /// account are skipped, so runs on one server at once don't fail each other.
-fn scan_log(s: &str, me: &str) -> (Vec<String>, Vec<String>) {
+pub(crate) fn scan_log(s: &str, me: &str) -> (Vec<String>, Vec<String>) {
     let pats = ["moved too quickly", "moved wrongly", "Mismatch", "kicked", "lost connection", "Rejecting"];
     let (mut warns, mut grim): (Vec<String>, Vec<(String, u32)>) = (vec![], vec![]);
     for line in s.lines().map(strip_ansi) {
