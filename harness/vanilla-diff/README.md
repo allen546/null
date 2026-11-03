@@ -255,3 +255,65 @@ Also replayed, to see that nothing else moved: A13 two_places_on_consecutive_tic
 - **Spawn protection and the border scenes (2026-11-02).** Both servers now run with `spawn-protection=4`. With a world spawn outside the border, the effective spawn is the border centre (`Level#getWorldBorderAdjustedRespawnData`), so the old border scene put the break row's control block (x 1049) inside protection. `border_scene` now uses centre x 1044 and size 13 (border x 1038 to 1051) and brings other bots inside; protection covers x 1040-1048, and the control at x 1049 is free. Final replay of the two border rows (`~/Desktop/null-spikes/run-logs/p49_51/resume/rows.log`): both MATCH (19 and 34 ticks). The replay needed a Null run through the tap, so A22 ran twice on the vanilla server that day (9/9 and 9/9); the first run of the pair had no tap.
 - **A wrong fix caught by the replay.** The first version of patch 51 sent one `Swing` for a break outside the border, because `Minecraft#startAttack` swings whatever `startDestroyBlock` answered. The vanilla replay sent none. The replay holds the attack key (as the fork models a break start), so `Minecraft#continueAttack` runs, and it swings only when `continueDestroyBlock` answers true. A mouse click would swing. The patch now sends nothing, the sim test and B6 §4.10 say so, and the patch commit was amended (`d601248` to `33b9a94`). Only A22 was rerun (vanilla 8/8, both border rows MATCH).
 - **Fail-without proofs** (test runs only, in scratch worktrees, deleted): patch 49 `a_drop_click_swings_before_the_container_click` fails with `["ContainerClick"]` against `["Swing", "ContainerClick"]`; patch 50 `a_place_goes_out_before_the_destroy_delay_swing_of_the_same_tick` fails with `["Swing", "UseItemOn", "Swing"]` against `["UseItemOn", "Swing", "Swing"]`; patch 51 `world_border_like_vanilla` (2 tests) fail with `block_in_world_border` always true (1 `UseItemOn`; 1 action and 2 swings). A scratch test run that reused another worktree's cached build once showed a false pass; each proof was run again after touching the crates.
+
+## VD3 formats
+
+Spec: `specs/plans/VD3_BRIEF.md` T1. The files a vanilla-diff run leaves, field by field. Other tools (offline trace replays) read them as they are. A change to a field is agreed first. Nothing in the VD0 to VD2 formats changed in T1; additions are marked "VD3".
+
+### Input log (`DIR/<account>.jsonl`, fork patch 45 and 46; JSON lines, UTF-8)
+
+One file per bot account, written by the fork when the app has an `InputLogDir` (`null-abilitycheck --input-log DIR`). Line kinds, in file order. `tick` is the bot connection's client tick counter from 0 (the number of `ClientTickEnd` packets sent before it), the same count the tap uses.
+
+- **Sample**, exactly one per client tick, written where `LocalPlayer#aiStep` has just read the keys: `tick` (int), `f`, `b`, `l`, `r`, `jump`, `sneak`, `sprint`, `attack` (bool, key held in that tick), `yaw`, `pitch` (float, degrees), `slot` (int 0 to 8, hotbar).
+- **Event** `{"ev":NAME,"tick":N}`, before the sample of tick `N`, for a discrete action the fork sent that tick. `NAME` is `use_click`, `use_item`, `attack_click`, `swap_offhand`, `open_inventory`, `click` (extra fields `win` int window id, `slot` int, `button` int, `type` int click type) or `close`. An action the client refused leaves no line.
+- **Mark** `{"mark":LABEL,"tick":N}`, before the sample of tick `N`. Labels:
+  - `start:<ID>:<name>` and `end:<ID>:<name>`: the row `ID:name` runs in ticks [start, end).
+  - `act:<label>`: the row ran the RCON act `<label>` at this tick (the replay runs it at the same replay tick).
+  - **VD3** `logoff:start:<ID>:<name>:<N>` and `logoff:end:<ID>:<name>:<N>`: `<N>` is the byte length of the server's `server.log` when the row's window opened (before the start mark's 100 ms wait) and when it closed (after the 300 ms settle and the log scan). The row's own window in the server log is bytes [start N, end N). The label is split from the right, so a row name may hold `:`. Written only with `--input-log` (`Ctx::run_allowing`).
+
+### Tap log (`vd-tap --out FILE`, JSON lines; unchanged since VD2b)
+
+One line per decoded packet, both directions: `t_ms` (int, ms since the tap started), `tick` (int, count of serverbound `ClientTickEnd` seen so far; the tick-end packet carries the tick it ends), `state` (`Handshake`, `Status`, `Login`, `Config` or `Game`), `dir` (`S` serverbound or `C` clientbound), `name` (the packet's type name), `summary` (Rust Debug text of the packet; at most 4000 characters serverbound, 240 clientbound). The differ reads only `Game`; the Login `Hello` (`name: "<account>"`) names the player. A second connection through the same tap goes to `FILE.2`; `FILE.tap.out` holds the tap's own stderr.
+
+### Replay marks (`<stem>_marks.json`, written by the mod)
+
+`{"replay_start_tick": int, "ticks": int, "first_input_tick": int}`. `replay_start_tick` is the vanilla client tick of the first replayed input; `first_input_tick` is the input log tick it came from. The offset of a row is `replay_start_tick - first_input_tick` (vanilla tick = Null tick + offset). `ticks` is the number of replayed samples. `<stem>_vtap.jsonl.progress` holds the act labels the mod reached, one per line, then `end`.
+
+### Window of the vanilla replay (VD3, `<stem>_vtap.jsonl.logwin`, JSON, written by `run_replay.sh --server-log`)
+
+`{"player": str, "log": str, "start": int, "end": int}`: the vanilla player's name (`VD<MMDDhhmmss>`, never op), the server log path, and the log's byte length when the control file was touched (scene done, replay about to start) and 1 s after the client quit (Grim writes an alert a moment after the packet).
+
+### Packet verdict (VD3, `<stem>_packets.json`, written by `vd_diff.py --json`)
+
+`verdict` (`MATCH` or `DIFF`), `ticks_compared` (int), `ticks_differing` (int), `classes` ({label: count}, labels `client` or `server timing`), `tick_end_problems` (list of [tick, Null count, vanilla count] where a run did not have one `ClientTickEnd`), `first` (only on DIFF: `tick`, `vanilla_tick`, `label`, `null` and `vanilla` as lists of [packet name, summary]), `null_window` ([start, end) Null ticks), `vanilla_offset` (int), `notes` (anchor lines). `<stem>_diff.txt` is the same in words.
+
+### Alert lists and row verdict (VD3, `<stem>_verdict.json`, written by `run_rows.py`)
+
+`row` (`ID:name`), `packets` (the object above; absent when the replay failed), and `alerts` when `--server-log` is given:
+
+- `null_player`, `vanilla_player`: the names the alerts are counted for (whole-word match).
+- `null_log`, `vanilla_log`: [log path, start byte, end byte] of each window.
+- `null`, `vanilla`: {check name: number of alert lines of that player in the window}. A line is `Grim » <player> failed <Check> (xN) ...`, colour codes stripped; each line counts once, the `(xN)` violation count is ignored (as `scan_log` in `scenarios.rs`).
+- `allowed`: {check prefix: reason} from the row's `allowed_alerts` in `rows.json` (alerts a vanilla client draws too, F5 §4.6); empty for A1 to A4 and A22.
+- `checks`: per check seen on either side, {`class`: `null_only` (a finding), `shared` (both drew it, recorded) or `vanilla_only` (reported), `null`: int, `vanilla`: int, `allowed`: reason, only if allowed}. An allowed alert stays in the list and is labelled in the report.
+- `finding`: true when some check is `null_only` and not allowed.
+- `error` instead of the above when a window is missing (no `logoff` marks, no `.logwin`, or the log was replaced).
+
+`rows.json` row fields: `scene` (the `--prepare-scene` argument), `anchors`, `stop_at_anchor`, `skip` (reason; row not run), and VD3 `allowed_alerts` ({check prefix: reason}).
+
+### Use
+
+`harness/vanilla-diff/run_vd3.sh --server vanilla|grim --modules A1,A2,A3,A4,A22 --out DIR --account null_NAME [--rows ID:name,..] [--skip-null]` (about 15 minutes for 24 rows: run with `nohup`). It checks that no other `null-abilitycheck` runs, that RCON is up, and that `ops.json` lists no `VD` player; runs the modules through the tap; replays and diffs each row; on `grim` it also reads and compares the alerts. `DIR/summary.txt` has one line per row. `run_rows.py` alone replays rows of an earlier Null run (`--diff-only` re-diffs). Exit code 0 only if every row matches and no row has an unallowed Null-only alert.
+
+## VD3: T1, one command for the replay and the alert diff (2026-11-03)
+
+Spec: `specs/plans/VD3_BRIEF.md` T1. Design chosen: extend `run_rows.py` (plus a thin `run_vd3.sh` and `differ/vd_alerts.py`) rather than add `null-abilitycheck --vanilla-diff`, because the replay, the scenes and the differ already live in this directory and the only Rust change is the `logoff:` marks (`Ctx::run_allowing`). Formats: "VD3 formats" above.
+
+- Command: `harness/vanilla-diff/run_vd3.sh --server vanilla|grim --modules A1,A2,A3,A4,A22 --out DIR --account null_NAME` (nohup; each leg about 15 minutes).
+- Tests: `cd differ && uv run python -m unittest test_vd_alerts test_vd_diff` (45 tests; every new test was shown to fail on a broken `vd_alerts.py`, `vd_diff.summarize` or `row_alerts`). The negative control for "an alert only one side drew" is `RowAlertsTests` and `CompareTests`: a log with one Grim line inside the Null window only (a finding), inside the vanilla window only (reported), on both (shared), and outside both (not counted). It uses synthetic log lines because the Grim log holds no real alert to reuse.
+- Logs: `~/Desktop/null-spikes/run-logs/vd3_t1/` (`vanilla/`, `grim/`, each with `summary.txt`, `rows/`).
+- Results: vanilla 24 of 24 rows clean (packets MATCH). Paper + Grim 24 of 24 packets MATCH, zero alerts on either side, in 23 rows compared; the last row was not compared because the process exited before the tick that writes its `logoff:end` mark. Fixed by a 100 ms wait after that mark. A22 rerun on Grim once: 9 of 9 clean, all compared.
+- Live control: the bot was stopped with SIGSTOP for 3 s inside `A22:bridge_three_blocks` (22:26:25 to 22:26:28, in a row window of 22:26:24 to 22:26:31). Grim drew no alert and the packets still matched, so a stop of that size draws nothing and the run did not exercise a live alert. The comparison was instead checked on real Grim lines from `server.log` (three `Simulation` lines of the `null_check` run): `parse_alerts` reads them, and `compare_alerts` gives `null_only` and a finding when only Null has them, `shared` and no finding when both do. No row has yet drawn a live alert through the whole run; the first T2-T7 row that draws one is the end-to-end proof.
+- Vanilla window: it starts at the replay's control file, so it covers the replay and not the client's login or scene setup. An alert drawn during that setup is not counted.
+- `run_vd3.sh` now builds `null-abilitycheck` first (the verifier found it could run a stale binary).
+- Verification: Sonnet, 2026-11-03; logs against code, 45 unit tests. Live control logs: `vd3_t1/verify_grim/`.

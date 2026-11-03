@@ -4,7 +4,7 @@ This page holds open items only. Finished work goes in the docs in §5, not here
 
 ## 1. Next actions, in order
 
-1. **Vanilla diff VD3** (`specs/plans/VANILLA_DIFF_PLAN.md`): the diff in the harness, Grim alert lists compared. In full, every module, before `mine` (Allen, 2026-11-03).
+1. **Vanilla diff VD3** (`specs/plans/VANILLA_DIFF_PLAN.md`): the diff in the harness, Grim alert lists compared. In full, every module, before `mine` (Allen, 2026-11-03). Brief: [VD3_BRIEF](specs/plans/VD3_BRIEF.md). **State, 2026-11-03 22:40:** T1 is verified, results in `harness/vanilla-diff/README.md` "VD3: T1". T2 is running; no row has yet drawn a live alert through the whole run, so the first that does is the end-to-end proof of the alert comparison. A Grim leg is announced to the load contract session first, and no heavy build overlaps it. Small fork patches queued (about 3 for the next pair): pathfinder test fix, chunk order at a dimension change (§4), `auto_tool` and `container` reads.
 2. **`mine`:** methods as presets (fishbone, quarry, tunnel; B4 §4.12), sight mode for anti-x-ray servers (B4 §4.11; belief needs `how = seen_sight`), and underground hazards handled by the miner, placing to seal fluids (B4 §4.13).
 3. **Refused abilities** ([REFUSED_ABILITIES](specs/plans/REFUSED_ABILITIES.md)): to-do list and a concurrent feature branch, while stable `null-azalea` gets its test on `mine` (Allen, 2026-11-03). Patch 54 is pushed, so it can start.
 4. **Bench** ([BENCH_PLAN](specs/plans/BENCH_PLAN.md)): remote server, the 100-bot felling load test, CPU density across machines, the crowd test.

@@ -8,6 +8,10 @@ Written 2026-11-03, while the Mac pair for patch 54 ran. Plan: [VANILLA_DIFF_PLA
 
 Each module needs a `prepare_row` (a thin dispatch, 8 to 21 lines in the modules that have one) and `--prepare-scene` wiring in `main.rs`. All replays so far ran on the vanilla server, without `--companion`. No Grim alert list has been compared yet.
 
+## Who owns what
+
+Agreed with the load contract work (`LOAD_CONTRACT.md`; Allen, 2026-11-03: organized, no overlap). VD3 owns the replay runner, the alert comparison and the recording format, and T1 builds them. The load contract reuses them for its trace replays and its mimicked-load step, and owns its contract tests and timeline tests. T1 writes the recording format down in `harness/vanilla-diff/README.md`, section "VD3 formats", before anything else depends on it. A change to that format is agreed first.
+
 ## Row classes
 
 Each new row gets one class in `rows.json`, set by reading the row, never by guess:

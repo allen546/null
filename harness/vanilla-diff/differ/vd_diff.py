@@ -375,6 +375,21 @@ def compare_anchored(null_recs, vanilla_recs, window, offset, anchors, samples=N
     return diffs, total, problems, notes
 
 
+# Spec: specs/plans/VD3_BRIEF.md T1
+def summarize(diffs, n, problems):
+    """The packet verdict of a row as a dict (README "VD3 formats", `packets`): MATCH, or DIFF with
+    the count of differing ticks per label (`client`, `server timing`) and the first one."""
+    classes = {}
+    for d in diffs:
+        classes[d["label"]] = classes.get(d["label"], 0) + 1
+    out = {"verdict": "DIFF" if diffs or problems else "MATCH", "ticks_compared": n, "ticks_differing": len(diffs), "classes": classes,
+           "tick_end_problems": [list(p) for p in problems]}
+    if diffs:
+        d = diffs[0]
+        out["first"] = {"tick": d["tick"], "vanilla_tick": d["vanilla_tick"], "label": d["label"], "null": [list(x) for x in d["null"]], "vanilla": [list(x) for x in d["vanilla"]]}
+    return out
+
+
 def report(diffs, n, problems, show_all=False):
     lines = []
     for t, nn, vv in problems:
@@ -412,6 +427,7 @@ def main(argv=None):
     p.add_argument("--stop-at-anchor", help="end the window at the first Null arrival of this clientbound packet (rows that diverge by chance at it)")
     p.add_argument("--phase", action="store_true", help="print the -Dvd.phase value for the window start and exit")
     p.add_argument("--all", action="store_true", help="list every differing tick")
+    p.add_argument("--json", help="also write the packet verdict (README \"VD3 formats\") to this file")
     a = p.parse_args(argv)
     samples = None
     if a.input:
@@ -449,6 +465,8 @@ def main(argv=None):
     for note in notes:
         print(note)
     print(report(diffs, n, problems, a.all))
+    if a.json:
+        json.dump({**summarize(diffs, n, problems), "null_window": [s, e], "vanilla_offset": off, "notes": notes}, open(a.json, "w"), indent=1)
     return 1 if diffs or problems else 0
 
 

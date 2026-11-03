@@ -512,6 +512,8 @@ impl Ctx {
         let input_log = INPUT_LOG.load(std::sync::atomic::Ordering::Relaxed);
         if input_log {
             mc_adapter::mark_input(&self.name, &format!("start:{id}:{name}"));
+            // Spec: specs/plans/VD3_BRIEF.md T1 (the row's own window in server.log, for the alert diff)
+            mc_adapter::mark_input(&self.name, &format!("logoff:start:{id}:{name}:{mark}"));
         }
         sleep(Duration::from_millis(100));
         crate::skill::TICK_GAP_MAX_MS.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -530,6 +532,11 @@ impl Ctx {
         }
         sleep(Duration::from_millis(300));
         let (bad, grim) = self.log_problems(mark);
+        if input_log {
+            mc_adapter::mark_input(&self.name, &format!("logoff:end:{id}:{name}:{}", self.log_len()));
+            // The next tick writes the mark; the process exits right after the last row.
+            sleep(Duration::from_millis(100));
+        }
         let (expected, grim): (Vec<String>, Vec<String>) = grim.into_iter().partition(|g| allowed.iter().any(|a| g.starts_with(a)));
         if !expected.is_empty() {
             evidence += &format!("; expected Grim alerts from {why} (vanilla would draw them too): {}", expected.join(", "));
