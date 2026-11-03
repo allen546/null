@@ -4,6 +4,8 @@
 
 ## State lines
 
+> State on `main`, 2026-11-03, later. **Fork patch 54 pushed** (`null-main` `40b6af0`, pin moved): a place or break is judged by what it leaves, and a timeout is never `Done`. Mac pair `mac54`: every row passes on each server after A19 harness fixes, zero unallowed alerts. Allen: every departure from vanilla gets fixed; refused abilities become to-dos on a feature branch; VD3 skips only rows Null refuses on purpose.
+
 > State on `main`, 2026-11-03. **Fork patches 52-53 pushed** (`null-main` `f994d4d`, pin moved): the per-bot prediction overlay closes the shared-world harm proven by SW1. Pi pair `p53_full` plus Mac reruns: every module passes on each server, zero alerts (ABILITY_CHECK "p53_full results"). The second leak stays open (OPEN.md §2).
 
 > State on `main`, 2026-11-02, later. **Fork patches 49-51 pushed** (`null-main` `33b9a94`, pin moved) after Pi pair `p51_full` (seed 51102, `--companion --companion-first`): vanilla 449/449, Paper + Grim 449/449, zero suite and warm-up alerts, first pair with `spawn-protection=4` (ABILITY_CHECK "p51_full results"). All VD2b departures closed.

@@ -50,6 +50,8 @@ Rules:
 | doc | status | what it is |
 |---|---|---|
 | [plans/BUILD_PLAN.md](plans/BUILD_PLAN.md) | Plan, in progress (2026-10-19) | The whole-swarm build plan in ARCHITECTURE §7's order: step 1, the skeleton, as milestones S1–S6 (workspace, message types and bus, control spine on simulated bots, Azalea adapter and login, skills and belief, the skeleton live with `Obtain(oak_log, 64)`); steps 2–8 outlined. Done: S1, and S4 (20 bots log in and patrol on `skeleton-server`, verified live 2026-10-16). SA, the ability check, closed 2026-10-19. In progress: S5 (mailbox and belief done; `gather` with the tree policy written, live phase open). |
+| [plans/VD3_BRIEF.md](plans/VD3_BRIEF.md) | Plan, open (2026-11-03) | The vanilla diff in full: row classes, skips, seven tasks. |
+| [plans/REFUSED_ABILITIES.md](plans/REFUSED_ABILITIES.md) | Plan, open (2026-11-03) | Abilities the safe envelope refuses, as to-dos, and the concurrent feature branch. |
 | [plans/BENCH_PLAN.md](plans/BENCH_PLAN.md) | Plan, open (moved from `OPEN.md` 2026-11-02) | Remote server bench, the 100-bot felling load test, CPU density across machines, the crowd test. |
 | [plans/SHARED_WORLD_TEST.md](plans/SHARED_WORLD_TEST.md) | Plan, queued (2026-11-02) | Test aimed at proving that shared-world block predictions do harm; 3 live chances; the problem and the proposed fix. |
 | [plans/COMBAT_SCAFFOLD.md](plans/COMBAT_SCAFFOLD.md) | Plan, a track of BUILD_PLAN (2026-10-16) | Milestones M1–M4 for steps 1 and 2 of AD-B5.1: the Cargo workspace and decision API, the combat decision crate with the duel-controller seam, the Azalea adapter and a live duel, and parameter tuning. Done: M1, M2 (with the 20 v 20 swarm duel). |

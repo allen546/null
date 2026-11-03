@@ -46,7 +46,7 @@ Every new function carries its `// Spec:` link. Every fork change is one commit 
 
 ## Which modules a change reruns (Allen, 2026-10-21)
 
-A change reruns only the modules it affects, once per server. Agents run these selective runs themselves. The full pair (`--scenario all` on both servers) runs once per fork push, not per patch; Allen runs it offline (`scripts/full_suite.sh <prefix>`). The full pair stays as the gate because a fork change can reach rows that no map names, and because load effects show only in long runs.
+A change reruns only the modules it affects, once per server. Agents run these selective runs themselves. The full pair (`--scenario all` on both servers) runs once per fork push, not per patch; Allen runs it offline (`scripts/full_suite.sh <prefix>`). The full pair stays as the gate because a fork change can reach rows that no map names, and because load effects show only in long runs. **Pair cadence (Allen, 2026-11-03):** patches are held locally and the pair runs about every 3 patches, never more than 3 between pairs. Every patch still gets its selective run on both servers. A patch whose map prints `all` gets a pair at once, a pair runs before a milestone starts, and each pair uses a new shuffle seed. The pushed head is always a tested head.
 
 - A harness change inside one module reruns that module.
 - A change to shared harness code (`scenarios.rs` `Ctx`, `rcon.rs`, `skill.rs`, `main.rs`) reruns the modules that call the changed function.
@@ -213,6 +213,12 @@ Timing: every PASS/FAIL line ends with ` [N.N s]` (the row's wall time). After t
 ## p48_full results (Pi pair), 2026-11-02
 
 - Pi pair `p48_full` (seed 48102, `--companion --companion-first`, Null `e3b9a0f`, fork `9da5e25`): vanilla 447/447 (1857 s), Paper + Grim 447/447 (1883 s), zero suite and warm-up alerts, no allowed alerts used. Worst P99 tick sample: vanilla 411 ms, Grim 661 ms. The two A16 apex rows that failed in the Mac selective run for patches 47 and 48 (vanilla 328/330) passed here. Patches 46-48 pushed, pin moved. Logs: `~/Desktop/null-spikes/run-logs/p48_full_*`.
+
+## mac54 results (Mac pair), 2026-11-03
+
+- Full pair on the Mac (Allen approved this one-off, 2026-11-03; seed 54104, `--companion --companion-first`, one server at a time, servers restarted first, warm-ups 6/6 each and not scored, main-tree harness, fork `40b6af0`): vanilla 449/449 (1858 s), Paper + Grim 448/449 (1863 s). The 17 alerts `scripts/full_suite.sh` counts are A23's allowed alerts (`Simulation` x16, `GroundSpoof` x1; F5 §4.6); that script counts raw alerts. No row drew an unallowed alert. Logs: `~/Desktop/null-spikes/run-logs/mac54/`.
+- The one failure was two races in A19 `team_never_no_push`, both in the row. (1) `team leave` for the bot and then `team join` for the cow left a tick with no rule, so the cow pushed once, as it would a vanilla client; the cow now joins first. (2) The sample mark came after a 300 ms wait and an RCON read, and the 8 pushes take 400 ms, so a late mark missed them all (`resumed false`). The mark is now before the Leave, and the row checks all the pushes (55 ticks, was 49). The first fix alone failed on vanilla (`a19_vanilla.log`), which is how (2) was found. A19 with both fixes, once each: vanilla 7/7, Grim 7/7, zero alerts (`a19b_*.log`).
+- The two alerts of the patch 54 selective run (A12 `skill_on_death_keep`, A10 `shulker_box`) did not come back in this pair. That does not explain them (OPEN.md §4).
 
 ## p53_full results (Pi pair), 2026-11-03
 

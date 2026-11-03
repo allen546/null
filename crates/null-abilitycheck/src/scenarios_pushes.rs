@@ -401,8 +401,9 @@ fn team_never_no_push(cx: &mut Ctx) -> Outcome {
         let ma = members(cx);
         let a = hold(40);
         // Phase B: only the cow (a mob is a member by its UUID text).
-        cx.r(&format!("team leave {n}"));
+        // Cow in first: bot out first leaves a tick with no rule, and the cow pushes (mac54, Grim).
         cx.r(&format!("team join {TEAM} {SEL}"));
+        cx.r(&format!("team leave {n}"));
         sleep(Duration::from_millis(300));
         let mb = members(cx);
         let b = hold(40);
@@ -412,11 +413,12 @@ fn team_never_no_push(cx: &mut Ctx) -> Outcome {
         let mc = members(cx);
         let c = hold(40);
         // Phase D: neither (Leave on both): the cow pushes again, as the model says.
+        // Mark before the Leave: the 8 pushes take 400 ms, so a mark after the wait can miss them all.
+        let mark = samples();
         cx.r(&format!("team leave {n}"));
         cx.r(&format!("team leave {SEL}"));
         sleep(Duration::from_millis(300));
         let md = members(cx);
-        let mark = samples();
         sleep(Duration::from_millis(2500));
         let t = trace_stop();
         let cow = mob_pos(cx).unwrap_or((f64::NAN, f64::NAN));

@@ -6,11 +6,12 @@ This page holds open items only. Finished work goes in the docs in §5, not here
 
 1. **Vanilla diff VD3** (`specs/plans/VANILLA_DIFF_PLAN.md`): the diff in the harness, Grim alert lists compared. In full, every module, before `mine` (Allen, 2026-11-03).
 2. **`mine`:** methods as presets (fishbone, quarry, tunnel; B4 §4.12), sight mode for anti-x-ray servers (B4 §4.11; belief needs `how = seen_sight`), and underground hazards handled by the miner, placing to seal fluids (B4 §4.13).
-3. **Bench** ([BENCH_PLAN](specs/plans/BENCH_PLAN.md)): remote server, the 100-bot felling load test, CPU density across machines, the crowd test.
-4. **Shared section cache** in the Azalea fork (99% of section building was repeated), then the same bench ladder again.
-5. **Bench gaps:** lock-wait and per-thread timing (why the ECS tick waits), the level-off at 22–28 searches per second, re-run 5 threads at 50 bots (suspect value), why 3% of repeated chunks have different bytes.
-6. **World transformation tests** T-ACC, T-WE, T-OSC, T-COB (WORLD_TRANSFORMATION §8).
-7. Optional: a Docker topology in F3 for distribution logic (HQ, NATS, 2–3 nodes, injected latency and partitions), once F1 and F6 exist.
+3. **Refused abilities** ([REFUSED_ABILITIES](specs/plans/REFUSED_ABILITIES.md)): to-do list and a concurrent feature branch, while stable `null-azalea` gets its test on `mine` (Allen, 2026-11-03). Patch 54 is pushed, so it can start.
+4. **Bench** ([BENCH_PLAN](specs/plans/BENCH_PLAN.md)): remote server, the 100-bot felling load test, CPU density across machines, the crowd test.
+5. **Shared section cache** in the Azalea fork (99% of section building was repeated), then the same bench ladder again.
+6. **Bench gaps:** lock-wait and per-thread timing (why the ECS tick waits), the level-off at 22–28 searches per second, re-run 5 threads at 50 bots (suspect value), why 3% of repeated chunks have different bytes.
+7. **World transformation tests** T-ACC, T-WE, T-OSC, T-COB (WORLD_TRANSFORMATION §8).
+8. Optional: a Docker topology in F3 for distribution logic (HQ, NATS, 2–3 nodes, injected latency and partitions), once F1 and F6 exist.
 
 ## 2. Open problem: bots in a swarm share one world state
 
@@ -26,7 +27,7 @@ None of these blocks current work. Each has a default.
 
 | item | when it matters | default now | where |
 |---|---|---|---|
-| Departures from vanilla that draw no Grim alert: fix each one, or log it and fix only on harm. "Fix them all" (2026-11-02) covered the VD2b findings only | VD3 and later diffs | fix, as the current rule says | CLAUDE.md, F5 §4.6 |
+| Second leak (L4 of the new everyday testing method, a must-fix): which fix, A per-bot server-diff overlay, B copy-on-write sections, or C shared log with a cursor per bot. Shared mobs need their own fix (runs in parallel with VD3) | before `mine` | A; one-at-a-time pair stays the gate | [LOAD_CONTRACT](specs/plans/LOAD_CONTRACT.md) |
 | AD-K2.1 commander API: imperative commands or a desired-state manifest. Bake-off ran 2026-10-14: no decisive difference | before the LLM commander | manifest hybrid | K2, DECISIONS, `specs/reference/BAKEOFF_K21_2026-10-14.md` |
 | AD-C3.1 central depots or storage per operation | large logistics | per operation, depots when shared | C3 |
 | AD-C7.1 fights bigger than one squad | large fights | bigger squads first | C7 |
@@ -48,7 +49,6 @@ None of these fails a row today. Each stays here until it is fixed or closed.
 
 **Parity gaps**
 
-- A break can report `Done` when another actor replaced the block: `settle_sent_block` (`azalea-client/src/plugins/block_actions.rs`) counts any change from the old block as accepted. Seen live on both servers by the suite-speed session's stall test (run st2): the bot said `Done` while the server held bedrock. Details: `SUITE_SPEED.md` on the `faster-suite` worktree. Not fixed; a fix is a later fork patch, and it is Allen's call.
 - An `Unknown` place verdict and a bot not fully set up still swing (ledger row 48). The block-use path has its own swing note there, and the fork tries only the main hand.
 - Throw-all in a window (ledger row 49): vanilla loops while the slot holds the same item and stops on `canDropItems` (`AbstractContainerMenu#doClick`); the fork gives one swing and models neither. No A9 row exercises it.
 - The `Timer` alerts of the first p49-51 Grim run (404/407) have no proven cause. A2S `break_chain_y` and A10 `component_items` had tick stalls with catch-up ticks. A4S `place_bed_both_parts` had neither (longest gap 65 ms). The rerun on a quieter Mac passed 239/239 with zero alerts, which proves nothing about the cause. Logs: `~/Desktop/null-spikes/run-logs/p49_51/`.
@@ -68,7 +68,8 @@ None of these fails a row today. Each stays here until it is fixed or closed.
 
 **Seen, cause unknown**
 
-- `Couldn't set chunk data: failed to fill whole buffer. World height: 384` in A12 `death_in_the_nether` on Grim, seen in several runs. The row passes. Likely a nether chunk decoded with the overworld height around the dimension change; not looked into.
+- Two Grim alerts in the patch 54 selective run (`cf545a2`, seed 54102, `~/Desktop/null-spikes/run-logs/p54_local/grim.log`): A12 `skill_on_death_keep` `Simulation` x1 (longest tick gap 294 ms, 19:22:58) and A10 `shulker_box` `Timer` x2 on the companion (302 ms, 19:34:56). The rerun on `40b6af0` (seed 54103, `grim_rerun.log`) passed A10 and A12 37/37 with zero alerts, The two rows are different cases. **A12's "longest gap" is a measuring artefact, not a stall:** `RemoteSkill::step` (`skill.rs`) measures between skill steps, and a skill does not step while the bot loads the world after a respawn. The gap matches that load gap at 50 ms a tick: Grim 6 ticks and 291-305 ms, vanilla 3-4 ticks and 160-193 ms, on the Pi and the Mac, also before patch 54. The harness should measure this gap per game tick. The `Simulation` x1 (offset .0216) came about 1 s after the `/kill`, near the respawn, and that run alone had catch-up ticks in this row (2; three other runs 0), so a small real hiccup is possible, not shown. **A10 `shulker_box` is a real stall:** no respawn, 7 catch-up ticks, cause unknown; no build output appeared in the three `target` folders during the run, and the load samples show nothing (`top -l 1` gives no CPU delta). Patch 54 sends nothing new, which does not prove it innocent. A10 may be the same family as the unexplained p49-51 `Timer` alerts above.
+- `Couldn't set chunk data: failed to fill whole buffer. World height: 384` in A12 `death_in_the_nether` on Grim, seen in several runs. The row passes. Cause probable from reading the code (2026-11-03), not proven: `ClientPacketListener::respawn` swaps the world at once while reading packets, but a chunk packet only queues a `ReceiveChunkEvent`, decoded later in `handle_receive_chunk_event` against whichever world the bot then holds. So nether chunks queued before the respawn decode with the overworld height. A vanilla client handles these in packet order. The reverse direction would give no error: an overworld chunk decoded as nether reads its first 16 sections and could write wrong blocks into the shared nether world until replaced. Fix idea: decode chunks in packet order, or drop queued chunk events at a dimension change. Worth a small fork patch before bots travel between dimensions.
 - Grim keeping an old floor for over 1 s after a `fill` (`p31_repro`, 6 `Simulation` alerts). Not reproduced in 28 probes; `clean_in` no longer removes the floor. The trace tools are on the Pi (`bin/null-inv`, `run_inv.py`). The INV row `setblock_11` left the bot at y 200.1 on all three servers, not looked into.
 - A10E `chest_minecart_behind_a_block_refused` failed once on vanilla; 0/30 in repro. It logs each term now.
 - `immediate_respawn_has_no_delay` once hung 60 s on Grim in `revive` (harness race, not examined). A22 flake, not reproduced.

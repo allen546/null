@@ -38,6 +38,8 @@ Input level, not packet level, is the point: if Null's physics, click checks or 
 - **VD2, actions.** Clicks, hotbar, item use, block break and place, containers and crafting. Done when A1–A4, A9, A13 and A22 rows match, or each difference is a reported finding.
 - **VD3, Grim and the harness.** `null-abilitycheck --vanilla-diff` runs the diff after each chosen row. The Grim alert lists are compared, and an allowed alert in F5 §4.6 is backed by the vanilla run instead of a trace. Done when every static-world module runs under the diff on both servers.
 
+**VD3 scope (Allen, 2026-11-03): in full, every module, before `mine`.** This replaces "every static-world module" above. Task split: [VD3_BRIEF](VD3_BRIEF.md).
+
 Later: rows with mobs and other players (needs the server-timing rule to be good), and a run of the diff in each Pi full pair.
 
 ## Decisions (Allen, 2026-10-25: "go with your defaults")
