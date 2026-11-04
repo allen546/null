@@ -52,6 +52,9 @@ public final class Replay {
     // Ticks after the window before the client quits (late server replies are still logged).
     private static final int TAIL_TICKS = Integer.getInteger("vd.tailTicks", 40);
 
+    // The look of the last sample before the window (null: the log has none), applied at the first replayed tick.
+    private static float[] preLook;
+
     /** One recorded tick. {@code events} are the discrete actions noted for it ({@code {"ev":..}} lines before it). */
     record Sample(long tick, boolean f, boolean b, boolean l, boolean r, boolean jump, boolean sneak, boolean sprint,
                   float yaw, float pitch, int slot, boolean attack, List<java.util.Map<String, String>> events) {}
@@ -117,6 +120,13 @@ public final class Replay {
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
+            }
+            if (preLook != null) {
+                // Null's client already had this look when the window opened (VD3): same look, same last-sent look.
+                mc.player.setYaw(preLook[0]);
+                mc.player.setPitch(preLook[1]);
+                ((null_vd.mixin.ClientPlayerAccessor) mc.player).nullVdSetLastYaw(preLook[0]);
+                ((null_vd.mixin.ClientPlayerAccessor) mc.player).nullVdSetLastPitch(preLook[1]);
             }
             if (PHASE >= 0) {
                 ((null_vd.mixin.ClientPlayerAccessor) mc.player).nullVdSetPositionReminder(PHASE);
@@ -287,7 +297,11 @@ public final class Replay {
             throw new RuntimeException("row " + ROW + " has no start and end mark in " + INPUT);
         }
         List<Sample> out = new ArrayList<>();
-        for (Sample s : all) if (s.tick() >= from && s.tick() < to) out.add(s);
+        preLook = null;
+        for (Sample s : all) {
+            if (s.tick() < from) preLook = new float[] {s.yaw(), s.pitch()};
+            else if (s.tick() < to) out.add(s);
+        }
         return out;
     }
 

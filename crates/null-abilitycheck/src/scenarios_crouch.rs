@@ -121,3 +121,19 @@ pub fn a4c(cx: &mut Ctx) -> Vec<Outcome> {
     cx.clean_in(AREA);
     out
 }
+
+/// The scene of one A4C row for a vanilla client (`--prepare-scene A4C:<row>`): the area, the block under test, a stone held.
+// Spec: specs/plans/VD3_BRIEF.md T2 (rows of A4C replayed in the vanilla client)
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) {
+    cx.scene_in(AREA, &[], STAND);
+    let (block, state) = [("note_block", "note_block[note=0]"), ("chest", "chest[facing=south]")]
+        .into_iter()
+        .find(|(b, _)| row.starts_with(b))
+        .unwrap_or_else(|| panic!("no A4C scene for row {row}"));
+    reset(cx);
+    let (n, t) = (cx.name.clone(), target());
+    cx.r(&format!("setblock {} {} {} minecraft:{state}", t.x, t.y, t.z));
+    cx.wait_block(t, Box::leak(format!("minecraft:{block}").into_boxed_str()));
+    cx.r(&format!("item replace entity {n} hotbar.0 with minecraft:stone 1"));
+    sleep(Duration::from_millis(400));
+}

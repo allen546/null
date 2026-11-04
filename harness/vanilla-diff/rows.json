@@ -300,5 +300,817 @@
   },
   "A22:place_beside_a_fence_in_zone_refused": {
     "scene": "A22:place_beside_a_fence_in_zone_refused"
+  },
+  "A4S:click_redstone_wire_line_top": {
+    "scene": "A4S:click_redstone_wire_line_top",
+    "class": "static"
+  },
+  "A4S:click_redstone_wire_dot_sneaking_top": {
+    "scene": "A4S:click_redstone_wire_dot_sneaking_top",
+    "class": "static"
+  },
+  "A4S:click_redstone_wire_dot_standing_is_refused": {
+    "scene": "A4S:click_redstone_wire_dot_standing_is_refused",
+    "class": "static"
+  },
+  "A4S:click_carpet_top": {
+    "scene": "A4S:click_carpet_top",
+    "class": "static"
+  },
+  "A4S:click_carpet_side": {
+    "scene": "A4S:click_carpet_side",
+    "class": "static"
+  },
+  "A4S:click_rail_top": {
+    "scene": "A4S:click_rail_top",
+    "class": "static"
+  },
+  "A4S:click_pressure_plate_top": {
+    "scene": "A4S:click_pressure_plate_top",
+    "class": "static"
+  },
+  "A4S:click_lily_pad_on_water_top": {
+    "scene": "A4S:click_lily_pad_on_water_top",
+    "class": "static"
+  },
+  "A4S:click_snow_1_replaced": {
+    "scene": "A4S:click_snow_1_replaced",
+    "class": "static"
+  },
+  "A4S:click_snow_3_not_replaced_by_stone": {
+    "scene": "A4S:click_snow_3_not_replaced_by_stone",
+    "class": "static"
+  },
+  "A4S:click_snow_8_top": {
+    "scene": "A4S:click_snow_8_top",
+    "class": "static"
+  },
+  "A4S:click_snow_3_with_snow_adds_a_layer": {
+    "scene": "A4S:click_snow_3_with_snow_adds_a_layer",
+    "class": "static"
+  },
+  "A4S:click_repeater_top": {
+    "scene": "A4S:click_repeater_top",
+    "class": "static"
+  },
+  "A4S:click_daylight_detector_top": {
+    "scene": "A4S:click_daylight_detector_top",
+    "class": "static"
+  },
+  "A4S:click_fence_top": {
+    "scene": "A4S:click_fence_top",
+    "class": "static"
+  },
+  "A4S:click_fence_side": {
+    "scene": "A4S:click_fence_side",
+    "class": "static"
+  },
+  "A4S:click_wall_top": {
+    "scene": "A4S:click_wall_top",
+    "class": "static"
+  },
+  "A4S:click_wall_side": {
+    "scene": "A4S:click_wall_side",
+    "class": "static"
+  },
+  "A4S:click_iron_bars_top": {
+    "scene": "A4S:click_iron_bars_top",
+    "class": "static"
+  },
+  "A4S:click_iron_bars_side": {
+    "scene": "A4S:click_iron_bars_side",
+    "class": "static"
+  },
+  "A4S:click_glass_pane_top": {
+    "scene": "A4S:click_glass_pane_top",
+    "class": "static"
+  },
+  "A4S:click_chain_y_top": {
+    "scene": "A4S:click_chain_y_top",
+    "class": "static"
+  },
+  "A4S:click_chain_x_top": {
+    "scene": "A4S:click_chain_x_top",
+    "class": "static"
+  },
+  "A4S:click_chain_z_top": {
+    "scene": "A4S:click_chain_z_top",
+    "class": "static"
+  },
+  "A4S:click_chain_x_side": {
+    "scene": "A4S:click_chain_x_side",
+    "class": "static"
+  },
+  "A4S:click_chain_z_end": {
+    "scene": "A4S:click_chain_z_end",
+    "class": "static"
+  },
+  "A4S:click_end_rod_top": {
+    "scene": "A4S:click_end_rod_top",
+    "class": "static"
+  },
+  "A4S:click_lightning_rod_top": {
+    "scene": "A4S:click_lightning_rod_top",
+    "class": "static"
+  },
+  "A4S:click_slab_bottom_top": {
+    "scene": "A4S:click_slab_bottom_top",
+    "class": "static"
+  },
+  "A4S:click_slab_top_top": {
+    "scene": "A4S:click_slab_top_top",
+    "class": "static"
+  },
+  "A4S:click_slab_double_top": {
+    "scene": "A4S:click_slab_double_top",
+    "class": "static"
+  },
+  "A4S:click_slab_bottom_with_slab_merges": {
+    "scene": "A4S:click_slab_bottom_with_slab_merges",
+    "class": "static"
+  },
+  "A4S:click_stairs_bottom_top": {
+    "scene": "A4S:click_stairs_bottom_top",
+    "class": "static"
+  },
+  "A4S:click_stairs_top_half_top": {
+    "scene": "A4S:click_stairs_top_half_top",
+    "class": "static"
+  },
+  "A4S:click_stairs_outer_corner_top": {
+    "scene": "A4S:click_stairs_outer_corner_top",
+    "class": "static"
+  },
+  "A4S:click_stairs_inner_corner_top": {
+    "scene": "A4S:click_stairs_inner_corner_top",
+    "class": "static"
+  },
+  "A4S:click_stairs_side": {
+    "scene": "A4S:click_stairs_side",
+    "class": "static"
+  },
+  "A4S:click_farmland_top": {
+    "scene": "A4S:click_farmland_top",
+    "class": "static"
+  },
+  "A4S:click_dirt_path_top": {
+    "scene": "A4S:click_dirt_path_top",
+    "class": "static"
+  },
+  "A4S:click_soul_sand_top": {
+    "scene": "A4S:click_soul_sand_top",
+    "class": "static"
+  },
+  "A4S:click_chest_top": {
+    "scene": "A4S:click_chest_top",
+    "class": "static"
+  },
+  "A4S:click_enchanting_table_top": {
+    "scene": "A4S:click_enchanting_table_top",
+    "class": "static"
+  },
+  "A4S:click_torch_top": {
+    "scene": "A4S:click_torch_top",
+    "class": "static"
+  },
+  "A4S:click_wall_torch_top": {
+    "scene": "A4S:click_wall_torch_top",
+    "class": "static"
+  },
+  "A4S:click_lantern_standing_top": {
+    "scene": "A4S:click_lantern_standing_top",
+    "class": "static"
+  },
+  "A4S:click_lantern_hanging_from_chain_side": {
+    "scene": "A4S:click_lantern_hanging_from_chain_side",
+    "class": "static"
+  },
+  "A4S:click_button_on_floor_top": {
+    "scene": "A4S:click_button_on_floor_top",
+    "class": "static"
+  },
+  "A4S:click_lever_on_floor_top": {
+    "scene": "A4S:click_lever_on_floor_top",
+    "class": "static"
+  },
+  "A4S:click_ladder_top": {
+    "scene": "A4S:click_ladder_top",
+    "class": "static"
+  },
+  "A4S:click_wall_sign_top": {
+    "scene": "A4S:click_wall_sign_top",
+    "class": "static"
+  },
+  "A4S:click_trapdoor_bottom_top": {
+    "scene": "A4S:click_trapdoor_bottom_top",
+    "class": "static"
+  },
+  "A4S:click_trapdoor_top_half_top": {
+    "scene": "A4S:click_trapdoor_top_half_top",
+    "class": "static"
+  },
+  "A4S:click_trapdoor_standing_is_refused": {
+    "scene": "A4S:click_trapdoor_standing_is_refused",
+    "class": "static"
+  },
+  "A4S:click_door_lower_side": {
+    "scene": "A4S:click_door_lower_side",
+    "class": "static"
+  },
+  "A4S:click_door_upper_top_is_above_the_eye": {
+    "scene": "A4S:click_door_upper_top_is_above_the_eye",
+    "class": "static"
+  },
+  "A4S:click_bed_top": {
+    "scene": "A4S:click_bed_top",
+    "class": "static"
+  },
+  "A4S:click_banner_top": {
+    "scene": "A4S:click_banner_top",
+    "class": "static"
+  },
+  "A4S:click_skull_top": {
+    "scene": "A4S:click_skull_top",
+    "class": "static"
+  },
+  "A4S:click_cauldron_top": {
+    "scene": "A4S:click_cauldron_top",
+    "class": "static"
+  },
+  "A4S:click_water_cauldron_top": {
+    "scene": "A4S:click_water_cauldron_top",
+    "class": "static"
+  },
+  "A4S:click_hopper_top": {
+    "scene": "A4S:click_hopper_top",
+    "class": "static"
+  },
+  "A4S:click_hopper_sideways_top": {
+    "scene": "A4S:click_hopper_sideways_top",
+    "class": "static"
+  },
+  "A4S:click_hopper_spout_side": {
+    "scene": "A4S:click_hopper_spout_side",
+    "class": "static"
+  },
+  "A4S:click_composter_top": {
+    "scene": "A4S:click_composter_top",
+    "class": "static"
+  },
+  "A4S:click_scaffolding_top": {
+    "scene": "A4S:click_scaffolding_top",
+    "class": "static"
+  },
+  "A4S:click_anvil_top": {
+    "scene": "A4S:click_anvil_top",
+    "class": "static"
+  },
+  "A4S:click_bell_top": {
+    "scene": "A4S:click_bell_top",
+    "class": "static"
+  },
+  "A4S:click_flower_pot_top": {
+    "scene": "A4S:click_flower_pot_top",
+    "class": "static"
+  },
+  "A4S:click_campfire_top": {
+    "scene": "A4S:click_campfire_top",
+    "class": "static"
+  },
+  "A4S:click_cake_top": {
+    "scene": "A4S:click_cake_top",
+    "class": "static"
+  },
+  "A4S:click_grindstone_floor_top": {
+    "scene": "A4S:click_grindstone_floor_top",
+    "class": "static"
+  },
+  "A4S:click_grindstone_floor_side_along_wheel": {
+    "scene": "A4S:click_grindstone_floor_side_along_wheel",
+    "class": "static"
+  },
+  "A4S:click_grindstone_floor_side_across_wheel": {
+    "scene": "A4S:click_grindstone_floor_side_across_wheel",
+    "class": "static"
+  },
+  "A4S:click_grindstone_wall_top": {
+    "scene": "A4S:click_grindstone_wall_top",
+    "class": "static"
+  },
+  "A4S:click_grindstone_wall_side": {
+    "scene": "A4S:click_grindstone_wall_side",
+    "class": "static"
+  },
+  "A4S:click_grindstone_wall_sideways_side": {
+    "scene": "A4S:click_grindstone_wall_sideways_side",
+    "class": "static"
+  },
+  "A4S:click_grindstone_ceiling_top": {
+    "scene": "A4S:click_grindstone_ceiling_top",
+    "class": "static"
+  },
+  "A4S:click_grindstone_ceiling_side": {
+    "scene": "A4S:click_grindstone_ceiling_side",
+    "class": "static"
+  },
+  "A4S:click_lectern_top": {
+    "scene": "A4S:click_lectern_top",
+    "class": "static"
+  },
+  "A4S:click_lectern_side": {
+    "scene": "A4S:click_lectern_side",
+    "class": "static"
+  },
+  "A4S:click_brewing_stand_top": {
+    "scene": "A4S:click_brewing_stand_top",
+    "class": "static"
+  },
+  "A4S:click_brewing_stand_side": {
+    "scene": "A4S:click_brewing_stand_side",
+    "class": "static"
+  },
+  "A4S:click_stonecutter_top": {
+    "scene": "A4S:click_stonecutter_top",
+    "class": "static"
+  },
+  "A4S:click_bell_ceiling_side": {
+    "scene": "A4S:click_bell_ceiling_side",
+    "class": "static"
+  },
+  "A4S:click_bell_single_wall_top": {
+    "scene": "A4S:click_bell_single_wall_top",
+    "class": "static"
+  },
+  "A4S:click_short_grass_is_replaced": {
+    "scene": "A4S:click_short_grass_is_replaced",
+    "class": "static"
+  },
+  "A4S:click_poppy_top": {
+    "scene": "A4S:click_poppy_top",
+    "class": "static"
+  },
+  "A4S:place_stairs_on_floor": {
+    "scene": "A4S:place_stairs_on_floor",
+    "class": "static"
+  },
+  "A4S:place_stairs_side_upper_hit_is_top_half": {
+    "scene": "A4S:place_stairs_side_upper_hit_is_top_half",
+    "class": "static"
+  },
+  "A4S:place_stairs_side_lower_hit_is_bottom_half": {
+    "scene": "A4S:place_stairs_side_lower_hit_is_bottom_half",
+    "class": "static"
+  },
+  "A4S:place_stairs_outer_corner_shape": {
+    "scene": "A4S:place_stairs_outer_corner_shape",
+    "class": "static"
+  },
+  "A4S:place_slab_on_floor_is_bottom": {
+    "scene": "A4S:place_slab_on_floor_is_bottom",
+    "class": "static"
+  },
+  "A4S:place_slab_side_upper_hit_is_top": {
+    "scene": "A4S:place_slab_side_upper_hit_is_top",
+    "class": "static"
+  },
+  "A4S:place_slab_side_lower_hit_is_bottom": {
+    "scene": "A4S:place_slab_side_lower_hit_is_bottom",
+    "class": "static"
+  },
+  "A4S:place_fence": {
+    "scene": "A4S:place_fence",
+    "class": "static"
+  },
+  "A4S:place_wall": {
+    "scene": "A4S:place_wall",
+    "class": "static"
+  },
+  "A4S:place_iron_bars": {
+    "scene": "A4S:place_iron_bars",
+    "class": "static"
+  },
+  "A4S:place_glass_pane": {
+    "scene": "A4S:place_glass_pane",
+    "class": "static"
+  },
+  "A4S:place_chain_on_floor_is_axis_y": {
+    "scene": "A4S:place_chain_on_floor_is_axis_y",
+    "class": "static"
+  },
+  "A4S:place_chain_on_north_face_is_axis_z": {
+    "scene": "A4S:place_chain_on_north_face_is_axis_z",
+    "class": "static"
+  },
+  "A4S:place_chain_on_west_face_is_axis_x": {
+    "scene": "A4S:place_chain_on_west_face_is_axis_x",
+    "class": "static"
+  },
+  "A4S:place_end_rod": {
+    "scene": "A4S:place_end_rod",
+    "class": "static"
+  },
+  "A4S:place_lightning_rod": {
+    "scene": "A4S:place_lightning_rod",
+    "class": "static"
+  },
+  "A4S:place_redstone_wire_on_stone": {
+    "scene": "A4S:place_redstone_wire_on_stone",
+    "class": "static"
+  },
+  "A4S:place_redstone_wire_on_bottom_slab_refused_by_server": {
+    "scene": "A4S:place_redstone_wire_on_bottom_slab_refused_by_server",
+    "class": "static"
+  },
+  "A4S:place_redstone_wire_on_air_refused_by_client": {
+    "scene": "A4S:place_redstone_wire_on_air_refused_by_client",
+    "class": "static"
+  },
+  "A4S:place_carpet": {
+    "scene": "A4S:place_carpet",
+    "class": "static"
+  },
+  "A4S:place_rail": {
+    "scene": "A4S:place_rail",
+    "class": "static"
+  },
+  "A4S:place_pressure_plate": {
+    "scene": "A4S:place_pressure_plate",
+    "class": "static"
+  },
+  "A4S:place_snow_layer": {
+    "scene": "A4S:place_snow_layer",
+    "class": "static"
+  },
+  "A4S:place_repeater_faces_back_to_the_player": {
+    "scene": "A4S:place_repeater_faces_back_to_the_player",
+    "class": "static"
+  },
+  "A4S:place_daylight_detector": {
+    "scene": "A4S:place_daylight_detector",
+    "class": "static"
+  },
+  "A4S:place_chest_faces_the_player": {
+    "scene": "A4S:place_chest_faces_the_player",
+    "class": "static"
+  },
+  "A4S:place_torch_on_floor": {
+    "scene": "A4S:place_torch_on_floor",
+    "class": "static"
+  },
+  "A4S:place_torch_on_wall_is_wall_torch": {
+    "scene": "A4S:place_torch_on_wall_is_wall_torch",
+    "class": "static"
+  },
+  "A4S:place_lantern_hanging_under_ceiling": {
+    "scene": "A4S:place_lantern_hanging_under_ceiling",
+    "class": "static"
+  },
+  "A4S:place_lantern_on_floor": {
+    "scene": "A4S:place_lantern_on_floor",
+    "class": "static"
+  },
+  "A4S:place_button_on_wall": {
+    "scene": "A4S:place_button_on_wall",
+    "class": "static"
+  },
+  "A4S:place_lever_on_wall": {
+    "scene": "A4S:place_lever_on_wall",
+    "class": "static"
+  },
+  "A4S:place_ladder_on_wall": {
+    "scene": "A4S:place_ladder_on_wall",
+    "class": "static"
+  },
+  "A4S:place_trapdoor_on_side_upper_hit": {
+    "scene": "A4S:place_trapdoor_on_side_upper_hit",
+    "class": "static"
+  },
+  "A4S:place_door_both_halves": {
+    "scene": "A4S:place_door_both_halves",
+    "class": "static"
+  },
+  "A4S:place_bed_both_parts": {
+    "scene": "A4S:place_bed_both_parts",
+    "class": "static"
+  },
+  "A4S:place_banner": {
+    "scene": "A4S:place_banner",
+    "class": "static"
+  },
+  "A4S:place_skull_rotation_from_yaw": {
+    "scene": "A4S:place_skull_rotation_from_yaw",
+    "class": "static"
+  },
+  "A4S:place_anvil_faces_clockwise_of_the_player": {
+    "scene": "A4S:place_anvil_faces_clockwise_of_the_player",
+    "class": "static"
+  },
+  "A4S:place_cauldron": {
+    "scene": "A4S:place_cauldron",
+    "class": "static"
+  },
+  "A4S:place_hopper": {
+    "scene": "A4S:place_hopper",
+    "class": "static"
+  },
+  "A4S:place_composter": {
+    "scene": "A4S:place_composter",
+    "class": "static"
+  },
+  "A4S:place_scaffolding": {
+    "scene": "A4S:place_scaffolding",
+    "class": "static"
+  },
+  "A4S:place_campfire": {
+    "scene": "A4S:place_campfire",
+    "class": "static"
+  },
+  "A4S:place_cake": {
+    "scene": "A4S:place_cake",
+    "class": "static"
+  },
+  "A4S:place_flower_pot": {
+    "scene": "A4S:place_flower_pot",
+    "class": "static"
+  },
+  "A4S:place_enchanting_table": {
+    "scene": "A4S:place_enchanting_table",
+    "class": "static"
+  },
+  "A4S:place_bell_on_floor": {
+    "scene": "A4S:place_bell_on_floor",
+    "class": "static"
+  },
+  "A4S:place_grindstone_on_floor": {
+    "scene": "A4S:place_grindstone_on_floor",
+    "class": "static"
+  },
+  "A4S:place_grindstone_on_wall": {
+    "scene": "A4S:place_grindstone_on_wall",
+    "class": "static"
+  },
+  "A4S:place_grindstone_under_ceiling": {
+    "scene": "A4S:place_grindstone_under_ceiling",
+    "class": "static"
+  },
+  "A4S:place_lectern_faces_the_player": {
+    "scene": "A4S:place_lectern_faces_the_player",
+    "class": "static"
+  },
+  "A4S:place_stonecutter_faces_the_player": {
+    "scene": "A4S:place_stonecutter_faces_the_player",
+    "class": "static"
+  },
+  "A4S:place_brewing_stand": {
+    "scene": "A4S:place_brewing_stand",
+    "class": "static"
+  },
+  "A4S:place_poppy_on_grass": {
+    "scene": "A4S:place_poppy_on_grass",
+    "class": "static"
+  },
+  "A4S:click_scaffolding_top_right_after_a_crouch_click": {
+    "scene": "A4S:click_scaffolding_top_right_after_a_crouch_click",
+    "class": "static"
+  },
+  "A4S:refused_place_looking_away_carries_evidence": {
+    "scene": "A4S:refused_place_looking_away_carries_evidence",
+    "class": "static"
+  },
+  "A4S:refused_place_behind_an_armor_stand_carries_evidence": {
+    "scene": "A4S:refused_place_behind_an_armor_stand_carries_evidence",
+    "class": "static"
+  },
+  "A2S:break_redstone_wire": {
+    "scene": "A2S:break_redstone_wire",
+    "class": "static"
+  },
+  "A2S:break_torch": {
+    "scene": "A2S:break_torch",
+    "class": "static"
+  },
+  "A2S:break_wall_torch": {
+    "scene": "A2S:break_wall_torch",
+    "class": "static"
+  },
+  "A2S:break_short_grass": {
+    "scene": "A2S:break_short_grass",
+    "class": "static"
+  },
+  "A2S:break_poppy": {
+    "scene": "A2S:break_poppy",
+    "class": "static"
+  },
+  "A2S:break_lily_pad": {
+    "scene": "A2S:break_lily_pad",
+    "class": "static"
+  },
+  "A2S:break_repeater": {
+    "scene": "A2S:break_repeater",
+    "class": "static"
+  },
+  "A2S:break_end_rod": {
+    "scene": "A2S:break_end_rod",
+    "class": "static"
+  },
+  "A2S:break_scaffolding": {
+    "scene": "A2S:break_scaffolding",
+    "class": "static"
+  },
+  "A2S:break_flower_pot": {
+    "scene": "A2S:break_flower_pot",
+    "class": "static"
+  },
+  "A2S:break_carpet": {
+    "scene": "A2S:break_carpet",
+    "class": "static"
+  },
+  "A2S:break_rail": {
+    "scene": "A2S:break_rail",
+    "class": "static"
+  },
+  "A2S:break_chain_y": {
+    "scene": "A2S:break_chain_y",
+    "class": "static"
+  },
+  "A2S:break_fence_by_hand": {
+    "scene": "A2S:break_fence_by_hand",
+    "class": "static"
+  },
+  "A2S:break_wall_by_hand_wrong_tool": {
+    "scene": "A2S:break_wall_by_hand_wrong_tool",
+    "class": "static"
+  },
+  "A2S:break_glass_pane": {
+    "scene": "A2S:break_glass_pane",
+    "class": "static"
+  },
+  "A2S:break_stairs": {
+    "scene": "A2S:break_stairs",
+    "class": "static"
+  },
+  "A2S:break_lantern": {
+    "scene": "A2S:break_lantern",
+    "class": "static"
+  },
+  "A2S:break_farmland": {
+    "scene": "A2S:break_farmland",
+    "class": "static"
+  },
+  "A2S:break_pressure_plate": {
+    "scene": "A2S:break_pressure_plate",
+    "class": "static"
+  },
+  "A2S:break_snow_layer": {
+    "scene": "A2S:break_snow_layer",
+    "class": "static"
+  },
+  "A2S:break_iron_bars": {
+    "scene": "A2S:break_iron_bars",
+    "class": "static"
+  },
+  "A2S:break_chain_x": {
+    "scene": "A2S:break_chain_x",
+    "class": "static"
+  },
+  "A2S:break_chain_z": {
+    "scene": "A2S:break_chain_z",
+    "class": "static"
+  },
+  "A2S:break_lightning_rod": {
+    "scene": "A2S:break_lightning_rod",
+    "class": "static"
+  },
+  "A2S:break_slab": {
+    "scene": "A2S:break_slab",
+    "class": "static"
+  },
+  "A2S:break_dirt_path": {
+    "scene": "A2S:break_dirt_path",
+    "class": "static"
+  },
+  "A2S:break_soul_sand": {
+    "scene": "A2S:break_soul_sand",
+    "class": "static"
+  },
+  "A2S:break_chest": {
+    "scene": "A2S:break_chest",
+    "class": "static"
+  },
+  "A2S:break_enchanting_table": {
+    "scene": "A2S:break_enchanting_table",
+    "class": "static"
+  },
+  "A2S:break_ladder": {
+    "scene": "A2S:break_ladder",
+    "class": "static"
+  },
+  "A2S:break_trapdoor": {
+    "scene": "A2S:break_trapdoor",
+    "class": "static"
+  },
+  "A2S:break_door_lower_half": {
+    "scene": "A2S:break_door_lower_half",
+    "class": "static"
+  },
+  "A2S:break_bed": {
+    "scene": "A2S:break_bed",
+    "class": "static"
+  },
+  "A2S:break_banner": {
+    "scene": "A2S:break_banner",
+    "class": "static"
+  },
+  "A2S:break_skull": {
+    "scene": "A2S:break_skull",
+    "class": "static"
+  },
+  "A2S:break_cauldron": {
+    "scene": "A2S:break_cauldron",
+    "class": "static"
+  },
+  "A2S:break_hopper": {
+    "scene": "A2S:break_hopper",
+    "class": "static"
+  },
+  "A2S:break_composter": {
+    "scene": "A2S:break_composter",
+    "class": "static"
+  },
+  "A2S:break_anvil": {
+    "scene": "A2S:break_anvil",
+    "class": "static"
+  },
+  "A2S:break_bell": {
+    "scene": "A2S:break_bell",
+    "class": "static"
+  },
+  "A2S:break_campfire": {
+    "scene": "A2S:break_campfire",
+    "class": "static"
+  },
+  "A2S:break_cake": {
+    "scene": "A2S:break_cake",
+    "class": "static"
+  },
+  "A2S:break_grindstone_floor": {
+    "scene": "A2S:break_grindstone_floor",
+    "class": "static"
+  },
+  "A2S:break_grindstone_wall": {
+    "scene": "A2S:break_grindstone_wall",
+    "class": "static"
+  },
+  "A2S:break_lectern": {
+    "scene": "A2S:break_lectern",
+    "class": "static"
+  },
+  "A2S:break_brewing_stand": {
+    "scene": "A2S:break_brewing_stand",
+    "class": "static"
+  },
+  "A2S:break_stonecutter": {
+    "scene": "A2S:break_stonecutter",
+    "class": "static"
+  },
+  "A2S:break_chain_y_command_every_tick": {
+    "scene": "A2S:break_chain_y_command_every_tick",
+    "class": "static"
+  },
+  "A2S:break_wall_hasted": {
+    "scene": "A2S:break_wall_hasted",
+    "class": "static"
+  },
+  "A2S:break_wall_hasted_command_every_tick": {
+    "scene": "A2S:break_wall_hasted_command_every_tick",
+    "class": "static"
+  },
+  "A2S:refused_break_in_adventure_mode": {
+    "scene": "A2S:refused_break_in_adventure_mode",
+    "class": "static"
+  },
+  "A4C:note_block_standing_auto_crouch_off_refused": {
+    "scene": "A4C:note_block_standing_auto_crouch_off_refused",
+    "class": "static"
+  },
+  "A4C:note_block_standing_auto_crouch_on_places_and_stands_again": {
+    "scene": "A4C:note_block_standing_auto_crouch_on_places_and_stands_again",
+    "class": "static"
+  },
+  "A4C:note_block_crouched_auto_crouch_off_places_and_stays_crouched": {
+    "scene": "A4C:note_block_crouched_auto_crouch_off_places_and_stays_crouched",
+    "class": "static"
+  },
+  "A4C:chest_standing_auto_crouch_off_refused": {
+    "scene": "A4C:chest_standing_auto_crouch_off_refused",
+    "class": "static"
+  },
+  "A4C:chest_standing_auto_crouch_on_places_and_stands_again": {
+    "scene": "A4C:chest_standing_auto_crouch_on_places_and_stands_again",
+    "class": "static"
+  },
+  "A4C:chest_crouched_auto_crouch_off_places_and_stays_crouched": {
+    "scene": "A4C:chest_crouched_auto_crouch_off_places_and_stays_crouched",
+    "class": "static"
   }
 }

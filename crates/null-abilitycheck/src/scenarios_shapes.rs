@@ -352,13 +352,8 @@ fn run_row(cx: &mut Ctx, r: &Row) -> Outcome {
     })
 }
 
-/// A standing click right after a crouched one, on the same spot. One run of `click_scaffolding_top`
-/// was refused ("crosshair does not hit it") after the composter row crouched: the check may have
-/// used the crouched eye (0.35 lower) while the pose had not yet returned. The stand-up and the
-/// click go out back to back, with no settle wait; a vanilla client uses the pose it has then.
-// Spec: specs/B6-placement-breaking.md §4.2 (the ray check uses the pose the client has at the click)
-fn scaffolding_after_crouch(cx: &mut Ctx) -> Outcome {
-    let name = "click_scaffolding_top_right_after_a_crouch_click";
+/// The scene of `scaffolding_after_crouch`: a scaffolding to click, a stone to crouch-click first, three stones held.
+fn scaffolding_scene(cx: &mut Ctx) {
     reset(cx);
     let setup: &[Blk] = &[(0, 0, 0, "scaffolding[bottom=false]"), (3, 0, 0, "stone")];
     set_up(cx, setup);
@@ -367,6 +362,16 @@ fn scaffolding_after_crouch(cx: &mut Ctx) -> Outcome {
     let n = cx.name.clone();
     cx.r(&format!("item replace entity {n} hotbar.0 with minecraft:stone 3"));
     sleep(Duration::from_millis(250));
+}
+
+/// A standing click right after a crouched one, on the same spot. One run of `click_scaffolding_top`
+/// was refused ("crosshair does not hit it") after the composter row crouched: the check may have
+/// used the crouched eye (0.35 lower) while the pose had not yet returned. The stand-up and the
+/// click go out back to back, with no settle wait; a vanilla client uses the pose it has then.
+// Spec: specs/B6-placement-breaking.md §4.2 (the ray check uses the pose the client has at the click)
+fn scaffolding_after_crouch(cx: &mut Ctx) -> Outcome {
+    let name = "click_scaffolding_top_right_after_a_crouch_click";
+    scaffolding_scene(cx);
     let (crouch_at, clicked) = (at((3, 0, 0)), at((0, 0, 0)));
     cx.run("A4S", name, |cx| {
         cx.call(Op::Sneak(true));
@@ -618,4 +623,51 @@ pub fn a2s(cx: &mut Ctx) -> Vec<Outcome> {
     sleep(Duration::from_millis(400));
     cx.clean_in(AREA);
     out
+}
+
+/// The scene of one A4S or A2S row for a vanilla client (`--prepare-scene A4S:<row>`): the module's area, then
+/// the row's own reset, blocks and held item, as the row sets them. No row has an RCON action inside its window.
+// Spec: specs/plans/VD3_BRIEF.md T2 (rows of A4S and A2S replayed in the vanilla client)
+pub(crate) fn prepare_row(cx: &mut Ctx, module: &str, row: &str) {
+    cx.scene_in(AREA, &[], STAND);
+    let n = cx.name.clone();
+    if module == "A4S" {
+        match row {
+            "click_scaffolding_top_right_after_a_crouch_click" => scaffolding_scene(cx),
+            "refused_place_looking_away_carries_evidence" | "refused_place_behind_an_armor_stand_carries_evidence" => {
+                reset(cx);
+                cx.r("kill @e[type=minecraft:armor_stand,x=500,y=199,z=342,dx=21,dy=10,dz=21]");
+                set_up(cx, &[(0, 0, 0, "stone")]);
+                if row.contains("armor_stand") {
+                    cx.r("summon minecraft:armor_stand 510.5 200.0 350.0 {NoGravity:1b}");
+                    sleep(Duration::from_millis(500));
+                }
+                give(cx, Some("stone"));
+            }
+            _ => {
+                let r = CLICKS.iter().chain(PLACES).find(|r| r.name == row).unwrap_or_else(|| panic!("no A4S scene for row {row}"));
+                reset(cx);
+                set_up(cx, r.setup);
+                give(cx, Some(r.item));
+            }
+        }
+        return;
+    }
+    // A2S: a `_command_every_tick` row has the scene of its base row; the hasted rows run under Haste 255.
+    let base = row.strip_suffix("_command_every_tick").unwrap_or(row);
+    if base == "refused_break_in_adventure_mode" {
+        reset(cx);
+        set_up(cx, &[(0, 0, 0, "stone")]);
+        cx.r(&format!("gamemode adventure {n}"));
+        sleep(Duration::from_millis(400));
+        return;
+    }
+    let b = BREAKS.iter().find(|b| b.name == base).unwrap_or_else(|| panic!("no A2S scene for row {row}"));
+    if b.haste {
+        cx.r(&format!("effect give {n} minecraft:haste 1000000 255 true"));
+        sleep(Duration::from_millis(500));
+    }
+    reset(cx);
+    set_up(cx, b.setup);
+    give(cx, b.tool);
 }
