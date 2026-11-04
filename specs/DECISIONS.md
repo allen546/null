@@ -28,6 +28,7 @@ Context used throughout (Allen, 2026-10-13): local testing is per component, not
 | [AD-F5.3](#ad-f53-how-does-the-bot-catch-up-after-its-tick-loop-stalls) tick catch-up | **decided:** match the vanilla client (at most 10 ticks in one frame, drop the rest) | (Allen, 2026-10-19) |
 | [AD-F5.4](#ad-f54-how-do-skills-read-the-results-of-their-actions) action results | **decided:** action ids; a mailbox per owner, pruned by owner release and end, not by time; a leak guard | (Allen, 2026-10-19) |
 | [AD-F5.5](#ad-f55-how-much-of-the-vanilla-client-does-the-fork-model) client parity | **decided:** a safe envelope in tiers, not full parity; an unmodelled input that moves the bot by itself disconnects it | (Allen, 2026-10-20) |
+| [AD-F5.6](#ad-f56-how-do-the-bots-of-one-process-hold-the-world) swarm world | **decided:** one `World` per bot, in one process, with sections shared by content | (Allen, 2026-11-04) |
 | [AD-B2.1](#ad-b21-what-does-the-swarm-do-after-a-bots-death) after a death | **working rule** (Allen, 2026-10-19): go back to work, or escalate; **open:** recovery against quarantine, and whether a death is a hard interrupt or the skill decides | a step 2 design, or Allen's call |
 
 ---
@@ -492,3 +493,22 @@ Spec: [F5](F5-version-layer.md) §4.6 ("What Null computes"). Raised 2026-10-20 
 - P30.3: a box touching a block the fork does not model is a `Movement` entry, so the bot disconnects.
 - P30.4: patches in order: 30 (Levitation, Slow Falling, entry kinds, the disconnect, attributes across a respawn), 31 (interpolation), 32 (pushes, teams, entity tick order), 33 (refusals, pathfinder walls). Revised 2026-10-20 from three patches to four, because pushes and interpolation together were about 1,200 lines.
 - Bot-to-bot view (Allen, 2026-10-20): each bot keeps a smoothed view of the other bots within 16 blocks, at most its 32 nearest (its aim target always kept), so memory stays linear (about 3 KB per bot at most); other entities share one copy. Position only.
+
+## AD-F5.6 How do the bots of one process hold the world?
+
+Spec: [F5](F5-version-layer.md) §4.6 (load contract, L4). Problem: [plans/SWARM_WORLD_PROBLEM.md](plans/SWARM_WORLD_PROBLEM.md). Design and measurements: [plans/LOAD_CONTRACT.md](plans/LOAD_CONTRACT.md). Raised by the shared-world test (2026-11-02); L4 became a must-fix before `mine` on 2026-11-03.
+
+**Decided by Allen, 2026-11-04: one `World` per bot, in one process per machine, with sections shared by content.** A section is immutable and stored once. A bot parses its own packets, and it links a section only when its own packet held the same content. An edit makes a new section for that bot, and bots that reach the same content share it again. A hash finds the match and a full comparison confirms it, until that comparison is the limiting factor.
+
+**For own worlds with shared sections.**
+- The second leak, the shared mob updates and the shared entity index go away by design. Read sites need no change, so a forgotten read site cannot leak.
+- Other bots become ordinary entities, as on a vanilla client.
+- Block memory is the same as in the other design: about 1.3 to 1.5 MB per bot when bots overlap (estimate). Without sharing it measured 6.2 to 6.6 MB, with 5.1 MB of that in chunks.
+
+**For a shared world with own section updates and per-observer entries.**
+- It costs less per entity. Own worlds add about 25% client CPU at 50 bots on the Mac, about 40% of that from two per-entity systems that may not need to run on copies.
+- It keeps today's swarm code, which has passed many pairs. Own worlds stop patches 31 and 44 from running, so only a full pair can show there is no new problem.
+- Against it: mobs and the entity index stay as separate fixes, every direct `shared` read must move to the bot's view, and a missed read is a silent leak.
+
+**What would change it.** Entity copies that cost far more than expected as bot counts grow; the section store is the same in both designs. The `Timed out` kicks on the Pi are open (OPEN §4): if the bot's side holds the reply, that is fixed first in either design.
+

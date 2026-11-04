@@ -5,13 +5,14 @@ This page holds open items only. Finished work goes in the docs in §5, not here
 ## 1. Next actions, in order
 
 1. **Vanilla diff VD3** (`specs/plans/VANILLA_DIFF_PLAN.md`): the diff in the harness, Grim alert lists compared. In full, every module, before `mine` (Allen, 2026-11-03). Brief: [VD3_BRIEF](specs/plans/VD3_BRIEF.md). **State, 2026-11-04:** T1 and T2 ran and were verified; results and findings in `harness/vanilla-diff/README.md` "VD3: T2". Stopped there at Allen's request. Next, in order: (a) fix the replay start look, which draws a false vanilla `RotationPlace` in 30 rows, and the differ's empty "server timing" label; (b) rerun those rows on Grim and the T1 rows, which never ran with this mod change, plus the 5 vanilla `Timer` rows; (c) T3. Fork patches queued for the next pair: poppy position-based shape offset (from T2), `Unknown` verdict swing (§4, now seen in T2), pathfinder test fix, chunk order at a dimension change (§4), `auto_tool` and `container` reads. That is 5, above the 3-patch cadence: run a pair by the third. A Grim leg is announced to the load contract session first, and no heavy build overlaps it.
-2. **`mine`:** methods as presets (fishbone, quarry, tunnel; B4 §4.12), sight mode for anti-x-ray servers (B4 §4.11; belief needs `how = seen_sight`), and underground hazards handled by the miner, placing to seal fluids (B4 §4.13).
-3. **Refused abilities** ([REFUSED_ABILITIES](specs/plans/REFUSED_ABILITIES.md)): to-do list and a concurrent feature branch, while stable `null-azalea` gets its test on `mine` (Allen, 2026-11-03). Patch 54 is pushed, so it can start.
-4. **Bench** ([BENCH_PLAN](specs/plans/BENCH_PLAN.md)): remote server, the 100-bot felling load test, CPU density across machines, the crowd test.
-5. **Shared section cache** in the Azalea fork (99% of section building was repeated), then the same bench ladder again.
-6. **Bench gaps:** lock-wait and per-thread timing (why the ECS tick waits), the level-off at 22–28 searches per second, re-run 5 threads at 50 bots (suspect value), why 3% of repeated chunks have different bytes.
-7. **World transformation tests** T-ACC, T-WE, T-OSC, T-COB (WORLD_TRANSFORMATION §8).
-8. Optional: a Docker topology in F3 for distribution logic (HQ, NATS, 2–3 nodes, injected latency and partitions), once F1 and F6 exist.
+2. **Swarm world** ([SWARM_WORLD_PROBLEM](specs/plans/SWARM_WORLD_PROBLEM.md), design in [LOAD_CONTRACT](specs/plans/LOAD_CONTRACT.md)): own worlds with sections shared by content, approved by Allen 2026-11-04. Nothing is built. Runs in parallel with VD3 and finishes before `mine`. First steps: the L4 contract test, then `own_near_75` on the Pi with the keep-alive and GC logs, once no VD3 leg runs there. Its patches count towards the 3-patch cadence.
+3. **`mine`:** methods as presets (fishbone, quarry, tunnel; B4 §4.12), sight mode for anti-x-ray servers (B4 §4.11; belief needs `how = seen_sight`), and underground hazards handled by the miner, placing to seal fluids (B4 §4.13).
+4. **Refused abilities** ([REFUSED_ABILITIES](specs/plans/REFUSED_ABILITIES.md)): to-do list and a concurrent feature branch, while stable `null-azalea` gets its test on `mine` (Allen, 2026-11-03). Patch 54 is pushed, so it can start.
+5. **Bench** ([BENCH_PLAN](specs/plans/BENCH_PLAN.md)): remote server, the 100-bot felling load test, CPU density across machines, the crowd test.
+6. **Shared section cache** in the Azalea fork (99% of section building was repeated), then the same bench ladder again. Sections from the swarm world's store have one pointer per content, so that pointer can key this cache.
+7. **Bench gaps:** lock-wait and per-thread timing (why the ECS tick waits), the level-off at 22–28 searches per second, re-run 5 threads at 50 bots (suspect value), why 3% of repeated chunks have different bytes.
+8. **World transformation tests** T-ACC, T-WE, T-OSC, T-COB (WORLD_TRANSFORMATION §8).
+9. Optional: a Docker topology in F3 for distribution logic (HQ, NATS, 2–3 nodes, injected latency and partitions), once F1 and F6 exist.
 
 ## 2. Open problem: bots in a swarm share one world state
 
@@ -19,7 +20,7 @@ Found 2026-11-02. **Harm proven 2026-11-02** on chance 1 of 3, Paper + Grim: A b
 
 So bot B can read bot A's block about one round trip before the server's update could reach B. For a refused action, B reads a state that never existed. B could then draw a Grim `Simulation` alert, click a block it could not know about, or decide wrongly. A second leak has the same cause: the first bot to receive a server update writes it for all bots.
 
-No spec weighed this. It matters most for `mine` and building, which put bots side by side. The overlay (patch 53, pushed 2026-11-03, `f994d4d`) fixes A's unconfirmed write. It does not fix the second leak, or a delayed packet overwriting newer shared truth; both stay open and are tested only if harm shows up. Code locations and the result: [SHARED_WORLD_TEST](specs/plans/SHARED_WORLD_TEST.md).
+It matters most for `mine` and building, which put bots side by side. The overlay (patch 53, pushed 2026-11-03, `f994d4d`) fixes A's unconfirmed write. The second leak, the shared mob updates and the shared entity index stay open until the swarm world patches land (§1 item 2). Problem statement: [SWARM_WORLD_PROBLEM](specs/plans/SWARM_WORLD_PROBLEM.md). Test and result: [SHARED_WORLD_TEST](specs/plans/SHARED_WORLD_TEST.md).
 
 ## 3. Waiting on your call, when it comes up
 
@@ -27,7 +28,6 @@ None of these blocks current work. Each has a default.
 
 | item | when it matters | default now | where |
 |---|---|---|---|
-| Second leak (L4 of the new everyday testing method, a must-fix): which fix, A per-bot server-diff overlay, B copy-on-write sections, or C shared log with a cursor per bot. Shared mobs need their own fix (runs in parallel with VD3) | before `mine` | A; one-at-a-time pair stays the gate | [LOAD_CONTRACT](specs/plans/LOAD_CONTRACT.md) |
 | AD-K2.1 commander API: imperative commands or a desired-state manifest. Bake-off ran 2026-10-14: no decisive difference | before the LLM commander | manifest hybrid | K2, DECISIONS, `specs/reference/BAKEOFF_K21_2026-10-14.md` |
 | AD-C3.1 central depots or storage per operation | large logistics | per operation, depots when shared | C3 |
 | AD-C7.1 fights bigger than one squad | large fights | bigger squads first | C7 |
@@ -41,7 +41,7 @@ None of these blocks current work. Each has a default.
 | AD-B2.1 after a death: recovery against quarantine, and whether a death is a hard interrupt | step 2 design | working rule: go back to work, or escalate | DECISIONS |
 | When the commander's load justifies LLM officers | when the commander's context or wake budget overflows | no officers (AD-K5.1) | K5, GENERALIZATION §0.6 |
 
-Nothing else blocks building: all 22 architecture decisions are decided (16) or deferred (6), and unflagged §9 questions in the component specs are measurements or details, deferred to the build by rule (CONVENTIONS, Flags).
+Nothing else blocks building: all 23 architecture decisions are decided (17) or deferred (6), and unflagged §9 questions in the component specs are measurements or details, deferred to the build by rule (CONVENTIONS, Flags).
 
 ## 4. Known gaps and unexplained events
 
@@ -69,6 +69,7 @@ None of these fails a row today. Each stays here until it is fixed or closed.
 
 **Seen, cause unknown**
 
+- `Timed out` kicks on the Pi (own-world sweeps, 2026-11-04): all four 100-bot cases and both own-mode 75-bot cases. Shared mode at 75 bots has none, even 77 s behind. Nearly all bots go within about 3 s, and the client's `GameTick` did not stall. The same own-mode case on the Mac had no kicks and kept 20 TPS, with keep-alives within 28 ms and GC pauses up to 47 ms, so overload is needed. Which side holds the reply is unknown. Evidence: [LOAD_CONTRACT](specs/plans/LOAD_CONTRACT.md) "Own-world sweep results".
 - Two Grim alerts in the patch 54 selective run (`cf545a2`, seed 54102, `~/Desktop/null-spikes/run-logs/p54_local/grim.log`): A12 `skill_on_death_keep` `Simulation` x1 (longest tick gap 294 ms, 19:22:58) and A10 `shulker_box` `Timer` x2 on the companion (302 ms, 19:34:56). The rerun on `40b6af0` (seed 54103, `grim_rerun.log`) passed A10 and A12 37/37 with zero alerts, The two rows are different cases. **A12's "longest gap" is a measuring artefact, not a stall:** `RemoteSkill::step` (`skill.rs`) measures between skill steps, and a skill does not step while the bot loads the world after a respawn. The gap matches that load gap at 50 ms a tick: Grim 6 ticks and 291-305 ms, vanilla 3-4 ticks and 160-193 ms, on the Pi and the Mac, also before patch 54. The harness should measure this gap per game tick. The `Simulation` x1 (offset .0216) came about 1 s after the `/kill`, near the respawn, and that run alone had catch-up ticks in this row (2; three other runs 0), so a small real hiccup is possible, not shown. **A10 `shulker_box` is a real stall:** no respawn, 7 catch-up ticks, cause unknown; no build output appeared in the three `target` folders during the run, and the load samples show nothing (`top -l 1` gives no CPU delta). Patch 54 sends nothing new, which does not prove it innocent. A10 may be the same family as the unexplained p49-51 `Timer` alerts above.
 - `Couldn't set chunk data: failed to fill whole buffer. World height: 384` in A12 `death_in_the_nether` on Grim, seen in several runs. The row passes. Cause probable from reading the code (2026-11-03), not proven: `ClientPacketListener::respawn` swaps the world at once while reading packets, but a chunk packet only queues a `ReceiveChunkEvent`, decoded later in `handle_receive_chunk_event` against whichever world the bot then holds. So nether chunks queued before the respawn decode with the overworld height. A vanilla client handles these in packet order. The reverse direction would give no error: an overworld chunk decoded as nether reads its first 16 sections and could write wrong blocks into the shared nether world until replaced. Fix idea: decode chunks in packet order, or drop queued chunk events at a dimension change. Worth a small fork patch before bots travel between dimensions.
 - Grim keeping an old floor for over 1 s after a `fill` (`p31_repro`, 6 `Simulation` alerts). Not reproduced in 28 probes; `clean_in` no longer removes the floor. The trace tools are on the Pi (`bin/null-inv`, `run_inv.py`). The INV row `setblock_11` left the bot at y 200.1 on all three servers, not looked into.

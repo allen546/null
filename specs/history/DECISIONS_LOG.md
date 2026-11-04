@@ -2,6 +2,10 @@
 
 **Historical.** Moved from `OPEN.md` on 2026-10-19 so that OPEN stays a short start page. Each entry is a one-line record; the full reasoning is in `DECISIONS.md` and the specs each entry names. Paths are relative to the repo root unless they start with `specs/`.
 
+## Decided 2026-11-04
+
+- Swarm world (AD-F5.6): one `World` per bot, one process per machine, sections stored once by content, as git stores objects. The full comparison on a hash match stays until it really becomes the limiting factor. Second leak closed by this once built; `plans/SWARM_WORLD_PROBLEM.md`, `plans/LOAD_CONTRACT.md`.
+
 ## Decided 2026-10-25
 
 - Shared-world bugs get a class test, not one-off audits: companion mode in the ability check (a second bot of the same swarm near the main bot in every row, both join orders) after fork patch 40. `specs/plans/COMPANION_BRIEF.md`.
