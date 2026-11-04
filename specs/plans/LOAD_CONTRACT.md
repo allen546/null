@@ -148,7 +148,7 @@ Read-only audit of fork commit 40b6af0 (`~/Desktop/null-spikes/azalea`) and the 
 
 ## Swarm world design (Allen approved 2026-11-04)
 
-**Problem:** [SWARM_WORLD_PROBLEM](SWARM_WORLD_PROBLEM.md). **Record:** [AD-F5.6](../DECISIONS.md#ad-f56-how-do-the-bots-of-one-process-hold-the-world). Nothing here is built. The spike has only item 1, with no section store.
+**Problem:** [SWARM_WORLD_PROBLEM](SWARM_WORLD_PROBLEM.md). **Record:** [AD-F5.6](../DECISIONS.md#ad-f56-how-do-the-bots-of-one-process-hold-the-world). Nothing is in the fork yet. The spike has items 1 to 4 and a first form of item 5 (see "Spike state and handoff").
 
 **The idea is git's object model, without history.** A section is a blob, stored once by content. A chunk's 24 section pointers are a tree. A bot's world is a branch. One frame's edits to one section are a commit. A packet arriving is a fetch. A section is freed when no bot points to it. Bots never merge, because the server is the only authority.
 
@@ -170,7 +170,7 @@ Read-only audit of fork commit 40b6af0 (`~/Desktop/null-spikes/azalea`) and the 
 
 Biome ids depend on the server's registry. Two servers in one process could share a section with equal ids, and each bot reads it through its own registry, so this cannot give a wrong read.
 
-**Expected result (estimate, not built).** About 1.3 to 1.5 MB per bot when bots overlap, against 6.2 to 6.6 MB without the store and about 1 MB in shared mode. Bots far apart overlap less, so the saving falls, but shared mode loses the same overlap.
+**Result so far.** The spike reads about 1.2 MB per bot at the end of walking, and at most about 1.8 MB with every page touched, when bots overlap (Mac, one run; see "Spike state and handoff"). Without the store it is 6.2 to 6.6 MB, and shared mode is about 1 MB. Bots far apart overlap less, so the saving falls, but shared mode loses the same overlap. The Pi must confirm this, because Mac RSS can read low.
 
 **Build order.** Each step has one done-when.
 
@@ -183,6 +183,41 @@ Biome ids depend on the server's registry. Two servers in one process could shar
 Step 5 may come before step 4, because it changes nothing while entities are few. The pair cadence counts these with the patches VD3 has queued (OPEN §1).
 
 **What would reopen this.** The bot's side holding the keep-alive reply needs a fix first in any design. If entity copies cost far more than expected as bot counts grow, per-observer entries (as in patch 31) come back, with a shared `World` and the same section store.
+
+### Spike state and handoff (2026-11-04)
+
+All of this is uncommitted in worktree `~/Desktop/null-spikes/azalea-own-world` (branch `own-world-spike`), and the fork's `null-main` is unchanged. Build with `CARGO_TARGET_DIR=~/Desktop/null-spikes/own-world-bench/target`. Own mode is the switch `NULL_OWN_WORLDS=1`.
+
+| Item | State | Evidence |
+|---|---|---|
+| L4 contract test, `azalea-client/tests/simulation/l4_contract.rs` | Written. Blocks and chunks only; A's packets are compared with B's inbound packets changed. Mobs and the entity index have no test yet | Shared mode: both fail, A's moves differ (A falls on B's update). Own mode: both pass. The failing shared run is the negative control |
+| Section store, `azalea-world/src/chunk/section_store.rs`; `Chunk.sections` is `Box<[Arc<Section>]>` | Works in the spike | `cargo test -p azalea-client --test main`, shared mode: 105 of 107, and the 2 failures are the L4 tests. `azalea-world` tests pass |
+| Edits grouped per frame (design item 5) | Not built. Each edit stores a section | |
+| Store unit tests (equal content gives one pointer, a write never changes another holder) | Not written | |
+| Own mode against the simulation suite | 100 of 107, the same 7 with and without the store | See below |
+| Pi rerun of `own_near_75` with keep-alive and GC logs | Not run: needs a Pi build with `cargo zigbuild`, and the Pi free of VD3 | |
+
+**The 7 tests that fail in own mode.** `login_to_dimension_with_same_name` and `change_dimension_to_nether_and_back` assert the `WorldName`, which the spike suffixes with the bot's entity. The real patch must choose: change these tests, or key `Worlds` another way. `test_bot_b_does_not_read_bot_a_unconfirmed_break` and `test_bot_b_stays_on_the_block_when_a_predicts_nothing` stop at "B stands on the block": setup gives that block only to A, so they look like tests that assume a shared world (inferred). `test_a_refused_break_is_never_seen_by_b_and_a_gets_the_block_back` fails at "B reads the server's block", probably for the same reason. `bot_login_twin` and `test_a_dimension_change_clears_the_pending_cells...` were not read. Each needs reading before step 4: a test that assumes sharing is rewritten, and any other failure is a bug.
+
+**Mac run with the store (`own_near_75`, once, `local/results_store`).** No kicks.
+
+| Measure | Without store | With store |
+|---|---|---|
+| RSS at the end of walking | 312 MB | 106 MB |
+| RSS at the census, every section read | 486 MB | 152 MB, which includes the census's own section copies |
+| Different sections alive | 4,427 by content | 4,601 in the store |
+| Client CPU, idle, per 60 s | 16.4 s | 14.9 s |
+| Client CPU, walking, per 60 s | 16.3 s | 15.5 s |
+
+So the store did not raise CPU in this one run, but one run cannot show that it lowers it. Chunk handling rose from about 1.55 s to 1.76 s in total.
+
+**Next, in order.**
+1. Read the 7 failures above and sort them.
+2. Group edits per frame and write the store unit tests.
+3. Add L4 tests for mobs and the entity index.
+4. Limit the two per-entity systems.
+5. Run `own_near_75` on the Pi once VD3 has finished there (kick cause, and the memory check).
+6. Port to the fork clone as two patches, with selective runs, a ledger row and a diff for each, under the pair cadence.
 
 ### Options considered
 

@@ -503,7 +503,7 @@ Spec: [F5](F5-version-layer.md) §4.6 (load contract, L4). Problem: [plans/SWARM
 **For own worlds with shared sections.**
 - The second leak, the shared mob updates and the shared entity index go away by design. Read sites need no change, so a forgotten read site cannot leak.
 - Other bots become ordinary entities, as on a vanilla client.
-- Block memory is the same as in the other design: about 1.3 to 1.5 MB per bot when bots overlap (estimate). Without sharing it measured 6.2 to 6.6 MB, with 5.1 MB of that in chunks.
+- Block memory is the same as in the other design: about 1.2 to 1.8 MB per bot when bots overlap (spike, one Mac run, the Pi must confirm). Without sharing it measured 6.2 to 6.6 MB, with 5.1 MB of that in chunks.
 
 **For a shared world with own section updates and per-observer entries.**
 - It costs less per entity. Own worlds add about 25% client CPU at 50 bots on the Mac, about 40% of that from two per-entity systems that may not need to run on copies.
