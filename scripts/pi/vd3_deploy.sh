@@ -13,8 +13,8 @@ cargo zigbuild --release -p null-abilitycheck -p vd-tap --target $T.2.36
 ssh -n "$PI" "mkdir -p $H/vd/target/release $H/vd/harness $H/vd-logs; ln -sfn $H/grim-server $H/vd/harness/grim-server; ln -sfn $H/skeleton-server $H/vd/harness/skeleton-server"
 tar -C target/$T/release -cf - null-abilitycheck vd-tap | zstd -q -3 | ssh "$PI" "zstd -dc | tar -C $H/vd/target/release -xf -"
 tar --no-xattrs -C harness -cf - --exclude __pycache__ --exclude vanilla-diff/mod --exclude vanilla-diff/tap --exclude vanilla-diff/inputs vanilla-diff | ssh "$PI" "tar -C $H/vd/harness -xf -"
-scp -q scripts/pi/vd3_leg.sh scripts/pi/vd3_chain.sh "$PI":$H/vd/
-ssh -n "$PI" "chmod +x $H/vd/vd3_leg.sh $H/vd/vd3_chain.sh"
+scp -q scripts/pi/vd3_leg.sh scripts/pi/vd3_chain.sh scripts/pi/vd3_trial.sh "$PI":$H/vd/
+ssh -n "$PI" "chmod +x $H/vd/vd3_leg.sh $H/vd/vd3_chain.sh $H/vd/vd3_trial.sh"
 scp -q "$HOME/Desktop/null-spikes/vanilla-diff-client/game/mods/null-vanilla-diff.jar" "$PI":$H/vd-client/game/mods/
 echo "$(git rev-parse --short HEAD) plus working tree, $(date '+%F %T')" | ssh "$PI" "cat > $H/vd/DEPLOYED"
 for f in null-abilitycheck vd-tap; do
