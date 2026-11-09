@@ -10,6 +10,8 @@ case "$KIND" in
   *) echo "vanilla|grim" >&2; exit 2;; esac
 mkdir -p "$OUT"
 if pgrep -x java > /dev/null || pgrep -f 'null-abilitycheck( |$)' > /dev/null; then echo "a server or a check is already running" >&2; exit 1; fi
+# Empty the old log first: the wait below read the last run's "RCON running" line before the new server truncated it (2026-11-10).
+: > "$DIR/server.log"
 # Same flags as run_server_suite.py.
 cd "$DIR" && java -Xms1G -Xmx2G -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=100 -jar "$JAR" nogui > server.log 2>&1 < /dev/null &
 SRV=$!
