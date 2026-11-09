@@ -35,7 +35,7 @@ use azalea::{
 use null_bot_api::InputRefusal;
 
 use crate::{
-    scenarios::{Ctx, Outcome, last_int},
+    scenarios::{Acts, Ctx, Outcome, last_int},
     scenarios_inventory::inv,
     skill::{Info, Op},
     skill_inventory::{Aim, InvOp},
@@ -121,18 +121,39 @@ fn bot_pos(cx: &mut Ctx) -> (f64, f64, f64) {
     (s.pos.x, s.pos.y, s.pos.z)
 }
 
-// Spec: specs/F5-version-layer.md §4.6 (client refusals: elytra)
-fn elytra_row(cx: &mut Ctx, name: &'static str, chest: &str, expect_refused: bool) -> Outcome {
+/// The scene of the elytra rows (also set for a vanilla client by `--prepare-scene`): the elytra `chest` worn.
+fn elytra_scene(cx: &mut Ctx, chest: &str) {
     cx.scene_in(AREA, &[], SPAWN);
     let n = cx.name.clone();
     cx.r(&format!("item replace entity {n} armor.chest with {chest}"));
     sleep(Duration::from_millis(400));
+}
+
+/// The RCON action inside the elytra rows' windows (the vanilla client's scene runs it at the same input tick).
+// Spec: specs/plans/VD3_BRIEF.md T4
+fn acts() -> Acts {
+    vec![("tp_up", vec![format!("execute in minecraft:overworld run tp {{n}} {} 204.0 {} 0 0", SPAWN.0, SPAWN.2)])]
+}
+
+/// Sets the scene of A20 row `row` for a vanilla client (`--prepare-scene A20:<row>`) and returns the row's RCON actions.
+/// Only `broken_elytra_jump_not_refused` is replayed: the `refuse_*` rows are Null refusing on purpose (skipped in `rows.json`).
+// Spec: specs/plans/VD3_BRIEF.md T4
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) -> Acts {
+    match row {
+        "broken_elytra_jump_not_refused" => elytra_scene(cx, "minecraft:elytra[damage=431]"),
+        _ => panic!("A20 row {row} has no vanilla scene: Null refuses it on purpose"),
+    }
+    acts()
+}
+
+// Spec: specs/F5-version-layer.md §4.6 (client refusals: elytra)
+fn elytra_row(cx: &mut Ctx, name: &'static str, chest: &str, expect_refused: bool) -> Outcome {
+    elytra_scene(cx, chest);
     let before = refuse(cx, RefuseOp::Status);
     cx.run("A20", name, |cx| {
-        let n = cx.name.clone();
         watch();
         // A fall of four blocks: the bot is in the air for about nine ticks.
-        cx.r(&format!("execute in minecraft:overworld run tp {n} {} 204.0 {} 0 0", SPAWN.0, SPAWN.2));
+        cx.act(&acts(), "tp_up");
         let i = refuse(cx, RefuseOp::AirJump);
         let gliding = server_gliding(cx);
         let landed = cx.poll(10.0, |cx| on_ground(cx)).is_some();

@@ -59,16 +59,55 @@ fn wall_box(y0: f64, y1: f64, z0: i32, z1: i32, grow: f64) -> Danger {
     )
 }
 
-/// One pathfinder row. `setup` builds the wall; `present` is a block of it that must still be
-/// there when the goto starts (a wall that vanished tests nothing); `dangers` are the boxes the
-/// bot must not touch. The bot must arrive at the goal.
-// Spec: specs/B1-movement.md §4.3 (walls for unmodelled blocks)
-fn wall_row(cx: &mut Ctx, name: &str, setup: &[String], present: (i32, i32, i32, &str), dangers: &[Danger]) -> Outcome {
+/// One pathfinder row: its name, the commands that build the wall, `present` (a block of the wall that must
+/// still be there when the goto starts: a wall that vanished tests nothing) and `dangers` (the boxes the bot
+/// must not touch). The Null run and the vanilla client's scene (`prepare_row`) both build from this.
+struct WallSpec {
+    name: &'static str,
+    setup: Vec<String>,
+    present: (i32, i32, i32, &'static str),
+    dangers: Vec<Danger>,
+}
+
+/// The scene of a wall row: the area, the bot at the start, the wall built.
+fn wall_scene(cx: &mut Ctx, setup: &[String]) {
     cx.scene_in(AREA, &[], START);
     for c in setup {
         cx.r(c);
     }
     sleep(Duration::from_millis(1000));
+}
+
+/// Sets the scene of A21 row `row` for a vanilla client (`--prepare-scene A21:<row>`). No RCON action runs in a
+/// window: the pathfinder walks the bot, the world border is set before it.
+// Spec: specs/plans/VD3_BRIEF.md T5
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) {
+    if row == BORDER_ROW {
+        border_scene(cx);
+        return;
+    }
+    let spec = [bubble_column_spec(), slime_floor_spec(), bed_spec(), honey_wall_spec(), scaffolding_spec(), piston_face_spec()]
+        .into_iter()
+        .find(|s| s.name == row)
+        .unwrap_or_else(|| panic!("no A21 scene for row {row}"));
+    wall_scene(cx, &spec.setup);
+}
+
+/// After the replay: the world border back to the default, as the Null row does (a 20-wide border would hold the next scene's player).
+// Spec: specs/plans/VD3_BRIEF.md T5
+pub(crate) fn prepare_done(cx: &mut Ctx, row: &str) {
+    if row == BORDER_ROW {
+        cx.r("worldborder set 59999968");
+        cx.r("worldborder center 0 0");
+    }
+}
+
+/// One pathfinder row. The bot must arrive at the goal by a way round the wall.
+// Spec: specs/B1-movement.md §4.3 (walls for unmodelled blocks)
+fn wall_row(cx: &mut Ctx, spec: WallSpec) -> Outcome {
+    let WallSpec { name, setup, present, dangers } = spec;
+    let dangers = &dangers[..];
+    wall_scene(cx, &setup);
     let goal = pos(GOAL.0, FLOOR_Y + 1, GOAL.1);
     cx.run("A21", name, |cx| {
         let here = cx.block_is(pos(present.0, present.1, present.2), present.3);
@@ -129,6 +168,10 @@ fn wall_row(cx: &mut Ctx, name: &str, setup: &[String], present: (i32, i32, i32,
 
 // Spec: specs/B1-movement.md §4.3 (BubbleColumnBlock#entityInside: bubble columns are walls)
 fn bubble_column(cx: &mut Ctx) -> Outcome {
+    wall_row(cx, bubble_column_spec())
+}
+
+fn bubble_column_spec() -> WallSpec {
     // A column needs magma (or soul sand) under it and a water source above its top, or the server
     // turns it back into water. A bubble column is a water source: it floods every open cell
     // beside it (the first live run drowned the whole area), so the strip is sealed in stone on
@@ -146,32 +189,38 @@ fn bubble_column(cx: &mut Ctx) -> Outcome {
         format!("fill {x1} {} {WALL_Z} {x1} {} {WALL_Z} minecraft:stone", y + 1, y + 4),
         fill(y + 4, y + 4, WALL_Z, WALL_Z, "stone"),
     ];
-    wall_row(
-        cx,
-        "goto_across_a_bubble_column_goes_around_it",
-        &setup,
-        (WALL_X.0 + 5, y + 1, WALL_Z, "bubble_column"),
-        &[wall_box((y + 1) as f64, (y + 5) as f64, WALL_Z - 1, WALL_Z + 1, 0.0)],
-    )
+    WallSpec {
+        name: "goto_across_a_bubble_column_goes_around_it",
+        setup,
+        present: (WALL_X.0 + 5, y + 1, WALL_Z, "bubble_column"),
+        dangers: vec![wall_box((y + 1) as f64, (y + 5) as f64, WALL_Z - 1, WALL_Z + 1, 0.0)],
+    }
 }
 
 // Spec: specs/B1-movement.md §4.3 (SlimeBlock#stepOn: no path stands on slime)
 fn slime_floor(cx: &mut Ctx) -> Outcome {
+    wall_row(cx, slime_floor_spec())
+}
+
+fn slime_floor_spec() -> WallSpec {
     let y = FLOOR_Y;
     // The floor itself is slime across the line (3 cells deep); the bot may not stand on it.
     let setup = vec![fill(y, y, WALL_Z - 1, WALL_Z + 1, "slime_block")];
-    wall_row(
-        cx,
-        "goto_across_a_slime_floor_goes_around_it",
-        &setup,
-        (WALL_X.0 + 5, y, WALL_Z, "slime_block"),
+    WallSpec {
+        name: "goto_across_a_slime_floor_goes_around_it",
+        setup,
+        present: (WALL_X.0 + 5, y, WALL_Z, "slime_block"),
         // from the floor up to 0.2 above its top: a bot standing on it has its feet at y + 1
-        &[wall_box(y as f64, y as f64 + 1.2, WALL_Z - 1, WALL_Z + 1, 0.0)],
-    )
+        dangers: vec![wall_box(y as f64, y as f64 + 1.2, WALL_Z - 1, WALL_Z + 1, 0.0)],
+    }
 }
 
 // Spec: specs/B1-movement.md §4.3 (BedBlock#updateEntityMovementAfterFallOn: beds are walls)
 fn bed(cx: &mut Ctx) -> Outcome {
+    wall_row(cx, bed_spec())
+}
+
+fn bed_spec() -> WallSpec {
     let y = FLOOR_Y + 1;
     // Beds lie along z: foot at WALL_Z, head one cell toward the start.
     let mut setup = vec![];
@@ -179,61 +228,71 @@ fn bed(cx: &mut Ctx) -> Outcome {
         setup.push(format!("setblock {x} {y} {WALL_Z} minecraft:red_bed[facing=north,part=foot]"));
         setup.push(format!("setblock {x} {y} {} minecraft:red_bed[facing=north,part=head]", WALL_Z - 1));
     }
-    wall_row(
-        cx,
-        "goto_across_beds_goes_around_them",
-        &setup,
-        (WALL_X.0 + 5, y, WALL_Z, "red_bed"),
-        &[wall_box(y as f64, y as f64 + 1.5, WALL_Z - 1, WALL_Z, 0.0)],
-    )
+    WallSpec {
+        name: "goto_across_beds_goes_around_them",
+        setup,
+        present: (WALL_X.0 + 5, y, WALL_Z, "red_bed"),
+        dangers: vec![wall_box(y as f64, y as f64 + 1.5, WALL_Z - 1, WALL_Z, 0.0)],
+    }
 }
 
 // Spec: specs/B1-movement.md §4.3 (HoneyBlock#entityInside: the sides of honey at body height)
 fn honey_wall(cx: &mut Ctx) -> Outcome {
+    wall_row(cx, honey_wall_spec())
+}
+
+fn honey_wall_spec() -> WallSpec {
     let y = FLOOR_Y + 1;
     let setup = vec![fill(y, y + 1, WALL_Z, WALL_Z, "honey_block")];
-    wall_row(
-        cx,
-        "goto_across_a_honey_wall_goes_around_it",
-        &setup,
-        (WALL_X.0 + 5, y, WALL_Z, "honey_block"),
+    WallSpec {
+        name: "goto_across_a_honey_wall_goes_around_it",
+        setup,
+        present: (WALL_X.0 + 5, y, WALL_Z, "honey_block"),
         // any approach within 1 cm of a side counts as touching it
-        &[wall_box(y as f64, y as f64 + 2.0, WALL_Z, WALL_Z, 0.01)],
-    )
+        dangers: vec![wall_box(y as f64, y as f64 + 2.0, WALL_Z, WALL_Z, 0.01)],
+    }
 }
 
 // Spec: specs/B1-movement.md §4.3 (ScaffoldingBlock#getCollisionShape: scaffolding is a wall)
 fn scaffolding(cx: &mut Ctx) -> Outcome {
+    wall_row(cx, scaffolding_spec())
+}
+
+fn scaffolding_spec() -> WallSpec {
     let y = FLOOR_Y + 1;
     let setup = vec![fill(y, y + 1, WALL_Z, WALL_Z, "scaffolding[bottom=false,distance=0]")];
-    wall_row(
-        cx,
-        "goto_across_scaffolding_goes_around_it",
-        &setup,
-        (WALL_X.0 + 5, y, WALL_Z, "scaffolding"),
-        &[wall_box(y as f64, y as f64 + 2.0, WALL_Z, WALL_Z, 0.0)],
-    )
+    WallSpec {
+        name: "goto_across_scaffolding_goes_around_it",
+        setup,
+        present: (WALL_X.0 + 5, y, WALL_Z, "scaffolding"),
+        dangers: vec![wall_box(y as f64, y as f64 + 2.0, WALL_Z, WALL_Z, 0.0)],
+    }
 }
 
 // Spec: specs/B1-movement.md §4.3 (PistonBaseBlock#triggerEvent: the cell in front of a piston face)
 fn piston_face(cx: &mut Ctx) -> Outcome {
+    wall_row(cx, piston_face_spec())
+}
+
+fn piston_face_spec() -> WallSpec {
     let y = FLOOR_Y + 1;
     // Pistons face the start (north), so the cell in front of each face is one cell toward it.
     let setup = vec![fill(y, y, WALL_Z, WALL_Z, "piston[facing=north,extended=false]")];
-    wall_row(
-        cx,
-        "goto_across_piston_faces_goes_around_them",
-        &setup,
-        (WALL_X.0 + 5, y, WALL_Z, "piston"),
+    WallSpec {
+        name: "goto_across_piston_faces_goes_around_them",
+        setup,
+        present: (WALL_X.0 + 5, y, WALL_Z, "piston"),
         // the piston row and the row of cells in front of its faces
-        &[wall_box(y as f64, y as f64 + 2.0, WALL_Z - 1, WALL_Z, 0.0)],
-    )
+        dangers: vec![wall_box(y as f64, y as f64 + 2.0, WALL_Z - 1, WALL_Z, 0.0)],
+    }
 }
 
 // Spec: specs/B1-movement.md §4.3 (WorldBorder#isInsideCloseToBorder: the border margin)
-fn world_border(cx: &mut Ctx) -> Outcome {
-    // A border 20 wide centred in the area puts its edges on the area's rim: x 1010..1030 and
-    // z 342..362. The goal cell (z 360) is inside the 3-block margin, so it cannot be planned.
+const BORDER_ROW: &str = "goto_inside_the_world_border_margin_stays_outside_it";
+
+/// The border row's scene (also the vanilla client's): a border 20 wide centred in the area puts its edges on the
+/// area's rim: x 1010..1030 and z 342..362. The goal cell (z 360) is inside the 3-block margin, so it cannot be planned.
+fn border_scene(cx: &mut Ctx) -> (f64, f64) {
     let (cx0, cz0) = (AREA.0 as f64 + 10.0, AREA.1 as f64 + 10.0);
     cx.scene_in(AREA, &[], (START.0, START.1, START.2 + 1.0));
     // west of the path, inside the border (x 1012 to 1015, z 344 to 349)
@@ -241,9 +300,14 @@ fn world_border(cx: &mut Ctx) -> Outcome {
     cx.r(&format!("worldborder center {cx0} {cz0}"));
     cx.r("worldborder set 20");
     sleep(Duration::from_millis(1500));
+    (cx0, cz0)
+}
+
+fn world_border(cx: &mut Ctx) -> Outcome {
+    let (_, cz0) = border_scene(cx);
     let edge_z = cz0 + 10.0;
     let goal = pos(1020, FLOOR_Y + 1, (edge_z as i32) - 2);
-    let out = cx.run("A21", "goto_inside_the_world_border_margin_stays_outside_it", |cx| {
+    let out = cx.run("A21", BORDER_ROW, |cx| {
         let seq = cx.send(Op::Goto(goal));
         let t = Instant::now();
         let (mut samples, mut max_z) = (0, f64::MIN);

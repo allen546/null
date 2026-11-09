@@ -68,9 +68,23 @@ public final class Replay {
     /** Ticks since the player died; vanilla's death screen enables its respawn button after 20. */
     private static int dead = 0;
     private static boolean started = false;
+    /** The start look was set in a tick before the window (its look packet goes out in that tick). */
+    private static boolean lookSent = false;
     private static int next = 0;
     private static int quiet = 0;
     private static int tail = 0;
+    /**
+     * Holding the use key (VD3 T4). The input log has no key-held field for it, so a row marks {@code act:use_hold}
+     * before it starts using an item and {@code act:use_release} before it releases. The hold starts at the next
+     * {@code use_item} event, and ends at the release, when the item use ends (a meal done), or when it never began
+     * (a refused meal): vanilla restarts a use on its own while the key stays down.
+     */
+    /** A forced client stall (VD3 T6, AT rows): the row marks {@code act:stall_<ms>}; the mod sleeps that long in the tick. */
+    private static long stallMs = 0;
+    private static boolean useArmed = false;
+    private static boolean useHold = false;
+    private static boolean wasUsing = false;
+    private static int holdAge = 0;
     /** ClientTickEnd packets vanilla has sent so far: it sends one at the end of every tick with a level. */
     private static long tickEnds = 0;
 
@@ -85,7 +99,7 @@ public final class Replay {
         return v == null ? null : Path.of(v);
     }
 
-    // Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
+    // Spec: specs/plans/VD3_BRIEF.md T2 (start look); specs/plans/VANILLA_DIFF_PLAN.md VD1
     public static void onClientTick(MinecraftClient mc) {
         boolean inGame = mc.player != null && mc.world != null && mc.getNetworkHandler() != null;
         // Minecraft#tick sends ClientTickEnd at its end whenever a level exists (head test = end test).
@@ -113,6 +127,14 @@ public final class Replay {
                     && mc.player.getVelocity().x * mc.player.getVelocity().x + mc.player.getVelocity().z * mc.player.getVelocity().z < 1e-9;
             quiet = still ? quiet + 1 : 0;
             if (quiet < QUIET_TICKS) return;
+            if (preLook != null && !lookSent) {
+                // Null's client already had this look when the window opened (VD3). Set it one tick early so vanilla
+                // sends its own look packet (Grim then holds it) and the window starts with last-sent look = this look.
+                lookSent = true;
+                mc.player.setYaw(preLook[0]);
+                mc.player.setPitch(preLook[1]);
+                return;
+            }
             started = true;
             if (PROGRESS != null) {
                 try {
@@ -120,13 +142,6 @@ public final class Replay {
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
-            }
-            if (preLook != null) {
-                // Null's client already had this look when the window opened (VD3): same look, same last-sent look.
-                mc.player.setYaw(preLook[0]);
-                mc.player.setPitch(preLook[1]);
-                ((null_vd.mixin.ClientPlayerAccessor) mc.player).nullVdSetLastYaw(preLook[0]);
-                ((null_vd.mixin.ClientPlayerAccessor) mc.player).nullVdSetLastPitch(preLook[1]);
             }
             if (PHASE >= 0) {
                 ((null_vd.mixin.ClientPlayerAccessor) mc.player).nullVdSetPositionReminder(PHASE);
@@ -139,6 +154,17 @@ public final class Replay {
         if (next < window.size()) {
             fireActs(window.get(next).tick(), false);
             apply(mc, window.get(next++));
+            if (stallMs > 0) {
+                // Null held its client loop here; vanilla then runs the ticks due itself (Minecraft#runTick, at most 10).
+                long ms = stallMs;
+                stallMs = 0;
+                Driver.log("stall " + ms + " ms at client tick " + thisTick);
+                try {
+                    Thread.sleep(ms);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             return;
         }
         if (next == window.size()) {
@@ -159,7 +185,16 @@ public final class Replay {
     // Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
     private static void fireActs(long tick, boolean all) {
         while (nextAct < acts.size() && (all || acts.get(nextAct).tick() <= tick)) {
-            progress(acts.get(nextAct++).label());
+            String label = acts.get(nextAct++).label();
+            if (label.equals("act:use_hold")) {
+                useArmed = true;
+            } else if (label.equals("act:use_release")) {
+                useArmed = false;
+                useHold = false;
+            } else if (label.startsWith("act:stall_")) {
+                stallMs = Long.parseLong(label.substring("act:stall_".length()));
+            }
+            progress(label);
         }
     }
 
@@ -177,6 +212,13 @@ public final class Replay {
     // Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
     private static void apply(MinecraftClient mc, Sample s) {
         var o = mc.options;
+        if (useHold) {
+            if (mc.player.isUsingItem()) {
+                wasUsing = true;
+            } else if (wasUsing || ++holdAge > 3) {
+                useHold = false;
+            }
+        }
         o.forwardKey.setPressed(s.f());
         o.backKey.setPressed(s.b());
         o.leftKey.setPressed(s.l());
@@ -194,6 +236,7 @@ public final class Replay {
         for (var ev : s.events()) {
             event(mc, ev);
         }
+        o.useKey.setPressed(useHold);
         // No key looks around; the mouse does, and the recorded look is the result of it.
         mc.player.setYaw(s.yaw());
         mc.player.setPitch(s.pitch());
@@ -213,7 +256,15 @@ public final class Replay {
         String name = ev.get("ev").replace("\"", "");
         switch (name) {
             // use_item (Null sends UseItem whatever the crosshair shows) has no key of its own: the use key is the nearest, and the diff shows the difference.
-            case "use_click", "use_item" -> click(o.useKey);
+            case "use_click", "use_item" -> {
+                click(o.useKey);
+                if (useArmed && name.equals("use_item")) {
+                    useArmed = false;
+                    useHold = true;
+                    wasUsing = false;
+                    holdAge = 0;
+                }
+            }
             case "attack_click" -> click(o.attackKey);
             case "swap_offhand" -> click(o.swapHandsKey);
             case "open_inventory" -> click(o.inventoryKey);

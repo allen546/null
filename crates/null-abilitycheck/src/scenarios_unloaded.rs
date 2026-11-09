@@ -18,7 +18,7 @@ use std::{
 use null_bot_api::BlockPos;
 
 use crate::{
-    scenarios::{Ctx, FLOOR_Y, Outcome},
+    scenarios::{Acts, Ctx, FLOOR_Y, Outcome},
     skill::{Info, Op},
     scenarios_block_effects::try_bot_pos,
 };
@@ -30,15 +30,43 @@ const DROP: f64 = 40.0;
 /// Half-width in blocks of the generated square around the far floor: 6 chunks of view distance plus a margin.
 const NEAR: i32 = 108;
 
+/// The start cell, the far landing cell and the floor height (all from the area).
+fn places() -> ((f64, f64, f64), (f64, f64), f64) {
+    let start = (AREA.0 as f64 + 10.5, (FLOOR_Y + 1) as f64, AREA.1 as f64 + 10.5);
+    let far = ((AREA.0 + FAR_DX) as f64 + 10.5, AREA.1 as f64 + 10.5);
+    (start, far, (FLOOR_Y + 1) as f64)
+}
+
+/// The RCON action inside the window: the teleport into the air above the far floor (the vanilla client's scene runs it at the same input tick).
+// Spec: specs/plans/VD3_BRIEF.md T6
+fn acts() -> Acts {
+    let (_, far, floor) = places();
+    vec![("tp_far", vec![format!("execute in minecraft:overworld run tp {{n}} {} {} {} 0 0", far.0, floor + DROP, far.1)])]
+}
+
+/// Sets the scene for a vanilla client (`--prepare-scene A23:fall_into_unsent_chunk`) and returns the row's RCON action.
+/// The waits take minutes (forceload, then the unload): a server that misses them leaves a replay that tests nothing, so it exits.
+// Spec: specs/plans/VD3_BRIEF.md T6
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) -> Acts {
+    assert_eq!(row, "fall_into_unsent_chunk", "no A23 scene for row {row}");
+    let (ready, unloaded) = scene(cx);
+    if ready.is_none() || unloaded.is_none() {
+        eprintln!("A23 scene: the far chunk did not load or unload in time (ready {ready:?}, unloaded {unloaded:?}); the replay would test nothing");
+        std::process::exit(3);
+    }
+    acts()
+}
+
+/// The scene (also the vanilla client's): the far floor built, its chunk freed and unloaded, the bot at the start
+/// with Resistance V. Returns the two waits (None when the server did not manage them in time).
 // Spec: specs/B1-movement.md §4.2 (travel in an unloaded chunk)
-pub fn a23(cx: &mut Ctx) -> Vec<Outcome> {
+fn scene(cx: &mut Ctx) -> (Option<f64>, Option<f64>) {
     let n = cx.name.clone();
     let start = (AREA.0 as f64 + 10.5, (FLOOR_Y + 1) as f64, AREA.1 as f64 + 10.5);
     cx.scene_in(AREA, &[], start);
     let (fx0, fz0) = (AREA.0 + FAR_DX, AREA.1);
     let (fx1, fz1) = (fx0 + 20, fz0 + 20);
-    let far = (fx0 as f64 + 10.5, fz0 as f64 + 10.5);
-    let floor = (FLOOR_Y + 1) as f64;
+    let (_, far, _) = places();
     // The server must be able to send the far chunk at once when the bot arrives: a vanilla
     // server kicks a player held in the air for 80 ticks ("Flying is not enabled",
     // `ServerGamePacketListenerImpl#tickPlayer`), as in Pi pair p38b_full (kick 4 s after the teleport).
@@ -72,6 +100,15 @@ pub fn a23(cx: &mut Ctx) -> Vec<Outcome> {
     let unloaded = cx.poll(90.0, |cx| cx.r(&format!("execute if loaded {} {} {}", far.0 as i32, FLOOR_Y, far.1 as i32)).contains("failed"));
     // On Paper + Grim the fall can draw Simulation and GroundSpoof as a vanilla client would:
     // Grim's unloaded-chunk resync and vanilla's send threshold (F5 §4.6, OPEN item 0).
+    (ready, unloaded)
+}
+
+// Spec: specs/B1-movement.md §4.2 (travel in an unloaded chunk)
+pub fn a23(cx: &mut Ctx) -> Vec<Outcome> {
+    let n = cx.name.clone();
+    let (start, _, floor) = places();
+    let (fx0, fz0) = (AREA.0 + FAR_DX, AREA.1);
+    let (ready, unloaded) = scene(cx);
     let out = cx.run_allowing("A23", "fall_into_unsent_chunk", &["Simulation", "GroundSpoof"], "Grim's unloaded-chunk resync loop (F5 §4.6)", |cx| {
         if ready.is_none() {
             return (false, "the server did not load the chunks around the far floor in 120 s, so the row tests nothing".into());
@@ -79,7 +116,7 @@ pub fn a23(cx: &mut Ctx) -> Vec<Outcome> {
         if unloaded.is_none() {
             return (false, "the server did not unload the far chunk in 90 s, so the row tests nothing".into());
         }
-        cx.r(&format!("execute in minecraft:overworld run tp {n} {} {} {} 0 0", far.0, floor + DROP, far.1));
+        cx.act(&acts(), "tp_far");
         let t = Instant::now();
         let (mut min_y, mut last, mut still_since) = (f64::MAX, f64::MAX, None::<Instant>);
         let mut settled = None;

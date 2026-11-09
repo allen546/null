@@ -60,7 +60,8 @@
       "UpdateMobEffect",
       "RemoveMobEffect"
     ],
-    "stop_at_anchor": "UpdateMobEffect"
+    "partial": true,
+    "note": "Server-random: the arrow hits only if the server holds the bot where the summon expects it (several attempts). The old replay used the pre-p45 summon and was cut at the first UpdateMobEffect; the scene is now the same summon as the Null row (ARROW_DY, ARROW_VY), so it needs a fresh Null run with --input-log and a new replay. Compare up to the first server difference."
   },
   "A17:respawn_keeps_base_attribute": {
     "scene": "A17:respawn_keeps_base_attribute",
@@ -1112,5 +1113,701 @@
   "A4C:chest_crouched_auto_crouch_off_places_and_stays_crouched": {
     "scene": "A4C:chest_crouched_auto_crouch_off_places_and_stays_crouched",
     "class": "static"
+  },
+  "A10:open_single_chest": {
+    "scene": "A10:open_single_chest",
+    "class": "static"
+  },
+  "A10:take_by_clicks": {
+    "scene": "A10:take_by_clicks",
+    "class": "static"
+  },
+  "A10:put_by_clicks": {
+    "scene": "A10:put_by_clicks",
+    "class": "static"
+  },
+  "A10:quick_move_out": {
+    "scene": "A10:quick_move_out",
+    "class": "static"
+  },
+  "A10:quick_move_in": {
+    "scene": "A10:quick_move_in",
+    "class": "static"
+  },
+  "A10:double_chest": {
+    "scene": "A10:double_chest",
+    "class": "static"
+  },
+  "A10:barrel_open_property": {
+    "scene": "A10:barrel_open_property",
+    "class": "static"
+  },
+  "A10:hopper_menu": {
+    "scene": "A10:hopper_menu",
+    "class": "static"
+  },
+  "A10:dispenser_menu": {
+    "scene": "A10:dispenser_menu",
+    "class": "static"
+  },
+  "A10:exact_contents": {
+    "scene": "A10:exact_contents",
+    "class": "static"
+  },
+  "A10:server_change_while_open": {
+    "scene": "A10:server_change_while_open",
+    "class": "static"
+  },
+  "A10:out_of_reach_refused": {
+    "scene": "A10:out_of_reach_refused",
+    "class": "static"
+  },
+  "A10:blocked_chest_no_screen": {
+    "scene": "A10:blocked_chest_no_screen",
+    "class": "static"
+  },
+  "A10:crouching_with_item_refused": {
+    "scene": "A10:crouching_with_item_refused",
+    "class": "static"
+  },
+  "A10:crouching_empty_hands_opens": {
+    "scene": "A10:crouching_empty_hands_opens",
+    "class": "static"
+  },
+  "A10:trapped_chest_powers_while_open": {
+    "scene": "A10:trapped_chest_powers_while_open",
+    "class": "static"
+  },
+  "A10:shulker_box": {
+    "scene": "A10:shulker_box",
+    "class": "static"
+  },
+  "A10:shulker_refuses_shulker_pickup": {
+    "scene": "A10:shulker_refuses_shulker_pickup",
+    "class": "static"
+  },
+  "A10:shulker_refuses_shulker_quick_move": {
+    "scene": "A10:shulker_refuses_shulker_quick_move",
+    "class": "static"
+  },
+  "A10:ender_chest_is_the_players": {
+    "scene": "A10:ender_chest_is_the_players",
+    "class": "static"
+  },
+  "A10:hopper_top_face": {
+    "scene": "A10:hopper_top_face",
+    "class": "static"
+  },
+  "A10:hopper_sideways_faces": {
+    "scene": "A10:hopper_sideways_faces",
+    "class": "static"
+  },
+  "A10:dropper_menu": {
+    "scene": "A10:dropper_menu",
+    "class": "static"
+  },
+  "A10:blocked_ender_chest_no_screen": {
+    "scene": "A10:blocked_ender_chest_no_screen",
+    "class": "static"
+  },
+  "A10:blocked_shulker_lid_no_screen": {
+    "scene": "A10:blocked_shulker_lid_no_screen",
+    "class": "static"
+  },
+  "A10:component_items": {
+    "scene": "A10:component_items",
+    "class": "static"
+  },
+  "A10E:chest_minecart_open_and_read": {
+    "scene": "A10E:chest_minecart_open_and_read",
+    "class": "static"
+  },
+  "A10E:chest_minecart_take_by_clicks": {
+    "scene": "A10E:chest_minecart_take_by_clicks",
+    "class": "static"
+  },
+  "A10E:chest_minecart_put_by_clicks": {
+    "scene": "A10E:chest_minecart_put_by_clicks",
+    "class": "static"
+  },
+  "A10E:chest_minecart_quick_move_out_and_in": {
+    "scene": "A10E:chest_minecart_quick_move_out_and_in",
+    "class": "static"
+  },
+  "A10E:chest_minecart_exact_counts_in_exact_slots": {
+    "scene": "A10E:chest_minecart_exact_counts_in_exact_slots",
+    "class": "static"
+  },
+  "A10E:chest_minecart_out_of_reach_refused": {
+    "scene": "A10E:chest_minecart_out_of_reach_refused",
+    "class": "static"
+  },
+  "A10E:hopper_minecart_open_and_read": {
+    "scene": "A10E:hopper_minecart_open_and_read",
+    "class": "static"
+  },
+  "A10E:hopper_minecart_take_by_clicks": {
+    "scene": "A10E:hopper_minecart_take_by_clicks",
+    "class": "static"
+  },
+  "A10E:hopper_minecart_put_by_clicks": {
+    "scene": "A10E:hopper_minecart_put_by_clicks",
+    "class": "static"
+  },
+  "A10E:hopper_minecart_quick_move_out_and_in": {
+    "scene": "A10E:hopper_minecart_quick_move_out_and_in",
+    "class": "static"
+  },
+  "A10E:hopper_minecart_exact_counts_in_exact_slots": {
+    "scene": "A10E:hopper_minecart_exact_counts_in_exact_slots",
+    "class": "static"
+  },
+  "A10E:hopper_minecart_out_of_reach_refused": {
+    "scene": "A10E:hopper_minecart_out_of_reach_refused",
+    "class": "static"
+  },
+  "A10E:chest_boat_open_and_read": {
+    "scene": "A10E:chest_boat_open_and_read",
+    "class": "static"
+  },
+  "A10E:chest_boat_take_by_clicks": {
+    "scene": "A10E:chest_boat_take_by_clicks",
+    "class": "static"
+  },
+  "A10E:chest_boat_put_by_clicks": {
+    "scene": "A10E:chest_boat_put_by_clicks",
+    "class": "static"
+  },
+  "A10E:chest_boat_quick_move_out_and_in": {
+    "scene": "A10E:chest_boat_quick_move_out_and_in",
+    "class": "static"
+  },
+  "A10E:chest_boat_exact_counts_in_exact_slots": {
+    "scene": "A10E:chest_boat_exact_counts_in_exact_slots",
+    "class": "static"
+  },
+  "A10E:chest_boat_out_of_reach_refused": {
+    "scene": "A10E:chest_boat_out_of_reach_refused",
+    "class": "static"
+  },
+  "A10E:chest_minecart_reach_to_the_hitbox_opens": {
+    "scene": "A10E:chest_minecart_reach_to_the_hitbox_opens",
+    "class": "static"
+  },
+  "A10E:chest_minecart_just_past_reach_refused": {
+    "scene": "A10E:chest_minecart_just_past_reach_refused",
+    "class": "static"
+  },
+  "A10E:chest_minecart_behind_a_block_refused": {
+    "scene": "A10E:chest_minecart_behind_a_block_refused",
+    "class": "static"
+  },
+  "A10E:chest_minecart_crosshair_elsewhere_refused": {
+    "scene": "A10E:chest_minecart_crosshair_elsewhere_refused",
+    "class": "static"
+  },
+  "A10E:chest_boat_standing_click_refused": {
+    "scene": "A10E:chest_boat_standing_click_refused",
+    "class": "static"
+  },
+  "A10E:chest_boat_already_crouching_opens": {
+    "scene": "A10E:chest_boat_already_crouching_opens",
+    "class": "static"
+  },
+  "A10E:plain_minecart_standing_click_refused": {
+    "scene": "A10E:plain_minecart_standing_click_refused",
+    "class": "static"
+  },
+  "A10E:chest_minecart_server_change_while_open": {
+    "scene": "A10E:chest_minecart_server_change_while_open",
+    "class": "static"
+  },
+  "A10E:chest_minecart_killed_while_open": {
+    "scene": "A10E:chest_minecart_killed_while_open",
+    "class": "static"
+  },
+  "A10E:chest_boat_killed_while_open": {
+    "scene": "A10E:chest_boat_killed_while_open",
+    "class": "static"
+  },
+  "A11:planks_from_log_2x2": {
+    "scene": "A11:planks_from_log_2x2",
+    "class": "static"
+  },
+  "A11:shift_click_crafts_all": {
+    "scene": "A11:shift_click_crafts_all",
+    "class": "static"
+  },
+  "A11:sticks_2x2_right_clicks": {
+    "scene": "A11:sticks_2x2_right_clicks",
+    "class": "static"
+  },
+  "A11:crafting_table_from_planks": {
+    "scene": "A11:crafting_table_from_planks",
+    "class": "static"
+  },
+  "A11:wooden_pickaxe_at_table": {
+    "scene": "A11:wooden_pickaxe_at_table",
+    "class": "static"
+  },
+  "A11:shift_click_one_craft": {
+    "scene": "A11:shift_click_one_craft",
+    "class": "static"
+  },
+  "A11:table_shift_click_crafts_all": {
+    "scene": "A11:table_shift_click_crafts_all",
+    "class": "static"
+  },
+  "A11:table_shift_click_into_grid": {
+    "scene": "A11:table_shift_click_into_grid",
+    "class": "static"
+  },
+  "A11:wrong_shape_and_empty_result": {
+    "scene": "A11:wrong_shape_and_empty_result",
+    "class": "static"
+  },
+  "A11:close_returns_grid_player": {
+    "scene": "A11:close_returns_grid_player",
+    "class": "static"
+  },
+  "A11:cake_leaves_buckets": {
+    "scene": "A11:cake_leaves_buckets",
+    "class": "static"
+  },
+  "A11:close_returns_grid_table": {
+    "scene": "A11:close_returns_grid_table",
+    "class": "static"
+  },
+  "A11:renamed_ingredient": {
+    "scene": "A11:renamed_ingredient",
+    "class": "static"
+  },
+  "A11:repair_damaged_pickaxes": {
+    "scene": "A11:repair_damaged_pickaxes",
+    "class": "static"
+  },
+  "A5:eat_takes_32_ticks": {
+    "scene": "A5:eat_takes_32_ticks",
+    "class": "static"
+  },
+  "A5:release_early_eats_nothing": {
+    "scene": "A5:release_early_eats_nothing",
+    "class": "static"
+  },
+  "A5:movement_slowed_while_eating": {
+    "scene": "A5:movement_slowed_while_eating",
+    "class": "static"
+  },
+  "A5:full_food_bread_is_refused": {
+    "scene": "A5:full_food_bread_is_refused",
+    "class": "static"
+  },
+  "A6:blocks_from_the_front": {
+    "scene": "A6:blocks_from_the_front",
+    "class": "static"
+  },
+  "A6:hurts_from_behind": {
+    "scene": "A6:hurts_from_behind",
+    "class": "static"
+  },
+  "A6:raise_delay_lets_a_hit_through": {
+    "scene": "A6:raise_delay_lets_a_hit_through",
+    "class": "static"
+  },
+  "A6:delay_belief_default_shield": {
+    "scene": "A6:delay_belief_default_shield",
+    "class": "static"
+  },
+  "A6:delay_belief_shield_with_1s_delay": {
+    "scene": "A6:delay_belief_shield_with_1s_delay",
+    "class": "static"
+  },
+  "A6:movement_slowed_while_raised": {
+    "scene": "A6:movement_slowed_while_raised",
+    "class": "static"
+  },
+  "A7:full_cooldown_hit": {
+    "scene": "A7:full_cooldown_hit",
+    "class": "static"
+  },
+  "A7:critical_hit": {
+    "scene": "A7:critical_hit",
+    "class": "static"
+  },
+  "A7:partial_cooldown_hit": {
+    "scene": "A7:partial_cooldown_hit",
+    "class": "static"
+  },
+  "A8:damage_without_an_entity_names_nobody": {
+    "scene": "A8:damage_without_an_entity_names_nobody",
+    "class": "static"
+  },
+  "A8:melee_by_named_player": {
+    "scene": "A8:melee_by_named_player",
+    "class": "second_player"
+  },
+  "A8:projectile_names_the_shooter": {
+    "scene": "A8:projectile_names_the_shooter",
+    "class": "second_player"
+  },
+  "A18:mob_moved_by_rcon_is_reached_in_three_steps": {
+    "scene": "A18:mob_moved_by_rcon_is_reached_in_three_steps",
+    "class": "static"
+  },
+  "A18:ray_reads_the_smoothed_box_step_by_step": {
+    "scene": "A18:ray_reads_the_smoothed_box_step_by_step",
+    "class": "static"
+  },
+  "A18:two_bots_near_each_other_hold_each_other_from_server_packets": {
+    "scene": "A18:two_bots_near_each_other_hold_each_other_from_server_packets",
+    "class": "second_player"
+  },
+  "A18:server_move_of_a_bot_shows_in_the_other_bots_view_in_three_steps": {
+    "scene": "A18:server_move_of_a_bot_shows_in_the_other_bots_view_in_three_steps",
+    "class": "second_player"
+  },
+  "A18:bot_beyond_16_blocks_is_not_kept_and_comes_back": {
+    "scene": "A18:bot_beyond_16_blocks_is_not_kept_and_comes_back",
+    "class": "second_player"
+  },
+  "A20:refuse_elytra_jump_in_air": {
+    "class": "refuses",
+    "skip": "Null refuses on purpose: a jump in the air with an elytra worn would send a PlayerCommand to start gliding in a vanilla client; the fork models no gliding, so it refuses on the client and sends nothing (patch 34, F5 §4.6)."
+  },
+  "A20:broken_elytra_jump_not_refused": {
+    "scene": "A20:broken_elytra_jump_not_refused",
+    "class": "static"
+  },
+  "A20:refuse_riptide_in_water": {
+    "class": "refuses",
+    "skip": "Null refuses on purpose: a Riptide trident used standing in water would launch a vanilla client and send UseItem and PlayerAction; the fork models no riptide movement, so it refuses and sends nothing (patch 34, F5 §4.6)."
+  },
+  "A20:refuse_use_effects_speed": {
+    "class": "refuses",
+    "skip": "Null refuses on purpose: an item whose use_effects change the use speed is eaten by a vanilla client (UseItem, a meal); the fork refuses it and sends no UseItem (patch 34, F5 §4.6)."
+  },
+  "A20:refuse_mount_boat": {
+    "class": "refuses",
+    "skip": "Null refuses on purpose: a right-click on a boat mounts it in a vanilla client (Interact packets, then the ride); the fork refuses with WouldMount and sends no Interact (patch 34, F5 §4.6)."
+  },
+  "A20:refuse_mount_minecart": {
+    "class": "refuses",
+    "skip": "Null refuses on purpose: a right-click on a minecart mounts it in a vanilla client (Interact packets, then the ride); the fork refuses with WouldMount and sends no Interact (patch 34, F5 §4.6)."
+  },
+  "A20:refuse_mount_horse": {
+    "class": "refuses",
+    "skip": "Null refuses on purpose: a right-click on an untamed horse mounts it in a vanilla client (Interact packets, then the ride); the fork refuses with WouldMount and sends no Interact (patch 34, F5 §4.6)."
+  },
+  "A20:refuse_mount_pig": {
+    "class": "refuses",
+    "skip": "Null refuses on purpose: a right-click on a saddled pig mounts it in a vanilla client (Interact packets, then the ride); the fork refuses with WouldMount and sends no Interact (patch 34, F5 §4.6)."
+  },
+  "A20:refuse_mount_camel": {
+    "class": "refuses",
+    "skip": "Null refuses on purpose: a right-click on a camel mounts it in a vanilla client (Interact packets, then the ride); the fork refuses with WouldMount and sends no Interact (patch 34, F5 §4.6)."
+  },
+  "A20:refuse_mount_happy_ghast": {
+    "class": "refuses",
+    "skip": "Null refuses on purpose: a right-click on a harnessed happy ghast mounts it in a vanilla client (Interact packets, then the ride); the fork refuses with WouldMount and sends no Interact (patch 34, F5 §4.6)."
+  },
+  "A14:view_reads_logs_and_leaves_solid_and_persistent": {
+    "scene": "A14:view_reads_logs_and_leaves_solid_and_persistent",
+    "class": "static"
+  },
+  "A14:hut_in_the_claim_left_intact_and_reported": {
+    "scene": "A14:hut_in_the_claim_left_intact_and_reported",
+    "class": "static"
+  },
+  "A14:tree_outside_the_claim_and_one_across_its_edge_left_and_reported": {
+    "scene": "A14:tree_outside_the_claim_and_one_across_its_edge_left_and_reported",
+    "class": "static"
+  },
+  "A14:oak_felled_with_an_axe": {
+    "scene": "A14:oak_felled_with_an_axe",
+    "class": "server_random",
+    "partial": true,
+    "note": "Server-random: dropped items fly with random velocity and leaves decay on random ticks, and the bot walks to the drops, so its input follows the server's dice. Compare up to the first server difference."
+  },
+  "A14:oak_felled_by_hand": {
+    "scene": "A14:oak_felled_by_hand",
+    "class": "server_random",
+    "partial": true,
+    "note": "Server-random: dropped items fly with random velocity and leaves decay on random ticks, and the bot walks to the drops, so its input follows the server's dice. Compare up to the first server difference."
+  },
+  "A14:birch_felled_trunk_read_back_first": {
+    "scene": "A14:birch_felled_trunk_read_back_first",
+    "class": "server_random",
+    "partial": true,
+    "note": "Server-random: dropped items fly with random velocity and leaves decay on random ticks, and the bot walks to the drops, so its input follows the server's dice. Compare up to the first server difference."
+  },
+  "A14:log_behind_natural_leaves_leaves_cleared_then_logs_felled": {
+    "scene": "A14:log_behind_natural_leaves_leaves_cleared_then_logs_felled",
+    "class": "server_random",
+    "partial": true,
+    "note": "Server-random: dropped items fly with random velocity and leaves decay on random ticks, and the bot walks to the drops, so its input follows the server's dice. Compare up to the first server difference."
+  },
+  "A14:quota_of_four_stops_after_one_tree": {
+    "scene": "A14:quota_of_four_stops_after_one_tree",
+    "class": "server_random",
+    "partial": true,
+    "note": "Server-random: dropped items fly with random velocity and leaves decay on random ticks, and the bot walks to the drops, so its input follows the server's dice. Compare up to the first server difference."
+  },
+  "A14:tall_trunk_top_log_left_unreachable": {
+    "scene": "A14:tall_trunk_top_log_left_unreachable",
+    "class": "server_random",
+    "partial": true,
+    "note": "Server-random: dropped items fly with random velocity and leaves decay on random ticks, and the bot walks to the drops, so its input follows the server's dice. Compare up to the first server difference."
+  },
+  "A16:control_plain_walk_matches_the_model": {
+    "scene": "A16:control_plain_walk_matches_the_model",
+    "class": "static"
+  },
+  "A16:movement_speed_modifier_halves_the_walk": {
+    "scene": "A16:movement_speed_modifier_halves_the_walk",
+    "class": "static"
+  },
+  "A16:movement_speed_base_0.2_doubles_the_walk": {
+    "scene": "A16:movement_speed_base_0.2_doubles_the_walk",
+    "class": "static"
+  },
+  "A16:sneaking_speed_base_0.6_doubles_the_crouch_walk": {
+    "scene": "A16:sneaking_speed_base_0.6_doubles_the_crouch_walk",
+    "class": "static"
+  },
+  "A16:control_default_jump_reaches_1.2522": {
+    "scene": "A16:control_default_jump_reaches_1.2522",
+    "class": "static"
+  },
+  "A16:jump_strength_base_0.84_jumps_higher": {
+    "scene": "A16:jump_strength_base_0.84_jumps_higher",
+    "class": "static"
+  },
+  "A16:gravity_base_0.04_floats_higher": {
+    "scene": "A16:gravity_base_0.04_floats_higher",
+    "class": "static"
+  },
+  "A16:control_a_one_block_step_stops_the_default_bot": {
+    "scene": "A16:control_a_one_block_step_stops_the_default_bot",
+    "class": "static"
+  },
+  "A16:step_height_base_1_climbs_a_one_block_step": {
+    "scene": "A16:step_height_base_1_climbs_a_one_block_step",
+    "class": "static"
+  },
+  "A16:block_break_speed_x3_breaks_in_a_third_of_the_ticks": {
+    "scene": "A16:block_break_speed_x3_breaks_in_a_third_of_the_ticks",
+    "class": "static"
+  },
+  "A16:breaking_with_the_eyes_in_water_takes_5_times_longer": {
+    "scene": "A16:breaking_with_the_eyes_in_water_takes_5_times_longer",
+    "class": "static"
+  },
+  "A16:server_only_attribute_and_modelled_effect_do_not_stop_the_skill": {
+    "scene": "A16:server_only_attribute_and_modelled_effect_do_not_stop_the_skill",
+    "class": "static"
+  },
+  "A16:levitation_is_an_action_entry_and_stops_the_skill_without_a_disconnect": {
+    "scene": "A16:levitation_is_an_action_entry_and_stops_the_skill_without_a_disconnect",
+    "class": "static"
+  },
+  "A16:slow_falling_is_an_action_entry_and_stops_the_skill_without_a_disconnect": {
+    "scene": "A16:slow_falling_is_an_action_entry_and_stops_the_skill_without_a_disconnect",
+    "class": "static"
+  },
+  "A16:scale_2_is_a_movement_entry_and_disconnects_the_bot": {
+    "class": "refuses",
+    "skip": "Null refuses on purpose: after the Scale attribute the fork closes the connection before the next position (patch 30, F5 §4.6); a vanilla client would stay connected and move. The row's only input is the idle spare account."
+  },
+  "A16:dolphins_grace_is_a_movement_entry_and_disconnects_the_bot": {
+    "class": "refuses",
+    "skip": "Null refuses on purpose: after the Dolphin's Grace effect the fork closes the connection before the next position (patch 30, F5 §4.6); a vanilla client would stay connected and move. The row's only input is the idle spare account."
+  },
+  "A19:pushed_by_mob": {
+    "scene": "A19:pushed_by_mob",
+    "class": "static"
+  },
+  "A19:armor_stand_no_push": {
+    "scene": "A19:armor_stand_no_push",
+    "class": "static"
+  },
+  "A19:team_never_no_push": {
+    "scene": "A19:team_never_no_push",
+    "class": "static"
+  },
+  "A19:pushed_by_boat": {
+    "scene": "A19:pushed_by_boat",
+    "class": "static"
+  },
+  "A19:team_push_own_team_allied_no_push": {
+    "scene": "A19:team_push_own_team_allied_no_push",
+    "class": "static"
+  },
+  "A19:push_tick_order": {
+    "scene": "A19:push_tick_order",
+    "class": "static"
+  },
+  "A19:pushed_by_bot": {
+    "scene": "A19:pushed_by_bot",
+    "class": "second_player",
+    "partial": true,
+    "note": "Stand-in: a motionless villager (as wide as a player) takes the second bot's place and its two teleports. The villager is never pushed away, so the replay matches only up to the first tick where the second bot would have moved."
+  },
+  "A21:goto_across_a_bubble_column_goes_around_it": {
+    "scene": "A21:goto_across_a_bubble_column_goes_around_it",
+    "class": "static"
+  },
+  "A21:goto_across_a_slime_floor_goes_around_it": {
+    "scene": "A21:goto_across_a_slime_floor_goes_around_it",
+    "class": "static"
+  },
+  "A21:goto_across_beds_goes_around_them": {
+    "scene": "A21:goto_across_beds_goes_around_them",
+    "class": "static"
+  },
+  "A21:goto_across_a_honey_wall_goes_around_it": {
+    "scene": "A21:goto_across_a_honey_wall_goes_around_it",
+    "class": "static"
+  },
+  "A21:goto_across_scaffolding_goes_around_it": {
+    "scene": "A21:goto_across_scaffolding_goes_around_it",
+    "class": "static"
+  },
+  "A21:goto_across_piston_faces_goes_around_them": {
+    "scene": "A21:goto_across_piston_faces_goes_around_them",
+    "class": "static"
+  },
+  "A21:goto_inside_the_world_border_margin_stays_outside_it": {
+    "scene": "A21:goto_inside_the_world_border_margin_stays_outside_it",
+    "class": "static"
+  },
+  "A12:kill_and_respawn_twice_in_a_row": {
+    "scene": "A12:kill_and_respawn_twice_in_a_row",
+    "class": "static",
+    "anchors": [
+      "PlayerCombatKill",
+      "Respawn"
+    ]
+  },
+  "A12:inventory_drops_with_keep_inventory_off": {
+    "scene": "A12:inventory_drops_with_keep_inventory_off",
+    "class": "static",
+    "anchors": [
+      "PlayerCombatKill",
+      "Respawn"
+    ]
+  },
+  "A12:keep_inventory_keeps_the_items": {
+    "scene": "A12:keep_inventory_keeps_the_items",
+    "class": "static",
+    "anchors": [
+      "PlayerCombatKill",
+      "Respawn"
+    ]
+  },
+  "A12:immediate_respawn_has_no_delay": {
+    "scene": "A12:immediate_respawn_has_no_delay",
+    "class": "static",
+    "anchors": [
+      "PlayerCombatKill",
+      "Respawn"
+    ]
+  },
+  "A12:respawn_refused_while_alive": {
+    "scene": "A12:respawn_refused_while_alive",
+    "class": "static",
+    "anchors": [
+      "PlayerCombatKill",
+      "Respawn"
+    ]
+  },
+  "A12:death_with_open_chest_closes_it": {
+    "scene": "A12:death_with_open_chest_closes_it",
+    "class": "static",
+    "anchors": [
+      "PlayerCombatKill",
+      "Respawn"
+    ]
+  },
+  "A12:death_while_crouching_and_eating": {
+    "scene": "A12:death_while_crouching_and_eating",
+    "class": "static",
+    "anchors": [
+      "PlayerCombatKill",
+      "Respawn"
+    ]
+  },
+  "A12:death_in_the_nether_respawns_in_the_overworld": {
+    "scene": "A12:death_in_the_nether_respawns_in_the_overworld",
+    "class": "static",
+    "anchors": [
+      "PlayerCombatKill",
+      "Respawn"
+    ]
+  },
+  "A12:skill_on_death_end": {
+    "scene": "A12:skill_on_death_end",
+    "class": "static",
+    "anchors": [
+      "PlayerCombatKill",
+      "Respawn"
+    ]
+  },
+  "A12:skill_on_death_keep": {
+    "scene": "A12:skill_on_death_keep",
+    "class": "static",
+    "anchors": [
+      "PlayerCombatKill",
+      "Respawn"
+    ]
+  },
+  "A12:nothing_sent_while_dead": {
+    "scene": "A12:nothing_sent_while_dead",
+    "class": "static",
+    "anchors": [
+      "PlayerCombatKill",
+      "Respawn"
+    ]
+  },
+  "A23:fall_into_unsent_chunk": {
+    "scene": "A23:fall_into_unsent_chunk",
+    "class": "server_random",
+    "partial": true,
+    "anchors": [
+      "PlayerPosition",
+      "LevelChunkWithLight"
+    ],
+    "allowed_alerts": {
+      "Simulation": "Grim's unloaded-chunk resync loop (F5 §4.6)",
+      "GroundSpoof": "Grim's unloaded-chunk resync loop (F5 §4.6)"
+    },
+    "note": "Server-random: when the server sends the far chunk steers the fall. Anchored on the teleport and the chunk packets."
+  },
+  "AT:stall_400_ms_runs_vanillas_count_and_drops_the_rest": {
+    "scene": "AT:stall_400_ms_runs_vanillas_count_and_drops_the_rest",
+    "class": "injected",
+    "allowed_alerts": {
+      "Timer": "the forced stall draws Timer on a vanilla client too (AD-F5.3)"
+    }
+  },
+  "AT:stall_1500_ms_runs_vanillas_count_and_drops_the_rest": {
+    "scene": "AT:stall_1500_ms_runs_vanillas_count_and_drops_the_rest",
+    "class": "injected",
+    "allowed_alerts": {
+      "Timer": "the forced stall draws Timer on a vanilla client too (AD-F5.3)"
+    }
+  },
+  "AT:stall_250_ms_then_look_and_click_in_one_update_places_at_the_new_look": {
+    "scene": "AT:stall_250_ms_then_look_and_click_in_one_update_places_at_the_new_look",
+    "class": "injected",
+    "allowed_alerts": {
+      "Timer": "the forced stall draws Timer on a vanilla client too (AD-F5.3)"
+    }
+  },
+  "AT:stall_250_ms_then_look_and_click_in_one_update_places_at_the_other_target": {
+    "scene": "AT:stall_250_ms_then_look_and_click_in_one_update_places_at_the_other_target",
+    "class": "injected",
+    "allowed_alerts": {
+      "Timer": "the forced stall draws Timer on a vanilla client too (AD-F5.3)"
+    }
   }
 }

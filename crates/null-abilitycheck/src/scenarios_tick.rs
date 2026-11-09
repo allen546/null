@@ -13,7 +13,7 @@ use azalea::tick_clock as tc;
 use null_bot_api::{BlockOutcome, Face};
 
 use crate::{
-    scenarios::{Ctx, FLOOR_Y, Outcome, last_int, pos},
+    scenarios::{Acts, Ctx, FLOOR_Y, Outcome, last_int, pos},
     skill::{Info, Op, describe_evidence},
 };
 
@@ -22,6 +22,46 @@ const AREA: (i32, i32) = (710, 342);
 const STAND: (f64, f64, f64) = (715.5, 200.0, 348.5);
 /// Companion offset: the rows walk along z 348 (x 713..718) and click floor cells (713, 346) and (715, 351); (-2, +3) is clear of both.
 const COMPANION: Option<(f64, f64)> = Some((-2.0, 3.0));
+
+/// The stalls the rows force. The act has no command: the replay mod reads the mark and sleeps that long inside the tick
+/// (`Replay.java`, `act:stall_<ms>`), so the vanilla client's own catch-up (`Minecraft#runTick`) runs the ticks due.
+// Spec: specs/plans/VD3_BRIEF.md T6
+fn acts() -> Acts {
+    vec![("stall_400", vec![]), ("stall_1500", vec![]), ("stall_250", vec![])]
+}
+
+/// Marks the stall in the input log just before the op that holds the ECS (the op reaches the bot within a tick).
+fn mark_stall(cx: &Ctx, ms: u64) {
+    cx.mark_act(&format!("stall_{ms}"));
+}
+
+/// The scene of a click row: the cell above the floor block empty, stone in the hand.
+fn click_scene(cx: &mut Ctx, x: i32, z: i32) {
+    let n = cx.name.clone();
+    cx.r(&format!("setblock {x} {} {z} minecraft:air", FLOOR_Y + 1));
+    cx.r(&format!("item replace entity {n} hotbar.0 with minecraft:stone 8"));
+    sleep(Duration::from_millis(400));
+}
+
+/// Sets the scene of AT row `row` for a vanilla client (`--prepare-scene AT:<row>`) and returns the row's acts.
+/// The second stall row starts where the first one's walk ended (x 718), the click rows at the stand.
+// Spec: specs/plans/VD3_BRIEF.md T6
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) -> Acts {
+    match row {
+        "stall_400_ms_runs_vanillas_count_and_drops_the_rest" => cx.scene_in(AREA, &[], STAND),
+        "stall_1500_ms_runs_vanillas_count_and_drops_the_rest" => cx.scene_in(AREA, &[], (718.5, STAND.1, STAND.2)),
+        "stall_250_ms_then_look_and_click_in_one_update_places_at_the_new_look" => {
+            cx.scene_in(AREA, &[], STAND);
+            click_scene(cx, 713, 346);
+        }
+        "stall_250_ms_then_look_and_click_in_one_update_places_at_the_other_target" => {
+            cx.scene_in(AREA, &[], STAND);
+            click_scene(cx, 715, 351);
+        }
+        _ => panic!("no AT scene for row {row}"),
+    }
+    acts()
+}
 
 /// Players online (the bot, and the A8 attacker account when it is up).
 fn online(cx: &mut Ctx) -> u64 {
@@ -35,6 +75,7 @@ fn row(cx: &mut Ctx, ms: u64, bots: u64, to_x: i32, slot: u8) -> Outcome {
     cx.run_allowing("AT", &format!("stall_{ms}_ms_runs_vanillas_count_and_drops_the_rest"), &["Timer"], "the forced stall (AD-F5.3)", |cx| {
         sleep(Duration::from_millis(300));
         tc::reset_loop_stats();
+        mark_stall(cx, ms);
         cx.call(Op::Stall(ms));
         let (due, ran, ends, dropped) =
             (tc::MAX_DUE.load(Relaxed), tc::RAN_AT_MAX_DUE.load(Relaxed), tc::TICK_ENDS_AT_MAX_DUE.load(Relaxed), tc::TICKS_DROPPED.load(Relaxed));
@@ -70,15 +111,14 @@ fn row(cx: &mut Ctx, ms: u64, bots: u64, to_x: i32, slot: u8) -> Outcome {
 /// Pass: the click is Done (a refusal would carry its evidence, including
 /// `look_changed_after_hit`) and the server has the stone.
 // Spec: specs/F5-version-layer.md §4.6 (the crosshair ray is cast once per tick); specs/B6-placement-breaking.md §4.2
-fn click_row(cx: &mut Ctx, ms: u64, x: i32, z: i32) -> Outcome {
-    let n = cx.name.clone();
+fn click_row(cx: &mut Ctx, ms: u64, x: i32, z: i32, tail: &str) -> Outcome {
     let floor = pos(x, FLOOR_Y, z);
     let above = pos(x, FLOOR_Y + 1, z);
-    cx.r(&format!("setblock {x} {} {z} minecraft:air", FLOOR_Y + 1));
-    cx.r(&format!("item replace entity {n} hotbar.0 with minecraft:stone 8"));
-    sleep(Duration::from_millis(400));
-    cx.run_allowing("AT", &format!("stall_{ms}_ms_then_look_and_click_in_one_update_places_at_the_new_look"), &["Timer"], "the forced stall (AD-F5.3)", |cx| {
+    click_scene(cx, x, z);
+    // The two click rows have different names: the replay finds a row by its marks.
+    cx.run_allowing("AT", &format!("stall_{ms}_ms_then_look_and_click_in_one_update_places_at_the_{tail}"), &["Timer"], "the forced stall (AD-F5.3)", |cx| {
         tc::reset_loop_stats();
+        mark_stall(cx, ms);
         let rep = cx.call(Op::PlaceAimStall { pos: floor, face: Face::Up, ms });
         let Info::Action(a) = rep.info else { return (false, format!("bot reported {:?}", rep.info)) };
         let (due, ran) = (tc::MAX_DUE.load(Relaxed), tc::RAN_AT_MAX_DUE.load(Relaxed));
@@ -104,8 +144,8 @@ pub fn at(cx: &mut Ctx) -> Vec<Outcome> {
     // Back at the stand point after the walks; the two targets lie in opposite directions, so each
     // click needs a turn of well over 90 degrees.
     cx.scene_in_spot(AREA, &[], STAND, COMPANION);
-    out.push(click_row(cx, 250, 713, 346));
-    out.push(click_row(cx, 250, 715, 351));
+    out.push(click_row(cx, 250, 713, 346, "new_look"));
+    out.push(click_row(cx, 250, 715, 351, "other_target"));
     cx.clean_in(AREA);
     out
 }

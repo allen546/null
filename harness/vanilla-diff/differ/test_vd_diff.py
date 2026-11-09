@@ -55,6 +55,21 @@ class DifferTests(unittest.TestCase):
         self.assertEqual([x["label"] for x in diffs], ["server timing"])
         self.assertEqual(diffs[0]["first_server_diff"], 1)
 
+    def test_unrelated_entity_and_chunk_traffic_stays_client(self):
+        # Spec: specs/plans/VD3_BRIEF.md T2
+        null = run({1: [("C", "AddEntity", ""), ("C", "LevelChunkWithLight", "")], 2: [MOVE]})
+        van = run({1: [("C", "MoveEntityPos", "")], 2: [("S", "MovePlayerPos", "(x: 2.0)")]})
+        diffs, _, _ = d.compare(null, van, (1, 3), 0)
+        self.assertEqual([x["label"] for x in diffs], ["client"])
+        self.assertIsNone(diffs[0]["first_server_diff"])
+
+    def test_a_decision_relevant_arrival_amid_entity_traffic_is_server_timing(self):
+        null = run({1: [("C", "AddEntity", ""), ("C", "ContainerSetSlot", "")], 2: [MOVE]})
+        van = run({1: [("C", "AddEntity", "")], 2: [("C", "ContainerSetSlot", ""), ("S", "MovePlayerPos", "(x: 2.0)")]})
+        diffs, _, _ = d.compare(null, van, (1, 3), 0)
+        self.assertEqual([x["label"] for x in diffs], ["server timing"])
+        self.assertEqual(diffs[0]["first_server_diff"], 1)
+
     def test_timer_arrivals_do_not_make_server_timing(self):
         null = run({1: [("C", "KeepAlive", "")], 2: [MOVE]})
         van = run({1: [], 2: [("S", "MovePlayerPos", "(x: 2.0)")]})

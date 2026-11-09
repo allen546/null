@@ -353,6 +353,7 @@ fn run_row(cx: &mut Ctx, r: &Row) -> Outcome {
 }
 
 /// The scene of `scaffolding_after_crouch`: a scaffolding to click, a stone to crouch-click first, three stones held.
+// Spec: specs/plans/VD3_BRIEF.md T2 (shared by the Null row and the vanilla replay scene)
 fn scaffolding_scene(cx: &mut Ctx) {
     reset(cx);
     let setup: &[Blk] = &[(0, 0, 0, "scaffolding[bottom=false]"), (3, 0, 0, "stone")];

@@ -33,6 +33,21 @@ IGNORE = {
 }
 # Clientbound packets that arrive on the server's timer; they do not make a difference "server timing".
 IGNORE_CLIENTBOUND = {"KeepAlive", "Ping", "SetTime", "ChunkBatchStart", "ChunkBatchFinished", "BundleDelimiter"}
+# Clientbound packets that can change what the client decides or sends in a row (VD3 T2): block and
+# container state, the player's own position, health and effects, and screens. Entity and chunk traffic
+# differs between any two runs and cannot, so it does not make a difference "server timing".
+DECISION_CLIENTBOUND = {
+    "BlockUpdate", "SectionBlocksUpdate", "BlockChangedAck", "BlockEntityData", "BlockEvent", "BlockDestruction",
+    "ContainerSetSlot", "ContainerSetContent", "ContainerSetData", "ContainerClose", "OpenScreen", "SetHeldSlot",
+    "PlayerPosition", "PlayerAbilities", "SetHealth", "SetExperience", "GameEvent", "UpdateMobEffect", "RemoveMobEffect",
+    "Respawn", "PlayerCombatKill", "SetBorderSize", "SetBorderCenter", "InitializeBorder", "Explosion",
+}
+
+
+# Spec: specs/plans/VD3_BRIEF.md T2
+def decisive(names):
+    """The sorted clientbound names of one tick that can change the client's decision."""
+    return sorted(n for n in names if n in DECISION_CLIENTBOUND)
 
 
 # Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
@@ -279,7 +294,7 @@ def compare(null, vanilla, window, offset, samples=None):
         vs, vc, ve = vanilla.get(t + offset, ([], [], [0]))
         if ne[0] != 1 or ve[0] != 1:
             problems.append((t, ne[0], ve[0]))
-        if first_server_diff is None and sorted(nc) != sorted(vc):
+        if first_server_diff is None and decisive(nc) != decisive(vc):
             first_server_diff = t
         if ns != vs:
             # A difference at or after the first different server arrival may follow from it.

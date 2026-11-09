@@ -27,7 +27,8 @@ if grep -q '"name": "VD' "$SDIR/ops.json"; then echo "ops.json lists a VD player
 SLOGFLAG=(); [ -n "$SLOG" ] && SLOGFLAG=(--server-log "$SLOG")
 if [ "$SKIP_NULL" = 0 ]; then
   # run_null.sh runs the release binary as it is: a stale one would not test the tree.
-  (cd "$ROOT" && cargo build --release -p null-abilitycheck)
+  # VD_NO_BUILD: on the Pi the binaries are cross-compiled on the Mac (scripts/pi/vd3_deploy.sh).
+  [ -n "${VD_NO_BUILD:-}" ] || (cd "$ROOT" && cargo build --release -p null-abilitycheck)
   "$D/run_null.sh" --tap-out "$OUT/null_tap.jsonl" --input-log "$OUT/inputlog" --target "$ADDR" \
     --scenario "$MODULES" --account "$ACCOUNT" --rcon-port "$RCON" --server-log "$SDIR/server.log" 2>&1 | tee "$OUT/null.log"
 fi

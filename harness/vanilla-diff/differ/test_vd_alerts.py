@@ -62,6 +62,22 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(c["checks"]["Reach"]["class"], "vanilla_only")
         self.assertIn("vanilla only", a.report(c, {}, {"Reach": 1}))
 
+    def test_vanilla_only_alert_lines_are_counted_apart(self):
+        # Spec: specs/plans/VD3_BRIEF.md T2
+        c = a.compare_alerts({"Timer": 1}, {"Timer": 4, "Reach": 2, "Aim": 1})
+        self.assertEqual(c["vanilla_only_alerts"], 3)
+        self.assertEqual(a.compare_alerts({}, {})["vanilla_only_alerts"], 0)
+
+    def test_the_printed_summary_flags_vanilla_only_alerts(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import run_rows
+        pk = {"verdict": "MATCH", "classes": {}}
+        al = {"finding": False, "null": {}, "vanilla": {"RotationPlace": 1}, "vanilla_only_alerts": 1}
+        self.assertIn("VANILLA-ONLY x1", run_rows.summary_line("R", {"packets": pk, "alerts": al}))
+        al = {**al, "vanilla": {}, "vanilla_only_alerts": 0}
+        self.assertNotIn("VANILLA-ONLY", run_rows.summary_line("R", {"packets": pk, "alerts": al}))
+
     def test_an_allowed_alert_is_labelled_and_not_a_finding(self):
         c = a.compare_alerts({"Timer": 1}, {}, {"Timer": "the forced stall"})
         self.assertFalse(c["finding"])

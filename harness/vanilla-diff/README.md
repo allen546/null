@@ -327,7 +327,7 @@ Spec: `specs/plans/VD3_BRIEF.md` T2. 203 rows in `rows.json` (A4S 145, A2S 52, A
 - Leg logs: `~/Desktop/null-spikes/run-logs/vd3_t2/` (`STATE.md` has the state).
 - **Results (2026-11-04):** vanilla and Paper + Grim each 200 of 203 rows MATCH, the same 3 rows differ on both. Null drew zero Grim alerts in all 203 rows; recounted against `server.log` with no mismatch. "200 clean" counts vanilla-only alerts as clean: 32 rows have them, and none is proof about vanilla (below).
 - **Null departures, not fixed:**
-  - `A2S:break_poppy`, `A4S:click_poppy_top`: the fork's poppy shape has a fixed offset, not the position-based XZ offset (`FlowerBlock#getShape`, `BlockStateBase#getOffset`). Vanilla's ray misses the poppy at Null's aim, so it sends `UseItem` for the click and nothing for the attack, while Null sends `UseItemOn` or `StartDestroyBlock` plus `Swing`. Files: `azalea-physics/src/collision/blocks.rs` (`SHAPE37`), `pick.rs:339`, `block_actions.rs:628`. Other offset blocks (flowers, ferns, bamboo, dripstone) share the defect; short grass matches only because its shape is wide.
+  - `A2S:break_poppy`, `A4S:click_poppy_top`: the fork's poppy shape has a fixed offset, not the position-based XZ offset (`FlowerBlock#getShape`, `BlockStateBase#getOffset`). Vanilla's ray misses the poppy at Null's aim, so it sends `UseItem` for the click and nothing for the attack, while Null sends `UseItemOn` or `StartDestroyBlock` plus `Swing`. Files: `azalea-physics/src/collision/blocks.rs` (`SHAPE37`), `pick.rs:339`, `block_actions.rs:628`. Other blocks whose shape moves (flowers, bamboo, mangrove propagule, pointed dripstone) share the defect; grass and ferns have a fixed shape (corrected 2026-11-10 from a vanilla dump).
   - `A4S:place_redstone_wire_on_bottom_slab_refused_by_server`: Null swings after a client-side FAIL (`BlockItem#place`, `Minecraft#startUseItem`). This is the `Unknown` place verdict gap (`block_actions.rs:922-949`, `place_prediction.rs:374`). The cause is read from code; no debug log confirms the verdict.
 - **Replay faults, not fixed:**
   - 30 A4S `place_*` rows: vanilla `RotationPlace` x1. The mod change sets the start look and the last-sent look, so no look packet goes out and Grim still holds (0, 0) from the join. The ray from (0, 0) misses a floor block at y=199. The 21 place rows with a look change in the window draw nothing, and neither do blocks at y=200. Fix: the server must get the start look before the window, for example with a look packet in a tick before the window, or a `tp` with yaw and pitch in `prepare_row`. Then rerun these rows on Grim, and the T1 rows, which never ran with this mod change.
@@ -339,3 +339,19 @@ Spec: `specs/plans/VD3_BRIEF.md` T2. 203 rows in `rows.json` (A4S 145, A2S 52, A
   - The new `scaffolding_scene`, the `main.rs` dispatch and the two Java edits have no `Spec:` line.
 - **Alert comparison:** these are the first live alerts through the whole run; they were read, attributed to the right player and counted. The Null-only case has still not happened live.
 - Verification: Sonnet, 2026-11-04, offline, from logs, code and source; 45 unit tests pass.
+
+## VD3: T2 rerun on the Pi (2026-11-04, read 2026-11-10)
+
+Spec: `specs/plans/VD3_BRIEF.md` T2. The fixes listed as "not fixed" in T2 are in the tree: the replay sets the start look one tick before the window, so vanilla sends its own look packet; the "server timing" label counts only packets that can change the client's decision; a vanilla-only alert is flagged in the summary; the missing `Spec:` lines are added. Run on the Pi by `scripts/pi/vd3_chain.sh`, tree `205b557` plus the working tree. Each leg ran once. Logs on the Pi: `/mnt/pi-data/null-harness/vd-logs/rerun/` (`t1_vanilla`, `t1_grim`, `t2_grim`, each with `summary.txt`; `chain.status`).
+
+| Leg | Rows | Clean | Rows with vanilla-only alerts |
+|---|---|---|---|
+| T1 rows, vanilla server | 24 | 24 | not applicable (no Grim) |
+| T1 rows, Paper + Grim | 24 | 23 | 11 |
+| T2 rerun rows, Paper + Grim (30 `RotationPlace` rows, `break_brewing_stand`, `break_pressure_plate`) | 32 | 32 | 7 |
+
+- Null drew zero Grim alerts in all 56 Grim rows.
+- **The false `RotationPlace` is gone:** no row of the rerun drew it.
+- **The one row not clean:** A22 `pillar_jump_places_under_feet`, packets DIFF with 23 differences labelled server timing. Vanilla drew `Simulation` x11, `GroundSpoof` x1, `Timer` x2 and `TimerLimit` x2; Null drew none. The row was clean on the Mac in T1. Not examined. Next: one rerun of this row on the Mac.
+- **Vanilla-only `Timer`:** all 18 rows with vanilla-only alerts have `Timer`, nearly always with `TimerLimit`. The vanilla client on the Pi may stall, but this is not checked. Of the 5 `Timer` rows from T2, only `place_bell_on_floor` repeated, and new rows appeared, so the alert follows no particular row.
+- A vanilla-only alert does not hide a Null-only alert, so these rows still test Null. They are not proof of what vanilla draws.

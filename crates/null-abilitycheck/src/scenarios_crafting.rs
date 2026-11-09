@@ -150,7 +150,36 @@ fn scene(cx: &mut Ctx, table: bool, give: &[(u16, &str, u8)]) {
     sleep(Duration::from_millis(500));
 }
 
+const CAKE: &[(u16, &str, u8)] = &[(9, "milk_bucket", 1), (10, "milk_bucket", 1), (11, "milk_bucket", 1), (12, "sugar", 2), (13, "egg", 1), (14, "wheat", 3)];
+
+/// The scene (crafting table placed, items given) of each A11 row, for the Null run (`row` checks it) and the vanilla client's scene.
+// Spec: specs/plans/VD3_BRIEF.md T3
+fn scene_of(name: &str) -> Option<(bool, &'static [(u16, &'static str, u8)])> {
+    Some(match name {
+        "planks_from_log_2x2" | "shift_click_crafts_all" => (false, &[(9, "oak_log", 3)]),
+        "sticks_2x2_right_clicks" | "crafting_table_from_planks" => (false, &[(9, "oak_planks", 4)]),
+        "wooden_pickaxe_at_table" => (true, &[(9, "oak_planks", 3), (10, "stick", 2)]),
+        "shift_click_one_craft" => (false, &[(9, "oak_log", 1)]),
+        "table_shift_click_crafts_all" => (true, &[(9, "oak_planks", 3), (10, "oak_planks", 3)]),
+        "table_shift_click_into_grid" => (true, &[(9, "oak_log", 5)]),
+        "wrong_shape_and_empty_result" | "close_returns_grid_player" => (false, &[(9, "oak_planks", 2)]),
+        "cake_leaves_buckets" => (true, CAKE),
+        "close_returns_grid_table" => (true, &[(9, "oak_planks", 8)]),
+        "renamed_ingredient" => (false, &[(9, "oak_log[custom_name=\"Fancy\",lore=[\"x\"]]", 1)]),
+        "repair_damaged_pickaxes" => (false, &[(9, "wooden_pickaxe[damage=50]", 1), (10, "wooden_pickaxe[damage=55]", 1)]),
+        _ => return None,
+    })
+}
+
+/// Sets the scene of A11 row `row` for a vanilla client (`--prepare-scene A11:<row>`). No row has an RCON action inside its window.
+// Spec: specs/plans/VD3_BRIEF.md T3
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) {
+    let (table, give) = scene_of(row).unwrap_or_else(|| panic!("no A11 scene for row {row}"));
+    scene(cx, table, give);
+}
+
 fn row(cx: &mut Ctx, name: &str, table: bool, give: &[(u16, &str, u8)], body: impl FnOnce(&mut Ctx, &mut Vec<String>) -> bool) -> Outcome {
+    assert!(scene_of(name) == Some((table, give)), "A11 {name}: scene_of disagrees with the row");
     scene(cx, table, give);
     cx.run("A11", name, |cx| {
         let mut ev = Vec::new();
@@ -276,8 +305,7 @@ pub fn a11(cx: &mut Ctx) -> Vec<Outcome> {
 
     // A cake: the three milk buckets leave three empty buckets in their cells (ResultSlot#onTake
     // with the item defaults); the client predicts them, the server agrees.
-    let cake: &[(u16, &str, u8)] = &[(9, "milk_bucket", 1), (10, "milk_bucket", 1), (11, "milk_bucket", 1), (12, "sugar", 2), (13, "egg", 1), (14, "wheat", 3)];
-    out.push(row(cx, "cake_leaves_buckets", true, cake, |cx, ev| {
+    out.push(row(cx, "cake_leaves_buckets", true, CAKE, |cx, ev| {
         let mut ok = open_table(cx, ev);
         // milk buckets, sugar and wheat come as stacks or singles: pick up, place one at a time
         for k in 0..3 {

@@ -174,13 +174,19 @@ fn result_line(g: &GatherInfo) -> String {
     )
 }
 
+/// The scene of a one-tree row (also the vanilla client's): the tree built, the trunk cells returned.
+fn fell_scene(cx: &mut Ctx, kind: &'static str, h: i32, hotbar: &[(u8, &str, u8)]) -> Vec<BlockPos> {
+    reset(cx, hotbar);
+    let logs = tree(cx, kind, OAK_X, OAK_Z, h);
+    cx.wait_block(*logs.last().unwrap(), if kind == "oak" { "minecraft:oak_log" } else { "minecraft:birch_log" });
+    logs
+}
+
 /// Fell one tree of `h` logs with `quota`; a trunk that needs more than a stand on log 1 leaves
 /// its top log (8 are reachable, see the tall row).
 // Spec: specs/B4-gathering.md §4.3, §4.10 (fell a natural tree completely and pick up the logs)
 fn fell_tree(cx: &mut Ctx, name: &str, kind: &'static str, h: i32, hotbar: &[(u8, &str, u8)]) -> Outcome {
-    reset(cx, hotbar);
-    let logs = tree(cx, kind, OAK_X, OAK_Z, h);
-    cx.wait_block(*logs.last().unwrap(), if kind == "oak" { "minecraft:oak_log" } else { "minecraft:birch_log" });
+    let logs = fell_scene(cx, kind, h, hotbar);
     let log = format!("{kind}_log");
     let shape_ok = all_are(cx, &logs, &log);
     let want = h as u32;
@@ -220,8 +226,8 @@ fn birch(cx: &mut Ctx) -> Outcome {
     fell_tree(cx, "birch_felled_trunk_read_back_first", "birch", 6, &[(0, "iron_axe", 1)])
 }
 
-// Spec: specs/B4-gathering.md §4.3, §4.10 (leaves that block a log are cleared first; the others stay)
-fn log_behind_natural_leaves(cx: &mut Ctx) -> Outcome {
+/// The scene of the leaves row (also the vanilla client's): a two-log trunk and a branch log inside a dense natural canopy. Returns the three logs.
+fn leaves_scene(cx: &mut Ctx) -> Vec<BlockPos> {
     reset(cx, &[(0, "iron_axe", 1)]);
     // A trunk of two logs and a branch log diagonal to the top one, inside a dense natural canopy:
     // no straight line reaches the branch without passing a leaf.
@@ -232,8 +238,14 @@ fn log_behind_natural_leaves(cx: &mut Ctx) -> Outcome {
     let branch = pos(x + 1, y + 2, z);
     cx.r(&format!("setblock {} {} {} minecraft:oak_log", branch.x, branch.y, branch.z));
     let logs = vec![pos(x, y, z), pos(x, y + 1, z), branch];
-    let canopy = 6 * 5 * 4 - 3;
     cx.wait_block(branch, "minecraft:oak_log");
+    logs
+}
+
+// Spec: specs/B4-gathering.md §4.3, §4.10 (leaves that block a log are cleared first; the others stay)
+fn log_behind_natural_leaves(cx: &mut Ctx) -> Outcome {
+    let logs = leaves_scene(cx);
+    let canopy = 6 * 5 * 4 - 3;
     cx.run("A14", "log_behind_natural_leaves_leaves_cleared_then_logs_felled", |cx| {
         let who = cx.name.clone();
         let op = GatherOp::Fell { tree: "oak", quota: 3, claim: claim(AREA.0 + 20), observer: who.clone(), probe: logs.clone() };
@@ -260,21 +272,7 @@ fn log_behind_natural_leaves(cx: &mut Ctx) -> Outcome {
 
 // Spec: specs/B4-gathering.md §4.8 (a build is left intact and reported)
 fn hut(cx: &mut Ctx) -> Outcome {
-    reset(cx, &[(0, "iron_axe", 1)]);
-    // Planks walls, log corner posts, a roof of persistent leaves (placed leaves keep `persistent=true`).
-    let (x0, x1, z0, z1) = (812, 814, 356, 358);
-    fill(cx, (x0, FLOOR_Y + 1, z0), (x1, FLOOR_Y + 3, z1), "minecraft:oak_planks hollow");
-    for (x, z) in [(x0, z0), (x0, z1), (x1, z0), (x1, z1)] {
-        fill(cx, (x, FLOOR_Y + 1, z), (x, FLOOR_Y + 3, z), "minecraft:oak_log");
-    }
-    fill(cx, (x0 - 1, FLOOR_Y + 4, z0 - 1), (x1 + 1, FLOOR_Y + 4, z1 + 1), "minecraft:oak_leaves[persistent=true,distance=1]");
-    // A copy 20 blocks up (outside the claim) to compare against afterwards.
-    let (lo, hi) = ((x0 - 1, FLOOR_Y + 1, z0 - 1), (x1 + 1, FLOOR_Y + 4, z1 + 1));
-    cx.r(&format!("clone {} {} {} {} {} {} {} {} {}", lo.0, lo.1, lo.2, hi.0, hi.1, hi.2, lo.0, lo.1 + 20, lo.2));
-    cx.wait_block(pos(x1, FLOOR_Y + 3, z1), "minecraft:oak_log");
-    let compare = format!("execute if blocks {} {} {} {} {} {} {} {} {} all", lo.0, lo.1, lo.2, hi.0, hi.1, hi.2, lo.0, lo.1 + 20, lo.2);
-    let posts: Vec<BlockPos> = [(x0, z0), (x0, z1), (x1, z0), (x1, z1)].iter().flat_map(|(x, z)| (1..=3).map(move |dy| pos(*x, FLOOR_Y + dy, *z))).collect();
-    let before = cx.r(&compare).contains("passed");
+    let (posts, compare, before) = hut_scene(cx);
     cx.run("A14", "hut_in_the_claim_left_intact_and_reported", |cx| {
         if !before {
             return (false, "the copy of the hut did not match before the job".into());
@@ -299,8 +297,28 @@ fn hut(cx: &mut Ctx) -> Outcome {
     })
 }
 
-// Spec: specs/B4-gathering.md §4.8 (the claim is a hard boundary: outside is never touched)
-fn outside_and_across_the_edge(cx: &mut Ctx) -> Outcome {
+/// The scene of the hut row (also the vanilla client's): returns the post cells, the command that compares the hut with its copy, and whether they matched.
+fn hut_scene(cx: &mut Ctx) -> (Vec<BlockPos>, String, bool) {
+    reset(cx, &[(0, "iron_axe", 1)]);
+    // Planks walls, log corner posts, a roof of persistent leaves (placed leaves keep `persistent=true`).
+    let (x0, x1, z0, z1) = (812, 814, 356, 358);
+    fill(cx, (x0, FLOOR_Y + 1, z0), (x1, FLOOR_Y + 3, z1), "minecraft:oak_planks hollow");
+    for (x, z) in [(x0, z0), (x0, z1), (x1, z0), (x1, z1)] {
+        fill(cx, (x, FLOOR_Y + 1, z), (x, FLOOR_Y + 3, z), "minecraft:oak_log");
+    }
+    fill(cx, (x0 - 1, FLOOR_Y + 4, z0 - 1), (x1 + 1, FLOOR_Y + 4, z1 + 1), "minecraft:oak_leaves[persistent=true,distance=1]");
+    // A copy 20 blocks up (outside the claim) to compare against afterwards.
+    let (lo, hi) = ((x0 - 1, FLOOR_Y + 1, z0 - 1), (x1 + 1, FLOOR_Y + 4, z1 + 1));
+    cx.r(&format!("clone {} {} {} {} {} {} {} {} {}", lo.0, lo.1, lo.2, hi.0, hi.1, hi.2, lo.0, lo.1 + 20, lo.2));
+    cx.wait_block(pos(x1, FLOOR_Y + 3, z1), "minecraft:oak_log");
+    let compare = format!("execute if blocks {} {} {} {} {} {} {} {} {} all", lo.0, lo.1, lo.2, hi.0, hi.1, hi.2, lo.0, lo.1 + 20, lo.2);
+    let posts: Vec<BlockPos> = [(x0, z0), (x0, z1), (x1, z0), (x1, z1)].iter().flat_map(|(x, z)| (1..=3).map(move |dy| pos(*x, FLOOR_Y + dy, *z))).collect();
+    let before = cx.r(&compare).contains("passed");
+    (posts, compare, before)
+}
+
+/// The scene of the edge row (also the vanilla client's): returns all log cells, how many belong to the tree wholly outside, the branch cell and the claim's edge.
+fn edge_scene(cx: &mut Ctx) -> (Vec<BlockPos>, usize, BlockPos, i32) {
     reset(cx, &[(0, "iron_axe", 1)]);
     // The claim ends at x = 812. One tree stands wholly outside it. The other has its trunk on the
     // last column and a branch log one block past the edge.
@@ -312,6 +330,12 @@ fn outside_and_across_the_edge(cx: &mut Ctx) -> Outcome {
     cx.r(&format!("setblock {} {} {} minecraft:oak_log", branch.x, branch.y, branch.z));
     cells.push(branch);
     cx.wait_block(branch, "minecraft:oak_log");
+    (cells, outside, branch, edge_x)
+}
+
+// Spec: specs/B4-gathering.md §4.8 (the claim is a hard boundary: outside is never touched)
+fn outside_and_across_the_edge(cx: &mut Ctx) -> Outcome {
+    let (cells, outside, branch, edge_x) = edge_scene(cx);
     cx.run("A14", "tree_outside_the_claim_and_one_across_its_edge_left_and_reported", |cx| {
         let who = cx.name.clone();
         let op = GatherOp::Fell { tree: "oak", quota: 8, claim: claim(edge_x), observer: who, probe: Vec::new() };
@@ -335,12 +359,18 @@ fn outside_and_across_the_edge(cx: &mut Ctx) -> Outcome {
     })
 }
 
-// Spec: specs/B4-gathering.md §3 (a quota stops the job; what is left is reported)
-fn quota_stops_after_one_tree(cx: &mut Ctx) -> Outcome {
+/// The scene of the quota row (also the vanilla client's): a near and a far tree.
+fn quota_scene(cx: &mut Ctx) -> (Vec<BlockPos>, Vec<BlockPos>) {
     reset(cx, &[(0, "iron_axe", 1)]);
     let near = tree(cx, "oak", 809, 350, 4);
     let far = tree(cx, "oak", 816, 358, 4);
     cx.wait_block(*far.last().unwrap(), "minecraft:oak_log");
+    (near, far)
+}
+
+// Spec: specs/B4-gathering.md §3 (a quota stops the job; what is left is reported)
+fn quota_stops_after_one_tree(cx: &mut Ctx) -> Outcome {
+    let (near, far) = quota_scene(cx);
     cx.run("A14", "quota_of_four_stops_after_one_tree", |cx| {
         let who = cx.name.clone();
         let op = GatherOp::Fell { tree: "oak", quota: 4, claim: claim(AREA.0 + 20), observer: who.clone(), probe: near.clone() };
@@ -363,9 +393,7 @@ fn quota_stops_after_one_tree(cx: &mut Ctx) -> Outcome {
 
 // Spec: specs/B4-gathering.md §4.3, §4.10 (a log out of reach is left and reported; a stand on a target, broken last)
 fn tall_trunk(cx: &mut Ctx) -> Outcome {
-    reset(cx, &[(0, "iron_axe", 1)]);
-    let logs = tree(cx, "oak", OAK_X, OAK_Z, 9);
-    cx.wait_block(*logs.last().unwrap(), "minecraft:oak_log");
+    let logs = fell_scene(cx, "oak", 9, &[(0, "iron_axe", 1)]);
     let reachable = logs[..8].to_vec();
     let top = logs[8];
     cx.run("A14", "tall_trunk_top_log_left_unreachable", |cx| {
@@ -390,8 +418,8 @@ fn tall_trunk(cx: &mut Ctx) -> Outcome {
     })
 }
 
-// Spec: specs/B4-gathering.md §4.8 (the view reads `persistent` for leaves; `is_solid` for logs and leaves)
-fn view_reads(cx: &mut Ctx) -> Outcome {
+/// The scene of the view row (also the vanilla client's): a log and two leaf blocks in a line. Returns the five cells it probes.
+fn view_scene(cx: &mut Ctx) -> [BlockPos; 5] {
     reset(cx, &[]);
     let y = FLOOR_Y + 1;
     let cells = [pos(806, y, 346), pos(806, y, 347), pos(806, y, 348), pos(806, y, 349), pos(806, y - 1, 346)];
@@ -399,6 +427,48 @@ fn view_reads(cx: &mut Ctx) -> Outcome {
     cx.r("setblock 806 200 347 minecraft:oak_leaves[persistent=false,distance=1]");
     cx.r("setblock 806 200 348 minecraft:oak_leaves[persistent=true,distance=1]");
     cx.wait_block(cells[2], "minecraft:oak_leaves");
+    cells
+}
+
+/// Sets the scene of A14 row `row` for a vanilla client (`--prepare-scene A14:<row>`). No RCON action runs in a window.
+/// The bot's gather job (walk, mine, pick up drops) is replayed as input; item drops fly at random, so those rows are class 2.
+// Spec: specs/plans/VD3_BRIEF.md T5
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) {
+    match row {
+        "view_reads_logs_and_leaves_solid_and_persistent" => {
+            view_scene(cx);
+        }
+        "oak_felled_with_an_axe" => {
+            fell_scene(cx, "oak", 5, &[(0, "iron_axe", 1)]);
+        }
+        "oak_felled_by_hand" => {
+            fell_scene(cx, "oak", 4, &[]);
+        }
+        "birch_felled_trunk_read_back_first" => {
+            fell_scene(cx, "birch", 6, &[(0, "iron_axe", 1)]);
+        }
+        "log_behind_natural_leaves_leaves_cleared_then_logs_felled" => {
+            leaves_scene(cx);
+        }
+        "hut_in_the_claim_left_intact_and_reported" => {
+            hut_scene(cx);
+        }
+        "tree_outside_the_claim_and_one_across_its_edge_left_and_reported" => {
+            edge_scene(cx);
+        }
+        "quota_of_four_stops_after_one_tree" => {
+            quota_scene(cx);
+        }
+        "tall_trunk_top_log_left_unreachable" => {
+            fell_scene(cx, "oak", 9, &[(0, "iron_axe", 1)]);
+        }
+        _ => panic!("no A14 scene for row {row}"),
+    }
+}
+
+// Spec: specs/B4-gathering.md §4.8 (the view reads `persistent` for leaves; `is_solid` for logs and leaves)
+fn view_reads(cx: &mut Ctx) -> Outcome {
+    let cells = view_scene(cx);
     cx.run("A14", "view_reads_logs_and_leaves_solid_and_persistent", |cx| {
         let g = match gather_info(cx.call(Op::Gather(GatherOp::Probe(cells.to_vec())))) {
             Ok(g) => g,

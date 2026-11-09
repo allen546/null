@@ -52,7 +52,7 @@ use scenarios::{Ctx, Outcome};
 use skill::RemoteSkill;
 
 const USAGE: &str = "usage: null-abilitycheck [--server 127.0.0.1:25567] [--account null_check] \
-[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|A16|A17|A18|A19|A20|A21|A22|A23|AT[,..]] (SW1|SW1C|SW1B run only when named: specs/plans/SHARED_WORLD_TEST.md) [--shuffle SEED] [--companion [--companion-first]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH] [--input-log DIR] [--prepare-scene A15|A15:ROW|A17:ROW|A1..A4|A9|A13|A22:ROW|A4S:ROW|A2S:ROW|A4C:ROW --player NAME [--progress FILE]]";
+[--scenario all|A1|A2|A3|A4|A2S|A4S|A4C|A5|A6|A7|A8|A9|A10|A10E|A11|A12|A13|A14|A15|A16|A17|A18|A19|A20|A21|A22|A23|AT[,..]] (SW1|SW1C|SW1B run only when named: specs/plans/SHARED_WORLD_TEST.md) [--shuffle SEED] [--companion [--companion-first]] [--rcon-port 25577] [--rcon-password skeleton] [--server-log PATH] [--input-log DIR] [--prepare-scene A15|A15:ROW|A17:ROW|A1..A4|A9|A13|A22:ROW|A4S:ROW|A2S:ROW|A4C:ROW|A10..A11|A5..A8|A18|A20|A12|A14|A16|A19|A21|A23|AT with :ROW --player NAME [--progress FILE]]";
 
 struct Args {
     server: String,
@@ -223,6 +223,7 @@ fn prepare_scene(rc: rcon::Rcon, module: &str, player: &str, log: PathBuf) -> ! 
         std::process::exit(2);
     }
     let (m, row) = module.split_once(':').unwrap_or((module, "plain_stone_walk_matches_the_model"));
+    // Spec: specs/plans/VD3_BRIEF.md T2 (A4S, A2S and A4C rows dispatch to their own prepare_row)
     let acts = match m {
         "A15" => scenarios_block_effects::prepare_row(&mut cx, row),
         "A17" => scenarios_envelope::prepare_row(&mut cx, row),
@@ -239,6 +240,17 @@ fn prepare_scene(rc: rcon::Rcon, module: &str, player: &str, log: PathBuf) -> ! 
             scenarios_inventory::prepare_row(&mut cx, row);
             Vec::new()
         }
+        // Spec: specs/plans/VD3_BRIEF.md T3 (A10 and A10E have RCON actions inside their windows; A11 none)
+        "A10" => scenarios_containers::prepare_row(&mut cx, row),
+        "A10E" => scenarios_entity_containers::prepare_row(&mut cx, row),
+        "A11" => {
+            scenarios_crafting::prepare_row(&mut cx, row);
+            Vec::new()
+        }
+        // Spec: specs/plans/VD3_BRIEF.md T4
+        "A5" | "A6" | "A7" | "A8" => scenarios_items::prepare_row(&mut cx, m, row),
+        "A18" => scenarios_interpolation::prepare_row(&mut cx, row),
+        "A20" => scenarios_refusals::prepare_row(&mut cx, row),
         "A13" => {
             scenarios_mailbox::prepare_row(&mut cx, row);
             Vec::new()
@@ -247,6 +259,21 @@ fn prepare_scene(rc: rcon::Rcon, module: &str, player: &str, log: PathBuf) -> ! 
             scenarios_prediction::prepare_row(&mut cx, row);
             Vec::new()
         }
+        // Spec: specs/plans/VD3_BRIEF.md T5 (movement and pathing: A14, A16, A19, A21)
+        "A14" => {
+            scenarios_gather::prepare_row(&mut cx, row);
+            Vec::new()
+        }
+        "A16" => scenarios_server_attributes::prepare_row(&mut cx, row),
+        "A19" => scenarios_pushes::prepare_row(&mut cx, row),
+        "A21" => {
+            scenarios_walls::prepare_row(&mut cx, row);
+            Vec::new()
+        }
+        // Spec: specs/plans/VD3_BRIEF.md T6 (death, stalls, resync: A12, A23, AT)
+        "A12" => scenarios_respawn::prepare_row(&mut cx, row),
+        "A23" => scenarios_unloaded::prepare_row(&mut cx, row),
+        "AT" => scenarios_tick::prepare_row(&mut cx, row),
         m => {
             eprintln!("--prepare-scene: no scene for {m}");
             std::process::exit(2);
@@ -257,6 +284,12 @@ fn prepare_scene(rc: rcon::Rcon, module: &str, player: &str, log: PathBuf) -> ! 
     cx.serve_acts(&acts);
     if m == "A22" {
         scenarios_prediction::prepare_done(&mut cx, row);
+    }
+    // Spec: specs/plans/VD3_BRIEF.md T5 and T6 (a rule or border a scene set goes back to the default)
+    match m {
+        "A21" => scenarios_walls::prepare_done(&mut cx, row),
+        "A12" => scenarios_respawn::prepare_done(&mut cx),
+        _ => {}
     }
     std::process::exit(0);
 }

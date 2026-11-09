@@ -15,7 +15,7 @@ use mc_adapter::{BotState, HostEvent};
 use null_bot_api::{BlockOutcome, BlockPos, Hand, Life, SkillStatus};
 
 use crate::{
-    scenarios::{Ctx, Outcome, last_int, pos, ticks_between_packets, vanilla_ticks},
+    scenarios::{Acts, Ctx, Outcome, last_int, pos, ticks_between_packets, vanilla_ticks},
     skill::{Info, Op},
     skill_inventory::InvOp,
     skill_items::ItemOp,
@@ -87,8 +87,7 @@ fn life(cx: &mut Ctx, op: LifeOp) -> LifeInfo {
 /// to the event.
 fn kill(cx: &mut Ctx) -> Result<u128, String> {
     while cx.events.try_recv().is_ok() {}
-    let n = cx.name.clone();
-    cx.r(&format!("kill {n}"));
+    cx.act(&acts(), "kill");
     let t = Instant::now();
     loop {
         match cx.events.recv_timeout(Duration::from_secs(10)) {
@@ -420,13 +419,19 @@ fn respawn_refused_alive(cx: &mut Ctx) -> Outcome {
     })
 }
 
-// Spec: specs/F1-swarm-runtime.md §4.4 (death replaces the open container screen)
-fn death_with_open_chest(cx: &mut Ctx) -> Outcome {
+/// The scene of the open-chest row (also the vanilla client's): a chest with cobblestone, the bot holding stone, keep inventory on.
+fn chest_scene(cx: &mut Ctx) -> null_bot_api::BlockPos {
     fresh(cx, &[(0, "stone", 5)], true);
     let chest = pos(695, 200, 360);
     cx.r("setblock 695 200 360 minecraft:chest[facing=north]");
     cx.r("item replace block 695 200 360 container.0 with minecraft:cobblestone 7");
     cx.wait_block(chest, "minecraft:chest");
+    chest
+}
+
+// Spec: specs/F1-swarm-runtime.md §4.4 (death replaces the open container screen)
+fn death_with_open_chest(cx: &mut Ctx) -> Outcome {
+    let chest = chest_scene(cx);
     let out = cx.run("A12", "death_with_open_chest_closes_it", |cx| {
         let open = match cx.call(Op::Inv(InvOp::OpenContainer(chest, None))).info {
             Info::Inv(i) => i,
@@ -476,9 +481,9 @@ fn death_with_open_chest(cx: &mut Ctx) -> Outcome {
 fn death_mid_action(cx: &mut Ctx) -> Outcome {
     fresh(cx, &[(0, "golden_apple", 3)], true);
     let out = cx.run("A12", "death_while_crouching_and_eating", |cx| {
-        let n = cx.name.clone();
         cx.call(Op::Sneak(true));
-        // Eating: golden apples can be eaten at any food level.
+        // Eating: golden apples can be eaten at any food level. The replay mod holds the use key from here.
+        cx.act(&acts(), "use_hold");
         let seq = cx.send(Op::Items(ItemOp::Use(Hand::Main)));
         if let Err(e) = cx.recv(seq, Duration::from_secs(30)) {
             return (false, format!("bot never started eating: {e}"));
@@ -492,15 +497,18 @@ fn death_mid_action(cx: &mut Ctx) -> Outcome {
             Ok(l) => l,
             Err(e) => return (false, e),
         };
+        // Death ends the use; the mod lets go of the key here.
+        cx.act(&acts(), "use_release");
         let info = revive(cx);
         sleep(Duration::from_millis(1200));
         let apples = cx.count("golden_apple");
         // Eat one to the end after the respawn: lower food first so the +4 shows (as A5).
-        cx.r(&format!("effect give {n} minecraft:hunger 30 255 true"));
+        cx.act(&acts(), "hunger");
         cx.poll(15.0, |cx| food(cx) <= 12);
-        cx.r(&format!("effect clear {n} minecraft:hunger"));
+        cx.act(&acts(), "hunger_clear");
         sleep(Duration::from_millis(500));
         let f0 = food(cx);
+        cx.act(&acts(), "use_hold");
         let seq = cx.send(Op::Items(ItemOp::Use(Hand::Main)));
         if let Err(e) = cx.recv(seq, Duration::from_secs(30)) {
             return (false, format!("bot never started the second use: {e}"));
@@ -533,8 +541,8 @@ fn death_mid_action(cx: &mut Ctx) -> Outcome {
     out
 }
 
-// Spec: specs/F1-swarm-runtime.md §4.4 (respawn in another dimension; the world works after)
-fn death_in_nether(cx: &mut Ctx) -> Outcome {
+/// The scene of the nether row (also the vanilla client's): a stone platform in the nether and the bot on it.
+fn nether_scene(cx: &mut Ctx) {
     fresh(cx, &[], false);
     let n = cx.name.clone();
     for c in [
@@ -546,6 +554,11 @@ fn death_in_nether(cx: &mut Ctx) -> Outcome {
         cx.r(&c);
     }
     sleep(Duration::from_millis(2500));
+}
+
+// Spec: specs/F1-swarm-runtime.md §4.4 (respawn in another dimension; the world works after)
+fn death_in_nether(cx: &mut Ctx) -> Outcome {
+    nether_scene(cx);
     let log: BlockPos = pos(684, 200, 349);
     let out = cx.run("A12", "death_in_the_nether_respawns_in_the_overworld", |cx| {
         let in_nether = dimension(cx);
@@ -557,7 +570,7 @@ fn death_in_nether(cx: &mut Ctx) -> Outcome {
         sleep(Duration::from_millis(1500));
         let (dim, p, hp) = (dimension(cx), bot_pos(cx), health(cx));
         // A block in the test area breaks at vanilla time.
-        cx.r("setblock 684 200 349 minecraft:oak_log");
+        cx.act(&acts(), "setlog");
         cx.wait_block(log, "minecraft:oak_log");
         let want = ticks_between_packets(vanilla_ticks(2.0, 1.0, true)) as u64;
         let r = cx.call(Op::Break(log));
@@ -608,8 +621,7 @@ struct DeathEvents {
 /// `/kill` the bot and collect the host's events about the death.
 fn kill_events(cx: &mut Ctx) -> DeathEvents {
     while cx.events.try_recv().is_ok() {}
-    let n = cx.name.clone();
-    cx.r(&format!("kill {n}"));
+    cx.act(&acts(), "kill");
     let t = Instant::now();
     let mut e = DeathEvents { dead_ms: None, died_ms: None, ended_ms: None, ended: None, died: None };
     while t.elapsed() < Duration::from_secs(5) && (e.dead_ms.is_none() || e.died_ms.is_none() || e.ended_ms.is_none()) {
@@ -718,12 +730,18 @@ fn selected_slot(cx: &mut Ctx) -> i64 {
     last_int(&cx.r(&format!("data get entity {n} SelectedItemSlot"))).unwrap_or(-1)
 }
 
-// Spec: specs/F1-swarm-runtime.md §4.4 (a dead bot sends only what a death screen sends)
-fn nothing_sent_while_dead(cx: &mut Ctx) -> Outcome {
+/// The scene of the dead-bot row (also the vanilla client's): a motionless pig beside the bot. Returns the floor cell the row aims at.
+fn pig_scene(cx: &mut Ctx) -> null_bot_api::BlockPos {
     fresh(cx, &[(0, "stone", 5), (2, "iron_axe", 1)], true);
     let target = pos(695, 199, 358);
     cx.r("summon minecraft:pig 697.5 200 357.5 {NoAI:1b,Silent:1b,PersistenceRequired:1b}");
     sleep(Duration::from_millis(500));
+    target
+}
+
+// Spec: specs/F1-swarm-runtime.md §4.4 (a dead bot sends only what a death screen sends)
+fn nothing_sent_while_dead(cx: &mut Ctx) -> Outcome {
+    let target = pig_scene(cx);
     let out = cx.run("A12", "nothing_sent_while_dead", |cx| {
         let snap = cx.snap_after(Op::SelectSlot(2));
         sleep(Duration::from_millis(300));
@@ -799,8 +817,7 @@ fn skill_on_death_keep(cx: &mut Ctx) -> Outcome {
         crate::skill_respawn::KEEP_ARMED.store(true, std::sync::atomic::Ordering::Relaxed);
         sleep(Duration::from_millis(400));
         while cx.events.try_recv().is_ok() {}
-        let n = cx.name.clone();
-        cx.r(&format!("kill {n}"));
+        cx.act(&acts(), "kill");
         let t = Instant::now();
         let (mut died, mut ended, mut done_ms) = (None, None, None);
         while t.elapsed() < Duration::from_secs(10) && done_ms.is_none() {
@@ -858,6 +875,59 @@ fn skill_on_death_keep(cx: &mut Ctx) -> Outcome {
     let _ = revive(cx);
     cx.r("gamerule keep_inventory false");
     out
+}
+
+/// The RCON actions inside the rows' windows (the vanilla client's scene runs them at the same input tick).
+/// `use_hold` and `use_release` have no command: the replay mod holds the use key between them (as in A5).
+// Spec: specs/plans/VD3_BRIEF.md T6
+fn acts() -> Acts {
+    vec![
+        ("kill", vec!["kill {n}".into()]),
+        ("hunger", vec!["effect give {n} minecraft:hunger 30 255 true".into()]),
+        ("hunger_clear", vec!["effect clear {n} minecraft:hunger".into()]),
+        ("setlog", vec!["setblock 684 200 349 minecraft:oak_log".into()]),
+        ("use_hold", vec![]),
+        ("use_release", vec![]),
+    ]
+}
+
+/// Sets the scene of A12 row `row` for a vanilla client (`--prepare-scene A12:<row>`) and returns the row's RCON actions.
+/// The death screen's 20-tick gate and the respawn click are the replay mod's (`Replay.dead`); the kill is the act `kill`.
+// Spec: specs/plans/VD3_BRIEF.md T6
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) -> Acts {
+    // A row of the Null run restores this rule itself; a replay must not leave it on for the next scene.
+    if row != "immediate_respawn_has_no_delay" {
+        cx.r("gamerule immediate_respawn false");
+    }
+    match row {
+        "kill_and_respawn_twice_in_a_row" | "respawn_refused_while_alive" => fresh(cx, &[], false),
+        "inventory_drops_with_keep_inventory_off" => fresh_spot(cx, &[(0, "stone", 5), (4, "golden_apple", 3), (8, "iron_axe", 1)], false, Some(COMPANION_FAR)),
+        "keep_inventory_keeps_the_items" => fresh(cx, &[(0, "stone", 5), (4, "golden_apple", 3), (8, "iron_axe", 1)], true),
+        "immediate_respawn_has_no_delay" => {
+            fresh(cx, &[], false);
+            cx.r("gamerule immediate_respawn true");
+            sleep(Duration::from_millis(600));
+        }
+        "death_with_open_chest_closes_it" => {
+            chest_scene(cx);
+        }
+        "death_while_crouching_and_eating" => fresh(cx, &[(0, "golden_apple", 3)], true),
+        "death_in_the_nether_respawns_in_the_overworld" => nether_scene(cx),
+        "skill_on_death_end" => fresh(cx, &[(0, "stone", 5)], false),
+        "skill_on_death_keep" => fresh(cx, &[(0, "stone", 5)], true),
+        "nothing_sent_while_dead" => {
+            pig_scene(cx);
+        }
+        _ => panic!("no A12 scene for row {row}"),
+    }
+    acts()
+}
+
+/// After the replay: the rules the rows set go back to the suite's defaults, as the Null rows do.
+// Spec: specs/plans/VD3_BRIEF.md T6
+pub(crate) fn prepare_done(cx: &mut Ctx) {
+    cx.r("gamerule immediate_respawn false");
+    cx.r("gamerule keep_inventory false");
 }
 
 // Spec: specs/plans/ABILITY_CHECK.md (A12: the bot is alive at spawn after /kill, and its view says it died)

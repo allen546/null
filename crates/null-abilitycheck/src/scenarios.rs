@@ -251,6 +251,15 @@ impl Ctx {
         self.run_act(acts, label)
     }
 
+    /// Marks act `label` in the input log without running it: the Null run does its own command, and
+    /// the vanilla client's scene runs the act of that label (a stand-in for what Null has and vanilla lacks).
+    // Spec: specs/plans/VD3_BRIEF.md T4
+    pub(crate) fn mark_act(&self, label: &str) {
+        if INPUT_LOG.load(std::sync::atomic::Ordering::Relaxed) {
+            mc_adapter::mark_input(&self.name, &format!("act:{label}"));
+        }
+    }
+
     // Spec: specs/plans/VANILLA_DIFF_PLAN.md VD1
     pub(crate) fn run_act(&mut self, acts: &Acts, label: &str) -> Vec<String> {
         let n = self.name.clone();

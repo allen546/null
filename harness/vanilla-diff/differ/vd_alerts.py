@@ -66,7 +66,9 @@ def compare_alerts(null, vanilla, allowed=None):
         kind = "shared" if c in null and c in vanilla else "null_only" if c in null else "vanilla_only"
         why = next((w for p, w in allowed.items() if c.startswith(p)), None)
         checks[c] = {"class": kind, "null": null.get(c, 0), "vanilla": vanilla.get(c, 0), **({"allowed": why} if why else {})}
-    return {"checks": checks, "finding": any(v["class"] == "null_only" and "allowed" not in v for v in checks.values())}
+    # VD3 T2, additive: alert lines of checks only the vanilla client drew (identical packets with these point at the replay).
+    van_only = sum(v["vanilla"] for v in checks.values() if v["class"] == "vanilla_only")
+    return {"checks": checks, "finding": any(v["class"] == "null_only" and "allowed" not in v for v in checks.values()), "vanilla_only_alerts": van_only}
 
 
 # Spec: specs/plans/VD3_BRIEF.md T1

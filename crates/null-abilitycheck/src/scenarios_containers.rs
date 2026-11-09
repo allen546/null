@@ -7,7 +7,7 @@ use std::{thread::sleep, time::Duration};
 use null_bot_api::{Click, Face, OpenOutcome};
 
 use crate::{
-    scenarios::{Ctx, Outcome, last_int, pos},
+    scenarios::{Acts, Ctx, Outcome, last_int, pos},
     scenarios_inventory::{inv, quoted, server_inventory, short, view_slots},
     skill::Op,
     skill_inventory::{InvInfo, InvOp},
@@ -109,14 +109,35 @@ fn open_on(cx: &mut Ctx, face: Option<Face>) -> InvInfo {
 
 /// The player's ender chest slots are the player's, not the block's: set them by `item replace`.
 fn set_ender(cx: &mut Ctx, items: &[(u8, &str, u8)]) {
-    let n = cx.name.clone();
-    for k in 0..27 {
-        cx.r(&format!("item replace entity {n} enderchest.{k} with minecraft:air"));
-    }
-    for (k, item, count) in items {
-        cx.r(&format!("item replace entity {n} enderchest.{k} with minecraft:{item} {count}"));
+    for c in ender_cmds(items) {
+        let n = cx.name.clone();
+        cx.r(&c.replace("{n}", &n));
     }
     sleep(Duration::from_millis(300));
+}
+
+/// The commands of `set_ender` (`{n}` is the player), also the "ender" act of the vanilla client's scene.
+fn ender_cmds(items: &[(u8, &str, u8)]) -> Vec<String> {
+    let clear = (0..27).map(|k| format!("item replace entity {{n}} enderchest.{k} with minecraft:air"));
+    let fill = items.iter().map(|(k, item, count)| format!("item replace entity {{n}} enderchest.{k} with minecraft:{item} {count}"));
+    clear.chain(fill).collect()
+}
+
+const ENDER_ITEMS: &[(u8, &str, u8)] = &[(0, "iron_ingot", 12), (5, "emerald", 3)];
+
+/// The RCON actions inside the rows' windows (the vanilla client's scene runs them at the same input tick).
+// Spec: specs/plans/VD3_BRIEF.md T3
+fn acts() -> Acts {
+    let (x, y, z) = C;
+    vec![
+        ("change", vec![format!("item replace block {} container.7 with minecraft:gold_ingot 9", at(x)), format!("item replace block {} container.0 with minecraft:air", at(x))]),
+        ("lamp", vec![format!("setblock {} {y} {z} minecraft:redstone_lamp", x - 1)]),
+        ("ender", ender_cmds(ENDER_ITEMS)),
+        ("tp_east", vec!["tp {n} 603.5 200 350.5 90 0".into()]),
+        ("tp_far", vec!["tp {n} 600.5 200 358.5 0 0".into()]),
+        ("cover", vec![format!("setblock {x} {} {z} minecraft:stone", y + 1)]),
+        ("hold_stone", vec!["item replace entity {n} hotbar.0 with minecraft:stone 3".into()]),
+    ]
 }
 
 fn ender(cx: &Ctx) -> Src {
@@ -231,12 +252,68 @@ fn row(
     give: &[(u16, &str, u8)],
     body: impl FnOnce(&mut Ctx, &mut Vec<String>) -> bool,
 ) -> Outcome {
+    // The vanilla client's scene comes from `scene_of`; a row whose arguments drift from it fails here.
+    assert!(scene_of(name) == Some((blocks, give)), "A10 {name}: scene_of disagrees with the row");
     scene(cx, blocks, give);
     cx.run("A10", name, |cx| {
         let mut ev = Vec::new();
         let ok = body(cx, &mut ev);
         (ok, ev.join("; "))
     })
+}
+
+type Blocks = &'static [(i32, &'static str, &'static [(u8, &'static str, u8)])];
+type Give = &'static [(u16, &'static str, u8)];
+
+const TWO: &[(u8, &str, u8)] = &[(0, "iron_ingot", 12)];
+const BOOK: &str = "enchanted_book|{\"minecraft:stored_enchantments\":{\"minecraft:mending\":1}}";
+const NAMED: &str = "stick|{\"minecraft:custom_name\":{text:\"Renamed\",color:\"red\"}}";
+const SWORD: &str = "diamond_sword[damage=50,enchantments={\"minecraft:sharpness\":3}]";
+
+/// The scene (blocks, items given) of each A10 row, for the Null run (`row` checks it) and the vanilla client's scene.
+// Spec: specs/plans/VD3_BRIEF.md T3
+fn scene_of(name: &str) -> Option<(Blocks, Give)> {
+    const CHEST: Blocks = &[(C.0, "chest", BASIC)];
+    const SHULKER: Blocks = &[(C.0, "shulker_box[facing=up]", &[])];
+    const COVERED_ENDER: Blocks = &[(C.0, "ender_chest[facing=south]", &[])];
+    const DOUBLE: Blocks = &[
+        (C.0, "chest[facing=north,type=left]", &[(0, "emerald", 2), (26, "coal", 64)]),
+        (C.0 + 1, "chest[facing=north,type=right]", &[(1, "stone", 3), (20, "gold_ingot", 12)]),
+    ];
+    const COBBLE: Give = &[(9, "cobblestone", 20)];
+    Some(match name {
+        "open_single_chest" => (CHEST, &[(9, "cobblestone", 7)]),
+        "take_by_clicks" => (&[(C.0, "chest", &[(3, "stone", 32), (5, "stick", 9)])], &[]),
+        "put_by_clicks" => (CHEST, COBBLE),
+        "quick_move_out" => (&[(C.0, "chest", &[(2, "iron_ingot", 40), (6, "dirt", 64)])], &[(8, "iron_ingot", 30)]),
+        "quick_move_in" => (&[(C.0, "chest", &[(0, "stone", 60)])], &[(0, "stone", 10), (9, "dirt", 5)]),
+        "double_chest" => (DOUBLE, &[]),
+        "barrel_open_property" => (&[(C.0, "barrel[facing=up,open=false]", BASIC)], &[]),
+        "hopper_menu" => (&[(C.0, "hopper[facing=down]", &[(0, "iron_nugget", 4), (2, "redstone", 9), (4, "clay_ball", 1)])], &[]),
+        "dispenser_menu" => (&[(C.0, "dispenser[facing=up]", &[(0, "arrow", 12), (8, "bucket", 1)])], &[(9, "arrow", 8)]),
+        "exact_contents" => (&[(C.0, "chest", &[])], &[(9, "stone", 64), (10, "apple", 13), (11, "oak_log", 7), (12, "diamond", 1)]),
+        "server_change_while_open" | "out_of_reach_refused" | "blocked_chest_no_screen" | "crouching_with_item_refused" | "crouching_empty_hands_opens" => (CHEST, &[]),
+        "trapped_chest_powers_while_open" => (&[(C.0, "trapped_chest", TWO)], COBBLE),
+        "shulker_box" => (&[(C.0, "shulker_box[facing=up]", TWO)], COBBLE),
+        "shulker_refuses_shulker_pickup" => (SHULKER, &[(9, "red_shulker_box", 1)]),
+        "shulker_refuses_shulker_quick_move" => (SHULKER, &[(10, "blue_shulker_box", 1)]),
+        "ender_chest_is_the_players" => (COVERED_ENDER, COBBLE),
+        "hopper_top_face" => (&[(C.0, "hopper[facing=down]", TWO)], COBBLE),
+        "hopper_sideways_faces" => (&[(C.0, "hopper[facing=east]", TWO)], &[]),
+        "dropper_menu" => (&[(C.0, "dropper[facing=up]", TWO)], COBBLE),
+        "blocked_ender_chest_no_screen" => (COVERED_ENDER, &[]),
+        "blocked_shulker_lid_no_screen" => (SHULKER, &[]),
+        "component_items" => (&[(C.0, "chest", &[(0, BOOK, 1), (1, NAMED, 1)])], &[(9, SWORD, 1)]),
+        _ => return None,
+    })
+}
+
+/// Sets the scene of A10 row `row` for a vanilla client (`--prepare-scene A10:<row>`) and returns the row's RCON actions.
+// Spec: specs/plans/VD3_BRIEF.md T3
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) -> Acts {
+    let (blocks, give) = scene_of(row).unwrap_or_else(|| panic!("no A10 scene for row {row}"));
+    scene(cx, blocks, give);
+    acts()
 }
 
 const BASIC: &[(u8, &str, u8)] = &[(0, "stone", 5), (4, "diamond", 3), (13, "oak_log", 64), (26, "apple", 1)];
@@ -367,8 +444,7 @@ pub fn a10(cx: &mut Ctx) -> Vec<Outcome> {
 
     out.push(row(cx, "server_change_while_open", chest, &[], |cx, ev| {
         let (mut ok, _) = open_expect(cx, "minecraft:generic_9x3", 27, ev);
-        cx.r(&format!("item replace block {} container.7 with minecraft:gold_ingot 9", at(C.0)));
-        cx.r(&format!("item replace block {} container.0 with minecraft:air", at(C.0)));
+        cx.act(&acts(), "change");
         sleep(Duration::from_millis(600));
         let i = status(cx);
         ok &= container_agrees(cx, &[blk(C.0)], &s(&[(4, "diamond", 3), (7, "gold_ingot", 9), (13, "oak_log", 64), (26, "apple", 1)]), &i, ev);
@@ -381,7 +457,7 @@ pub fn a10(cx: &mut Ctx) -> Vec<Outcome> {
     let two: &[(u8, &str, u8)] = &[(0, "iron_ingot", 12)];
     let put = |size: i64| s(&[(size - 1, "cobblestone", 20)]);
     out.push(row(cx, "trapped_chest_powers_while_open", &[(C.0, "trapped_chest", two)], &[(9, "cobblestone", 20)], |cx, ev| {
-        cx.r(&format!("setblock {} {} {} minecraft:redstone_lamp", C.0 - 1, C.1, C.2));
+        cx.act(&acts(), "lamp");
         sleep(Duration::from_millis(300));
         let off = lit(cx, false);
         let (mut ok, _) = open_expect(cx, "minecraft:generic_9x3", 27, ev);
@@ -428,7 +504,8 @@ pub fn a10(cx: &mut Ctx) -> Vec<Outcome> {
     }));
 
     out.push(row(cx, "ender_chest_is_the_players", &[(C.0, "ender_chest[facing=south]", &[])], &[(9, "cobblestone", 20)], |cx, ev| {
-        set_ender(cx, &[(0, "iron_ingot", 12), (5, "emerald", 3)]);
+        cx.act(&acts(), "ender");
+        sleep(Duration::from_millis(300));
         let src = ender(cx);
         let (mut ok, i) = open_expect(cx, "minecraft:generic_9x3", 27, ev);
         ok &= container_agrees(cx, std::slice::from_ref(&src), &s(&[(0, "iron_ingot", 12), (5, "emerald", 3)]), &i, ev);
@@ -455,9 +532,9 @@ pub fn a10(cx: &mut Ctx) -> Vec<Outcome> {
     out.push(row(cx, "hopper_sideways_faces", &[(C.0, "hopper[facing=east]", two)], &[], |cx, ev| {
         let mut ok = true;
         // seen from the south (the bot's spot), then from the east where the spout points
-        for (face, from) in [(Face::South, None), (Face::East, Some("603.5 200 350.5 90 0"))] {
-            if let Some(at) = from {
-                cx.r(&format!("tp {} {at}", cx.name));
+        for (face, from) in [(Face::South, false), (Face::East, true)] {
+            if from {
+                cx.act(&acts(), "tp_east");
                 sleep(Duration::from_millis(800));
             }
             let i = open_on(cx, Some(face));
@@ -478,7 +555,7 @@ pub fn a10(cx: &mut Ctx) -> Vec<Outcome> {
 
     // Refusals and failures.
     out.push(row(cx, "out_of_reach_refused", chest, &[], |cx, ev| {
-        cx.r(&format!("tp {} 600.5 200 358.5 0 0", cx.name));
+        cx.act(&acts(), "tp_far");
         sleep(Duration::from_millis(800));
         let i = open(cx);
         let o = i.open.clone();
@@ -489,7 +566,7 @@ pub fn a10(cx: &mut Ctx) -> Vec<Outcome> {
     }));
 
     out.push(row(cx, "blocked_chest_no_screen", chest, &[], |cx, ev| {
-        cx.r(&format!("setblock {} {} {} minecraft:stone", C.0, C.1 + 1, C.2));
+        cx.act(&acts(), "cover");
         sleep(Duration::from_millis(300));
         let i = open(cx);
         ev.push(format!("{:?}", i.open));
@@ -504,7 +581,8 @@ pub fn a10(cx: &mut Ctx) -> Vec<Outcome> {
         ("blocked_shulker_lid_no_screen", "shulker_box[facing=up]", (C.0, C.1 + 1, C.2)),
     ] {
         out.push(row(cx, name, &[(C.0, block, &[])], &[], |cx, ev| {
-            cx.r(&format!("setblock {} {} {} minecraft:stone", cover.0, cover.1, cover.2));
+            let _ = cover;
+            cx.act(&acts(), "cover");
             sleep(Duration::from_millis(300));
             let i = open(cx);
             ev.push(format!("{:?}", i.open));
@@ -513,7 +591,7 @@ pub fn a10(cx: &mut Ctx) -> Vec<Outcome> {
     }
 
     out.push(row(cx, "crouching_with_item_refused", chest, &[], |cx, ev| {
-        cx.r(&format!("item replace entity {} hotbar.0 with minecraft:stone 3", cx.name));
+        cx.act(&acts(), "hold_stone");
         cx.call(Op::Sneak(true));
         sleep(Duration::from_millis(500));
         let i = open(cx);
@@ -538,9 +616,8 @@ pub fn a10(cx: &mut Ctx) -> Vec<Outcome> {
     }));
 
     // Items with components move through a container window without a corrected slot.
-    let book = "enchanted_book|{\"minecraft:stored_enchantments\":{\"minecraft:mending\":1}}";
-    let named = "stick|{\"minecraft:custom_name\":{text:\"Renamed\",color:\"red\"}}";
-    out.push(row(cx, "component_items", &[(C.0, "chest", &[(0, book, 1), (1, named, 1)])], &[(9, "diamond_sword[damage=50,enchantments={\"minecraft:sharpness\":3}]", 1)], |cx, ev| {
+    let (book, named) = (BOOK, NAMED);
+    out.push(row(cx, "component_items", &[(C.0, "chest", &[(0, book, 1), (1, named, 1)])], &[(9, SWORD, 1)], |cx, ev| {
         let (mut ok, _) = open_expect(cx, "minecraft:generic_9x3", 27, ev);
         ok &= click(cx, Some(0), Click::Left, ev);
         ok &= click(cx, iw(27, 0), Click::Left, ev);

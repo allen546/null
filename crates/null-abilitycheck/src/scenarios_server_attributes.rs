@@ -20,7 +20,7 @@ use mc_adapter::HostEvent;
 use null_bot_api::SkillStatus;
 
 use crate::{
-    scenarios::{Ctx, FLOOR_Y, Outcome, pos, ticks_between_packets, vanilla_ticks},
+    scenarios::{Acts, Ctx, FLOOR_Y, Outcome, pos, ticks_between_packets, vanilla_ticks},
     scenarios_block_effects::bot_pos,
     skill::{Info, Op},
     skill_items::ItemOp,
@@ -91,19 +91,72 @@ fn lane(cx: &mut Ctx, i: i32) -> i32 {
     x
 }
 
-/// Runs `setup` (RCON commands), the body, then `reset`; the reset runs whatever the body found.
-fn with_attrs<T>(cx: &mut Ctx, setup: &[String], reset: &[String], body: impl FnOnce(&mut Ctx) -> T) -> T {
-    for c in setup {
-        cx.r(c);
-    }
+/// Runs the row's act `set`, the body, then (if `reset_after`) its act `reset`; the reset runs whatever the body found.
+/// The acts are RCON inside the window, so the vanilla client's scene runs them at the same input tick.
+fn with_attrs<T>(cx: &mut Ctx, acts: &Acts, reset_after: bool, body: impl FnOnce(&mut Ctx) -> T) -> T {
+    cx.act(acts, "set");
     // the server sends the attribute packet within a tick or two; wait well past that
     sleep(Duration::from_millis(800));
     let out = body(cx);
-    for c in reset {
-        cx.r(c);
+    if reset_after {
+        cx.act(acts, "reset");
     }
     sleep(Duration::from_millis(500));
     out
+}
+
+fn at(a: &str, rest: &str) -> String {
+    format!("attribute {{n}} minecraft:{a} {rest}")
+}
+
+/// Lane and RCON acts (`set`, `reset`) of a row that uses them, by row name: the Null run and the vanilla
+/// client's scene (`prepare_row`) both read this table.
+// Spec: specs/plans/VD3_BRIEF.md T5
+fn row_scene(name: &str) -> (i32, Acts) {
+    let slow = "minecraft:a16_slow";
+    let fast = "minecraft:a16_fast";
+    let (lane, set, reset): (i32, Vec<String>, Vec<String>) = match name {
+        "control_plain_walk_matches_the_model" => (0, vec![], vec![]),
+        "movement_speed_modifier_halves_the_walk" => (1, vec![at("movement_speed", &format!("modifier add {slow} -0.5 add_multiplied_total"))], vec![at("movement_speed", &format!("modifier remove {slow}"))]),
+        "movement_speed_base_0.2_doubles_the_walk" => (2, vec![at("movement_speed", "base set 0.2")], vec![at("movement_speed", "base reset")]),
+        "sneaking_speed_base_0.6_doubles_the_crouch_walk" => (3, vec![at("sneaking_speed", "base set 0.6")], vec![at("sneaking_speed", "base reset")]),
+        "control_default_jump_reaches_1.2522" => (4, vec![at("jump_strength", "base get")], vec![at("jump_strength", "base get")]),
+        "jump_strength_base_0.84_jumps_higher" => (5, vec![at("jump_strength", "base set 0.84")], vec![at("jump_strength", "base reset")]),
+        "gravity_base_0.04_floats_higher" => (6, vec![at("gravity", "base set 0.04")], vec![at("gravity", "base reset")]),
+        "control_a_one_block_step_stops_the_default_bot" => (7, vec![], vec![at("step_height", "base reset")]),
+        "step_height_base_1_climbs_a_one_block_step" => (8, vec![at("step_height", "base set 1.0")], vec![at("step_height", "base reset")]),
+        "block_break_speed_x3_breaks_in_a_third_of_the_ticks" => (9, vec![at("block_break_speed", &format!("modifier add {fast} 2 add_multiplied_total"))], vec![at("block_break_speed", &format!("modifier remove {fast}"))]),
+        "breaking_with_the_eyes_in_water_takes_5_times_longer" => (10, vec![], vec![]),
+        "server_only_attribute_and_modelled_effect_do_not_stop_the_skill" => (
+            11,
+            vec![at("max_health", "base set 40"), at("armor", "base set 10"), "effect give {n} minecraft:jump_boost 20 0 true".into()],
+            vec![at("max_health", "base reset"), at("armor", "base reset"), "effect clear {n} minecraft:jump_boost".into()],
+        ),
+        "levitation_is_an_action_entry_and_stops_the_skill_without_a_disconnect" => (12, vec!["effect give {n} minecraft:levitation 30 0 true".into()], vec!["effect clear {n} minecraft:levitation".into()]),
+        "slow_falling_is_an_action_entry_and_stops_the_skill_without_a_disconnect" => (13, vec!["effect give {n} minecraft:slow_falling 30 0 true".into()], vec!["effect clear {n} minecraft:slow_falling".into()]),
+        _ => panic!("no A16 scene for row {name}"),
+    };
+    (lane, vec![("set", set), ("reset", reset)])
+}
+
+/// Sets the scene of A16 row `row` for a vanilla client (`--prepare-scene A16:<row>`) and returns the row's RCON actions.
+/// The `scale_2` and `dolphins_grace` rows are Null closing the connection on purpose: skipped in `rows.json`.
+// Spec: specs/plans/VD3_BRIEF.md T5
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) -> Acts {
+    cx.scene_in(AREA, &[], (LANE0 as f64 + 0.5, (FLOOR_Y + 1) as f64, START_Z));
+    let (i, acts) = row_scene(row);
+    let x = lane(cx, i);
+    match row {
+        "control_a_one_block_step_stops_the_default_bot" | "step_height_base_1_climbs_a_one_block_step" => step_scene(cx, x),
+        "block_break_speed_x3_breaks_in_a_third_of_the_ticks" => {
+            break_scene(cx, x, "oak_log", false);
+        }
+        "breaking_with_the_eyes_in_water_takes_5_times_longer" => {
+            break_scene(cx, x, "dirt", true);
+        }
+        _ => {}
+    }
+    acts
 }
 
 fn walk(cx: &mut Ctx, ticks: u32) {
@@ -119,14 +172,12 @@ fn cmd(a: &str, rest: &str, n: &str) -> String {
 }
 
 /// A walk row: the lane's walk against the model with `per_tick`, and against the default's `plain`.
-fn walk_row(cx: &mut Ctx, i: i32, name: &str, a: &str, setup_rest: &str, reset_rest: &str, per_tick: f64, plain: f64, k: u32, sneak: bool) -> Outcome {
+fn walk_row(cx: &mut Ctx, name: &str, a: &str, per_tick: f64, plain: f64, k: u32, sneak: bool) -> Outcome {
+    let (i, acts) = row_scene(name);
     let x = lane(cx, i);
-    let n = cx.name.clone();
-    let setup = vec![cmd(a, setup_rest, &n)];
-    let reset = vec![cmd(a, reset_rest, &n)];
     cx.run("A16", name, |cx| {
         let tol = if sneak { 0.03 } else { TOL };
-        let (before, after, read) = with_attrs(cx, &setup, &reset, |cx| {
+        let (before, after, read) = with_attrs(cx, &acts, true, |cx| {
             let read = reading(cx, a);
             if sneak {
                 cx.call(Op::Sneak(true));
@@ -151,13 +202,11 @@ fn walk_row(cx: &mut Ctx, i: i32, name: &str, a: &str, setup_rest: &str, reset_r
 }
 
 /// A standing jump: the server's highest y against the model.
-fn apex_row(cx: &mut Ctx, i: i32, name: &str, a: &str, set: &str, reset: &str, jump: f64, gravity: f64) -> Outcome {
+fn apex_row(cx: &mut Ctx, name: &str, a: &str, jump: f64, gravity: f64) -> Outcome {
+    let (i, acts) = row_scene(name);
     lane(cx, i);
-    let n = cx.name.clone();
-    let setup = vec![cmd(a, set, &n)];
-    let resetc = vec![cmd(a, reset, &n)];
     cx.run("A16", name, |cx| {
-        let (top, read, y0) = with_attrs(cx, &setup, &resetc, |cx| {
+        let (top, read, y0) = with_attrs(cx, &acts, true, |cx| {
             let read = reading(cx, a);
             let y0 = bot_pos(cx)[1];
             // The server's y is sampled over RCON, which can skip the one tick that holds the
@@ -183,15 +232,18 @@ fn apex_row(cx: &mut Ctx, i: i32, name: &str, a: &str, set: &str, reset: &str, j
     })
 }
 
-/// A step of one block in the walk's way, 25 input ticks.
-fn step_row(cx: &mut Ctx, i: i32, name: &str, climbs: bool, set: Option<&str>) -> Outcome {
-    let x = lane(cx, i);
+/// The one-block step across the lane at z 349..355.
+fn step_scene(cx: &mut Ctx, x: i32) {
     cx.r(&format!("fill {x} {} 349 {x} {} 355 minecraft:stone", FLOOR_Y + 1, FLOOR_Y + 1));
-    let n = cx.name.clone();
-    let setup: Vec<String> = set.map(|s| cmd("step_height", s, &n)).into_iter().collect();
-    let reset = vec![cmd("step_height", "base reset", &n)];
+}
+
+/// A step of one block in the walk's way, 25 input ticks.
+fn step_row(cx: &mut Ctx, name: &str, climbs: bool) -> Outcome {
+    let (i, acts) = row_scene(name);
+    let x = lane(cx, i);
+    step_scene(cx, x);
     cx.run("A16", name, |cx| {
-        let (after, read) = with_attrs(cx, &setup, &reset, |cx| {
+        let (after, read) = with_attrs(cx, &acts, true, |cx| {
             let read = reading(cx, "step_height");
             walk(cx, 25);
             (bot_pos(cx), read)
@@ -204,9 +256,8 @@ fn step_row(cx: &mut Ctx, i: i32, name: &str, climbs: bool, set: Option<&str>) -
     })
 }
 
-/// Breaking a block at the lane's far end with the attribute in force; ticks against vanilla.
-fn break_row(cx: &mut Ctx, i: i32, name: &str, block: &str, hardness: f32, speed: f32, setup: Vec<String>, reset: Vec<String>, water: bool) -> Outcome {
-    let x = lane(cx, i);
+/// The block to break at the lane's far end (and the water cell around the bot for the water row); returns its cell.
+fn break_scene(cx: &mut Ctx, x: i32, block: &str, water: bool) -> null_bot_api::BlockPos {
     if water {
         cx.r(&format!("fill {} {FLOOR_Y} 344 {} {} 351 minecraft:stone hollow", x - 2, x + 2, FLOOR_Y + 5));
         cx.r(&format!("fill {} {} 345 {} {} 350 minecraft:water", x - 1, FLOOR_Y + 1, x + 1, FLOOR_Y + 4));
@@ -215,11 +266,16 @@ fn break_row(cx: &mut Ctx, i: i32, name: &str, block: &str, hardness: f32, speed
     cx.r(&format!("setblock {x} {} 348 minecraft:{block}", FLOOR_Y + 1));
     cx.wait_block(target, Box::leak(format!("minecraft:{block}").into_boxed_str()));
     sleep(Duration::from_millis(500));
-    let n = cx.name.clone();
-    let setup: Vec<String> = setup.iter().map(|s| s.replace("{n}", &n)).collect();
-    let reset: Vec<String> = reset.iter().map(|s| s.replace("{n}", &n)).collect();
+    target
+}
+
+/// Breaking a block at the lane's far end with the attribute in force; ticks against vanilla.
+fn break_row(cx: &mut Ctx, name: &str, block: &str, hardness: f32, speed: f32, water: bool) -> Outcome {
+    let (i, acts) = row_scene(name);
+    let x = lane(cx, i);
+    let target = break_scene(cx, x, block, water);
     cx.run("A16", name, |cx| {
-        let (rep, air) = with_attrs(cx, &setup, &reset, |cx| {
+        let (rep, air) = with_attrs(cx, &acts, true, |cx| {
             let rep = cx.call(Op::BreakAim(target));
             sleep(Duration::from_millis(250));
             (rep, cx.block_is(target, "air") || cx.block_is(target, "water"))
@@ -246,15 +302,14 @@ fn moved_by_walk(cx: &mut Ctx) -> (bool, f64) {
 /// An `Action` entry (levitation, slow falling: modelled physics, but skills plan with normal
 /// gravity): the walk is sent, the host ends the skill with the input named, the bot does not walk
 /// and stays connected. Afterwards `reset` clears it and a fresh skill walks again.
-fn stop_row(cx: &mut Ctx, i: i32, name: &str, needle: &str, setup: String, reset: String) -> Outcome {
+fn stop_row(cx: &mut Ctx, name: &str, needle: &str) -> Outcome {
     let me = cx.name.clone();
+    let (i, acts) = row_scene(name);
     lane(cx, i);
     cx.run("A16", name, |cx| {
-        let setup = vec![setup];
-        let resetc = vec![reset];
         let (ended, reply, still, moved_after, connected, no_record) = {
             while cx.events.try_recv().is_ok() {}
-            let (ended, reply, before, after) = with_attrs(cx, &setup, &[], |cx| {
+            let (ended, reply, before, after) = with_attrs(cx, &acts, false, |cx| {
                 let before = bot_pos(cx);
                 let walk_seq = cx.send(Op::Items(ItemOp::Walk(WALK)));
                 let t = Instant::now();
@@ -274,9 +329,7 @@ fn stop_row(cx: &mut Ctx, i: i32, name: &str, needle: &str, setup: String, reset
             let connected = me_seen.as_ref().is_some_and(|s| s.connected);
             let no_record = me_seen.is_some_and(|s| s.disconnect.is_none());
             // clear the input, start a fresh skill, and walk again
-            for c in &resetc {
-                cx.r(c);
-            }
+            cx.act(&acts, "reset");
             sleep(Duration::from_millis(800));
             REVIVE.store(true, Ordering::Relaxed);
             let (moved, _) = moved_by_walk(cx);
@@ -312,42 +365,26 @@ pub fn a16(cx: &mut Ctx) -> Vec<Outcome> {
         (err < TOL, format!("walked {WALK} requested ticks to z {:.4}; the model matches with {best} input ticks (off by {err:.4}, limit {TOL})", after[2]))
     }));
     let n = cx.name.clone();
-    out.push(walk_row(cx, 1, "movement_speed_modifier_halves_the_walk", "movement_speed", "modifier add minecraft:a16_slow -0.5 add_multiplied_total", "modifier remove minecraft:a16_slow", plain * 0.5, plain, k, false));
-    out.push(walk_row(cx, 2, "movement_speed_base_0.2_doubles_the_walk", "movement_speed", "base set 0.2", "base reset", plain * 2.0, plain, k, false));
-    out.push(walk_row(cx, 3, "sneaking_speed_base_0.6_doubles_the_crouch_walk", "sneaking_speed", "base set 0.6", "base reset", plain * 0.6, plain * 0.3, k, true));
-    out.push(apex_row(cx, 4, "control_default_jump_reaches_1.2522", "jump_strength", "base get", "base get", 0.42f32 as f64, 0.08));
-    out.push(apex_row(cx, 5, "jump_strength_base_0.84_jumps_higher", "jump_strength", "base set 0.84", "base reset", 0.84, 0.08));
-    out.push(apex_row(cx, 6, "gravity_base_0.04_floats_higher", "gravity", "base set 0.04", "base reset", 0.42f32 as f64, 0.04));
-    out.push(step_row(cx, 7, "control_a_one_block_step_stops_the_default_bot", false, None));
-    out.push(step_row(cx, 8, "step_height_base_1_climbs_a_one_block_step", true, Some("base set 1.0")));
-    out.push(break_row(
-        cx, 9, "block_break_speed_x3_breaks_in_a_third_of_the_ticks", "oak_log", 2.0, 3.0,
-        vec![format!("attribute {{n}} minecraft:block_break_speed modifier add minecraft:a16_fast 2 add_multiplied_total")],
-        vec![format!("attribute {{n}} minecraft:block_break_speed modifier remove minecraft:a16_fast")],
-        false,
-    ));
-    out.push(break_row(
-        cx, 10, "breaking_with_the_eyes_in_water_takes_5_times_longer", "dirt", 0.5, 0.2,
-        vec![],
-        vec![],
-        true,
-    ));
+    out.push(walk_row(cx, "movement_speed_modifier_halves_the_walk", "movement_speed", plain * 0.5, plain, k, false));
+    out.push(walk_row(cx, "movement_speed_base_0.2_doubles_the_walk", "movement_speed", plain * 2.0, plain, k, false));
+    out.push(walk_row(cx, "sneaking_speed_base_0.6_doubles_the_crouch_walk", "sneaking_speed", plain * 0.6, plain * 0.3, k, true));
+    out.push(apex_row(cx, "control_default_jump_reaches_1.2522", "jump_strength", 0.42f32 as f64, 0.08));
+    out.push(apex_row(cx, "jump_strength_base_0.84_jumps_higher", "jump_strength", 0.84, 0.08));
+    out.push(apex_row(cx, "gravity_base_0.04_floats_higher", "gravity", 0.42f32 as f64, 0.04));
+    out.push(step_row(cx, "control_a_one_block_step_stops_the_default_bot", false));
+    out.push(step_row(cx, "step_height_base_1_climbs_a_one_block_step", true));
+    out.push(break_row(cx, "block_break_speed_x3_breaks_in_a_third_of_the_ticks", "oak_log", 2.0, 3.0, false));
+    out.push(break_row(cx, "breaking_with_the_eyes_in_water_takes_5_times_longer", "dirt", 0.5, 0.2, true));
     // A server-only attribute and a modelled effect stop nothing.
-    lane(cx, 11);
-    out.push(cx.run("A16", "server_only_attribute_and_modelled_effect_do_not_stop_the_skill", |cx| {
-        let setup = vec![cmd("max_health", "base set 40", &n), cmd("armor", "base set 10", &n), format!("effect give {n} minecraft:jump_boost 20 0 true")];
-        let reset = vec![cmd("max_health", "base reset", &n), cmd("armor", "base reset", &n), format!("effect clear {n} minecraft:jump_boost")];
-        let (moved, dz) = with_attrs(cx, &setup, &reset, moved_by_walk);
+    let name = "server_only_attribute_and_modelled_effect_do_not_stop_the_skill";
+    let (i, acts) = row_scene(name);
+    lane(cx, i);
+    out.push(cx.run("A16", name, |cx| {
+        let (moved, dz) = with_attrs(cx, &acts, true, moved_by_walk);
         (moved, format!("max_health 40, armor 10 and jump boost I in force: the walk moved the bot {dz:.3} blocks (want over 0.5)"))
     }));
-    out.push(stop_row(
-        cx, 12, "levitation_is_an_action_entry_and_stops_the_skill_without_a_disconnect", "effect minecraft:levitation",
-        format!("effect give {n} minecraft:levitation 30 0 true"), format!("effect clear {n} minecraft:levitation"),
-    ));
-    out.push(stop_row(
-        cx, 13, "slow_falling_is_an_action_entry_and_stops_the_skill_without_a_disconnect", "effect minecraft:slow_falling",
-        format!("effect give {n} minecraft:slow_falling 30 0 true"), format!("effect clear {n} minecraft:slow_falling"),
-    ));
+    out.push(stop_row(cx, "levitation_is_an_action_entry_and_stops_the_skill_without_a_disconnect", "effect minecraft:levitation"));
+    out.push(stop_row(cx, "slow_falling_is_an_action_entry_and_stops_the_skill_without_a_disconnect", "effect minecraft:slow_falling"));
     // Movement entries: the fork closes the connection; each row uses a spare account.
     let spare_at = (LANE0 as f64 + 12.5, (FLOOR_Y + 1) as f64, START_Z + 6.0);
     cx.r(&format!("fill {} {FLOOR_Y} {} {} {FLOOR_Y} {} minecraft:stone", spare_at.0 as i32 - 2, spare_at.2 as i32 - 2, spare_at.0 as i32 + 4, spare_at.2 as i32 + 2));

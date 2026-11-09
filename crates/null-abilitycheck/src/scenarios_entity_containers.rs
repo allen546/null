@@ -8,7 +8,7 @@ use std::{thread::sleep, time::Duration};
 use null_bot_api::{Click, OpenOutcome, OpenTarget};
 
 use crate::{
-    scenarios::{Ctx, Outcome},
+    scenarios::{Acts, Ctx, Outcome},
     scenarios_containers::{Slots, Src, click, close, container_agrees, inventory_agrees, iw, s, server_container, status},
     scenarios_inventory::inv,
     skill::Op,
@@ -113,11 +113,66 @@ fn scene(cx: &mut Ctx, id: &str, kind: &'static str, items: &[(u8, &str, u8)], g
         E.2,
         items_list(items)
     ));
-    let seen = inv(cx, InvOp::WaitEntity(kind)).seen;
-    if seen.is_none() {
+    if cx.prepare_only {
+        // No bot to ask: the server's own answer is enough.
+        cx.poll(10.0, |cx| cx.r(&format!("execute if entity {SEL}")).contains("passed"));
+    } else if inv(cx, InvOp::WaitEntity(kind)).seen.is_none() {
         eprintln!("warning: the bot never saw the {kind}");
     }
     sleep(Duration::from_millis(500));
+}
+
+type Items = &'static [(u8, &'static str, u8)];
+type Give = &'static [(u16, &'static str, u8)];
+
+/// The scene (entity, its contents, items given) of each A10E row, for the Null run (`row` checks it) and the vanilla client's scene.
+// Spec: specs/plans/VD3_BRIEF.md T3
+fn scene_of(name: &str) -> Option<(&'static Ent, Items, Give)> {
+    if name == "plain_minecart_standing_click_refused" {
+        return Some((&MINECART, &[], &[]));
+    }
+    for (tag, e) in [("chest_minecart", &MINECART), ("hopper_minecart", &HOPPER), ("chest_boat", &BOAT)] {
+        let Some(rest) = name.strip_prefix(tag).and_then(|r| r.strip_prefix('_')) else { continue };
+        let (items, give): (Items, Give) = match rest {
+            "open_and_read" => (e.basic, &[(9, "cobblestone", 7)]),
+            "put_by_clicks" => (e.basic, &[(9, "cobblestone", 20)]),
+            "quick_move_out_and_in" => (e.basic, &[(10, "dirt", 8)]),
+            "exact_counts_in_exact_slots" => (&[], &[(9, "stone", 64), (10, "apple", 13), (11, "oak_log", 7), (12, "diamond", 1)]),
+            "take_by_clicks" | "out_of_reach_refused" | "reach_to_the_hitbox_opens" | "just_past_reach_refused" | "behind_a_block_refused"
+            | "crosshair_elsewhere_refused" | "server_change_while_open" | "killed_while_open" | "standing_click_refused" | "already_crouching_opens" => (e.basic, &[]),
+            _ => return None,
+        };
+        return Some((e, items, give));
+    }
+    None
+}
+
+/// The tp of the reach rows: `dz` blocks in front of the minecart's near face.
+fn near_at(dz: f64) -> String {
+    format!("tp {{n}} {} 200 {} 0 0", E.0, E.2 + 0.49 + dz)
+}
+
+/// The RCON actions inside the rows' windows (the vanilla client's scene runs them at the same input tick).
+// Spec: specs/plans/VD3_BRIEF.md T3
+fn acts() -> Acts {
+    vec![
+        ("go_far", vec!["tp {n} 750.5 200 358.5 0 0".into()]),
+        ("reach_in", vec![near_at(2.7)]),
+        ("reach_out", vec![near_at(3.1)]),
+        ("wall_up", vec!["fill 749 200 351 751 201 351 minecraft:stone".into()]),
+        ("wall_down", vec!["fill 749 200 351 751 201 351 minecraft:air".into()]),
+        ("swap_plain", vec!["kill @e[tag=a10e]".into(), format!("summon minecraft:minecart {} {} {} {{NoGravity:1b,Tags:[\"a10e\"]}}", E.0, E.1, E.2)]),
+        ("change", vec![format!("item replace entity {SEL} container.7 with minecraft:gold_ingot 9"), format!("item replace entity {SEL} container.0 with minecraft:air")]),
+        ("kill", vec![format!("kill {SEL}")]),
+    ]
+}
+
+/// Sets the scene of A10E row `row` for a vanilla client (`--prepare-scene A10E:<row>`) and returns the row's RCON actions.
+// Spec: specs/plans/VD3_BRIEF.md T3
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) -> Acts {
+    let (e, items, give) = scene_of(row).unwrap_or_else(|| panic!("no A10E scene for row {row}"));
+    scene(cx, e.id, e.kind(), items, give);
+    acts()
 }
 
 fn open_entity(cx: &mut Ctx, e: &Ent, aim: Aim) -> InvInfo {
@@ -152,6 +207,7 @@ fn row(
     give: &[(u16, &str, u8)],
     body: impl FnOnce(&mut Ctx, &mut Vec<String>) -> bool,
 ) -> Outcome {
+    assert!(scene_of(name).map(|(e2, i, g)| (e2.id, i, g)) == Some((e.id, items, give)), "A10E {name}: scene_of disagrees with the row");
     scene(cx, e.id, e.kind(), items, give);
     cx.run("A10E", name, |cx| {
         let mut ev = Vec::new();
@@ -187,9 +243,9 @@ fn refused(cx: &mut Ctx, e: &Ent, i: &InvInfo, why: &str, ev: &mut Vec<String>) 
     said && i.window.is_none() && same
 }
 
-fn go(cx: &mut Ctx, at: &str) {
-    let n = cx.name.clone();
-    cx.r(&format!("tp {n} {at}"));
+/// Runs the tp act `label` and waits for it to land.
+fn go(cx: &mut Ctx, label: &str) {
+    cx.act(&acts(), label);
     sleep(Duration::from_millis(800));
 }
 
@@ -275,7 +331,7 @@ fn rows_for(cx: &mut Ctx, e: &Ent, tag: &str, out: &mut Vec<Outcome>) {
     // Reach is measured to the hitbox, so a click from far away is refused on the client and
     // nothing is sent: the server's entity is as it was.
     out.push(row(cx, &n("out_of_reach_refused"), e, basic, &[], |cx, ev| {
-        go(cx, "750.5 200 358.5 0 0");
+        go(cx, "go_far");
         let i = open_entity(cx, e, Aim::Entity);
         refused(cx, e, &i, "out of reach", ev)
     }));
@@ -291,9 +347,9 @@ pub fn a10e(cx: &mut Ctx) -> Vec<Outcome> {
     // The hitbox of a chest minecart (0.98 x 0.7) at the entity's position: its near face is 0.49
     // closer than the position. From 2.7 blocks of the face the eye is 2.85 from the hitbox but 3.58
     // from the position: a click that is in reach only when measured to the hitbox.
-    let near = |cx: &mut Ctx, dz: f64, ev: &mut Vec<String>| {
+    let near = |cx: &mut Ctx, dz: f64, label: &str, ev: &mut Vec<String>| {
         let z = E.2 + 0.49 + dz;
-        go(cx, &format!("{} 200 {z} 0 0", E.0));
+        go(cx, label);
         let i = open_entity(cx, &MINECART, Aim::Entity);
         let eye = (E.0, 201.62, z);
         let to_pos = ((eye.0 - E.0).powi(2) + (eye.1 - E.1).powi(2) + (eye.2 - E.2).powi(2)).sqrt();
@@ -302,7 +358,7 @@ pub fn a10e(cx: &mut Ctx) -> Vec<Outcome> {
         i
     };
     out.push(row(cx, "chest_minecart_reach_to_the_hitbox_opens", &MINECART, MINECART.basic, &[], |cx, ev| {
-        let i = near(cx, 2.7, ev);
+        let i = near(cx, 2.7, "reach_in", ev);
         let w = i.window.clone();
         let opened = matches!(i.open.as_ref().map(|o| &o.outcome), Some(OpenOutcome::Opened { .. }));
         ev.push(format!("{:?}, window {:?}", i.open.as_ref().map(|o| &o.outcome), w.as_ref().and_then(|w| w.kind)));
@@ -311,13 +367,13 @@ pub fn a10e(cx: &mut Ctx) -> Vec<Outcome> {
         opened & a & c & inventory_agrees(cx, ev)
     }));
     out.push(row(cx, "chest_minecart_just_past_reach_refused", &MINECART, MINECART.basic, &[], |cx, ev| {
-        let i = near(cx, 3.1, ev);
+        let i = near(cx, 3.1, "reach_out", ev);
         refused(cx, &MINECART, &i, "out of reach", ev)
     }));
 
     // A wall two blocks high between the bot and the entity: the crosshair ray hits the wall.
     out.push(row(cx, "chest_minecart_behind_a_block_refused", &MINECART, MINECART.basic, &[], |cx, ev| {
-        cx.r("fill 749 200 351 751 201 351 minecraft:stone");
+        cx.act(&acts(), "wall_up");
         sleep(Duration::from_millis(600));
         // from the eye (750.5, 201.62, 352.5) to the hitbox centre (750.5, 200.35, 350.5)
         let i = open_entity(cx, &MINECART, Aim::Look(180.0, 32.4));
@@ -326,7 +382,7 @@ pub fn a10e(cx: &mut Ctx) -> Vec<Outcome> {
         let j = open_entity(cx, &MINECART, Aim::Entity);
         let again = j.open.as_ref().is_some_and(|o| o.outcome == OpenOutcome::Refused);
         ev.push(format!("aimed by the bot: {:?}", j.open.as_ref().and_then(|o| o.refused)));
-        cx.r("fill 749 200 351 751 201 351 minecraft:air");
+        cx.act(&acts(), "wall_down");
         sleep(Duration::from_millis(600));
         // with the wall gone the same click opens it
         let (ok, _) = open_expect(cx, &MINECART, ev);
@@ -370,8 +426,7 @@ pub fn a10e(cx: &mut Ctx) -> Vec<Outcome> {
 
     // A plain minecart is no storage: a standing click rides it, which Null never sends.
     out.push(row(cx, "plain_minecart_standing_click_refused", &MINECART, &[], &[], |cx, ev| {
-        cx.r("kill @e[tag=a10e]");
-        cx.r(&format!("summon minecraft:minecart {} {} {} {{NoGravity:1b,Tags:[\"a10e\"]}}", E.0, E.1, E.2));
+        cx.act(&acts(), "swap_plain");
         let seen = inv(cx, InvOp::WaitEntity("minecraft:minecart")).seen.is_some();
         sleep(Duration::from_millis(400));
         let i = inv(cx, InvOp::OpenEntity { kind: "minecraft:minecart", auto_crouch: false, aim: Aim::Entity });
@@ -384,8 +439,7 @@ pub fn a10e(cx: &mut Ctx) -> Vec<Outcome> {
     // The server changes the contents while the window is open: the bot's window follows.
     out.push(row(cx, "chest_minecart_server_change_while_open", &MINECART, MINECART.basic, &[], |cx, ev| {
         let (mut ok, _) = open_expect(cx, &MINECART, ev);
-        cx.r(&format!("item replace entity {SEL} container.7 with minecraft:gold_ingot 9"));
-        cx.r(&format!("item replace entity {SEL} container.0 with minecraft:air"));
+        cx.act(&acts(), "change");
         sleep(Duration::from_millis(600));
         let i = status(cx);
         ok &= container_agrees(cx, &[MINECART.src()], &s(&[(4, "diamond", 3), (7, "gold_ingot", 9), (13, "oak_log", 64), (26, "apple", 1)]), &i, ev);
@@ -398,7 +452,7 @@ pub fn a10e(cx: &mut Ctx) -> Vec<Outcome> {
     for (name, e) in [("chest_minecart_killed_while_open", &MINECART), ("chest_boat_killed_while_open", &BOAT)] {
         out.push(row(cx, name, e, e.basic, &[], |cx, ev| {
             let (ok, _) = open_expect(cx, e, ev);
-            cx.r(&format!("kill {SEL}"));
+            cx.act(&acts(), "kill");
             sleep(Duration::from_millis(800));
             let i = status(cx);
             let gone = !entity_alive(cx);

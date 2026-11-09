@@ -61,7 +61,7 @@ def summary_line(row, v):
     elif "error" in al:
         tail = f"; alerts NOT COMPARED: {al['error']}"
     else:
-        tail = "; alerts: " + ("FINDING (Null only) " if al["finding"] else "") + f"Null {vd_alerts.describe_list(al['null'])} | vanilla {vd_alerts.describe_list(al['vanilla'])}"
+        tail = "; alerts: " + ("FINDING (Null only) " if al["finding"] else "") + (f"VANILLA-ONLY x{al['vanilla_only_alerts']} " if al.get("vanilla_only_alerts") else "") + f"Null {vd_alerts.describe_list(al['null'])} | vanilla {vd_alerts.describe_list(al['vanilla'])}"
     return f"{row}: packets {text}{tail}"
 
 
@@ -129,6 +129,9 @@ def main():
         print(summary_line(row, v))
     bad = [r for r, v in verdicts.items() if "packets" not in v or v["packets"]["verdict"] != "MATCH" or v.get("alerts", {}).get("finding") or "error" in v.get("alerts", {})]
     print(f"{len(verdicts) - len(bad)} of {len(verdicts)} rows clean (packets MATCH, no Null-only alert)" if verdicts else "no rows run")
+    van_only = [r for r, v in verdicts.items() if v.get("alerts", {}).get("vanilla_only_alerts")]
+    if van_only:
+        print(f"{len(van_only)} rows drew vanilla-only alerts (counted clean above; with identical packets they point at the replay): " + ", ".join(van_only))
     sys.exit(1 if bad else 0)
 
 

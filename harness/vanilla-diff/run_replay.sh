@@ -26,7 +26,8 @@ rm -f "$TAP_OUT.logwin" "$CONTROL" "$MARKS" "$TAP_OUT" "$TAP_OUT.2" "$PROGRESS" 
 PORT=25569
 "$ROOT/target/release/vd-tap" --listen 127.0.0.1:$PORT --target "$SERVER" --out "$TAP_OUT" 2> "$TAP_OUT.tap.out" &
 TAP=$!
-trap 'kill $TAP 2>/dev/null || true' EXIT
+# A scene that fails leaves the client up (two stayed on the connect screen, 2026-11-04); both of its JVMs carry the control path.
+trap 'kill $TAP 2>/dev/null || true; pkill -f -- "vd.control=$CONTROL" || true' EXIT
 JVM="-Dvd.input=$INPUT -Dvd.control=$CONTROL -Dvd.marks=$MARKS -Dvd.progress=$PROGRESS -Dvd.phase=$PHASE"
 [ -n "$ROW" ] && JVM="$JVM -Dvd.row=$ROW"
 VD_USER="$NAME" VD_JVM="$JVM" "${VD_CLIENT_DIR:-$HOME/Desktop/null-spikes/vanilla-diff-client}/run_client.sh" > "$TAP_OUT.client.out" 2>&1 &
@@ -36,7 +37,7 @@ SCENEPID=""
 if [ -n "$SCENE" ]; then
   "$ROOT/target/release/null-abilitycheck" ${RCON:+--rcon-port $RCON} ${SLOG:+--server-log "$SLOG"} --prepare-scene "$SCENE" --player "$NAME" --progress "$PROGRESS" > "$SCENE_OUT" 2>&1 &
   SCENEPID=$!
-  trap 'kill $TAP $SCENEPID 2>/dev/null || true' EXIT
+  trap 'kill $TAP $SCENEPID 2>/dev/null || true; pkill -f -- "vd.control=$CONTROL" || true' EXIT
   for _ in $(seq 1 600); do
     grep -q " ready for " "$SCENE_OUT" && break
     kill -0 $SCENEPID 2>/dev/null || { cat "$SCENE_OUT" >&2; echo "scene process ended before the scene was ready" >&2; exit 1; }

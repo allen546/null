@@ -7,7 +7,7 @@ use std::{thread::sleep, time::Duration};
 use null_bot_api::Hand;
 
 use crate::{
-    scenarios::{Ctx, Outcome, last_int},
+    scenarios::{Acts, Ctx, Outcome, last_int},
     skill::{Info, Op},
     skill_items::{AttackHow, ItemOp, ItemsInfo},
 };
@@ -79,6 +79,10 @@ fn heal(cx: &mut Ctx) {
 
 /// Sends an op and waits for its `Started` (the command was just issued).
 fn start(cx: &mut Ctx, op: ItemOp) -> Result<(), String> {
+    if matches!(op, ItemOp::Use(_)) {
+        // The replay mod holds the use key from here (the input log has no key-held field for it).
+        cx.act(&acts(), "use_hold");
+    }
     let seq = cx.send(Op::Items(op));
     match cx.recv(seq, Duration::from_secs(30)) {
         Ok(r) if matches!(r.info, Info::Started) => Ok(()),
@@ -99,6 +103,9 @@ fn finish(cx: &mut Ctx) -> ItemsInfo {
 }
 
 fn items(cx: &mut Ctx, op: ItemOp) -> ItemsInfo {
+    if matches!(op, ItemOp::Release) {
+        cx.act(&acts(), "use_release");
+    }
     match cx.call(Op::Items(op)).info {
         Info::Items(i) => i,
         i => panic!("expected an items report: {i:?}"),
@@ -114,7 +121,10 @@ fn scene(cx: &mut Ctx, hotbar: &[(u8, &str, u8)]) {
     sleep(Duration::from_millis(200));
     cx.r(&format!("effect clear {n}"));
     heal(cx);
-    items(cx, ItemOp::Face { yaw: 0.0, pitch: 0.0 });
+    // A vanilla client's scene has no bot to turn; the scene's tp already faces it 0, 0.
+    if !cx.prepare_only {
+        items(cx, ItemOp::Face { yaw: 0.0, pitch: 0.0 });
+    }
 }
 
 fn using(i: &ItemsInfo) -> String {
@@ -203,7 +213,6 @@ pub fn a5(cx: &mut Ctx) -> Vec<Outcome> {
 
     scene(cx, &[(0, "golden_apple", 3)]);
     out.push(cx.run("A5", "movement_slowed_while_eating", |cx| {
-        let n = cx.name.clone();
         let walk = |cx: &mut Ctx| {
             let p0 = bot_pos(cx);
             items(cx, ItemOp::Walk(20));
@@ -212,7 +221,7 @@ pub fn a5(cx: &mut Ctx) -> Vec<Outcome> {
         };
         let (a0, a1) = walk(cx);
         let free = flat(a0, a1);
-        cx.r(&format!("tp {n} {} {} {} 0 0", SPAWN.0, SPAWN.1, SPAWN.2));
+        cx.act(&acts(), "tp_spawn");
         sleep(Duration::from_millis(700));
         if let Err(e) = start(cx, ItemOp::Use(Hand::Main)) {
             return (false, e);
@@ -281,7 +290,7 @@ pub fn a6(cx: &mut Ctx) -> Vec<Outcome> {
                 return (false, e);
             }
             sleep(Duration::from_millis(wait));
-            let reply = cx.r(&format!("damage {n} 6 minecraft:player_attack at {} {} {}", SPAWN.0, SPAWN.1, SPAWN.2 + dz));
+            let reply = cx.act(&acts(), if dz > 0.0 { "hit_front" } else { "hit_back" }).remove(0);
             let h1 = health_of(cx, &n);
             let raised = finish(cx);
             items(cx, ItemOp::Release);
@@ -314,7 +323,7 @@ pub fn a6(cx: &mut Ctx) -> Vec<Outcome> {
         };
         let (a0, a1) = walk(cx);
         let free = flat(a0, a1);
-        cx.r(&format!("tp {n} {} {} {} 0 0", SPAWN.0, SPAWN.1, SPAWN.2));
+        cx.act(&acts(), "tp_spawn");
         sleep(Duration::from_millis(700));
         if let Err(e) = start(cx, ItemOp::Use(Hand::Main)) {
             return (false, e);
@@ -356,7 +365,6 @@ bypassed_by:\"#minecraft:bypasses_shield\",item_damage:{threshold:3.0f,base:1.0f
 /// bot's ticks line up with the server's, and must hold the item's value `want`; the bot's belief
 /// must start from `want` and end at `want` or one above (a hit's tick count can read one high).
 fn shield_sweep(cx: &mut Ctx, want: u32, waits: &[u64]) -> (bool, String) {
-    let n = cx.name.clone();
     let mut ok = true;
     let mut lines = Vec::new();
     let (mut lo, mut hi) = (0u32, u32::MAX);
@@ -366,7 +374,7 @@ fn shield_sweep(cx: &mut Ctx, want: u32, waits: &[u64]) -> (bool, String) {
     let observed0 = items(cx, ItemOp::Status).shield.map_or(0, |b| b.observed());
     for &wait in waits {
         // Each hit that gets through knocks the bot back; start every hit from the spawn point.
-        cx.r(&format!("tp {n} {} {} {} 0 0", SPAWN.0, SPAWN.1, SPAWN.2));
+        cx.act(&acts(), "tp_spawn");
         sleep(Duration::from_millis(400));
         let g_before_use = gametime(cx);
         if let Err(e) = start(cx, ItemOp::Use(Hand::Main)) {
@@ -385,7 +393,7 @@ fn shield_sweep(cx: &mut Ctx, want: u32, waits: &[u64]) -> (bool, String) {
         let g_confirmed = gametime(cx);
         sleep(Duration::from_millis(wait));
         let g_before_hit = gametime(cx);
-        let reply = cx.r(&format!("damage {n} 6 minecraft:player_attack at {} {} {}", SPAWN.0, SPAWN.1, SPAWN.2 + 4.0));
+        let reply = cx.act(&acts(), "hit_front").remove(0);
         let g_after_hit = gametime(cx);
         let server_blocked = !reply.contains("Applied");
         // Server ticks the use had run at the hit: at least `g_before_hit - g_confirmed` and at
@@ -422,7 +430,8 @@ fn shield_sweep(cx: &mut Ctx, want: u32, waits: &[u64]) -> (bool, String) {
         }
         // 20 ticks of hurt immunity follow any hit, blocked or not; then full health again.
         sleep(Duration::from_millis(1100));
-        heal(cx);
+        cx.act(&acts(), "heal");
+        sleep(Duration::from_millis(300));
     }
     let end = items(cx, ItemOp::Status);
     let b = end.shield;
@@ -456,6 +465,14 @@ fn expected_damage(base: f64, attack_speed: f64, ticks_since: f64, crit: bool) -
 
 const GOLEM: &str = "@e[type=minecraft:iron_golem,tag=itm_target,x=530,y=199,z=342,dx=21,dy=10,dz=21,limit=1]";
 
+/// The scene of the A7 rows (also set for a vanilla client by `--prepare-scene`): the sword and the golem.
+// Spec: specs/plans/VD3_BRIEF.md T4
+fn a7_scene(cx: &mut Ctx) {
+    scene(cx, &[(0, "iron_sword", 1)]);
+    cx.r(&format!("summon minecraft:iron_golem {} {} {} {{NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:[\"itm_target\"]}}", SPAWN.0, SPAWN.1, SPAWN.2 + 2.6));
+    sleep(Duration::from_millis(1500));
+}
+
 // Spec: specs/B5-combat.md §4.1 (attack cooldown and critical hits)
 pub fn a7(cx: &mut Ctx) -> Vec<Outcome> {
     let mut out = Vec::new();
@@ -463,9 +480,7 @@ pub fn a7(cx: &mut Ctx) -> Vec<Outcome> {
     // no armor and full knockback resistance; NoAI keeps it where it is.
     const SWORD: f64 = 6.0;
     const SPEED: f64 = 1.6;
-    scene(cx, &[(0, "iron_sword", 1)]);
-    cx.r(&format!("summon minecraft:iron_golem {} {} {} {{NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:[\"itm_target\"]}}", SPAWN.0, SPAWN.1, SPAWN.2 + 2.6));
-    sleep(Duration::from_millis(1500));
+    a7_scene(cx);
     let hit = |cx: &mut Ctx, how: AttackHow| {
         let h0 = health_of(cx, GOLEM);
         let info = items(cx, ItemOp::Attack { kind: "minecraft:iron_golem", how });
@@ -538,18 +553,14 @@ pub fn a8(cx: &mut Ctx) -> Vec<Outcome> {
         out.push(Outcome { id: "A8", name: "setup".into(), pass: false, evidence: format!("{other} never came online"), shown: false, secs: 0.0 });
         return out;
     }
-    for c in [
-        format!("gamemode survival {other}"),
-        format!("tp {other} 540.5 200 345.5 0 0"),
-        "summon minecraft:pig 543.5 200 349.5 {NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:[\"itm_target\"]}".into(),
-    ] {
+    for c in [format!("gamemode survival {other}"), format!("tp {other} {OTHER_AT}")] {
         cx.r(&c);
     }
-    sleep(Duration::from_millis(2000));
+    a8_pig(cx);
 
     out.push(cx.run("A8", "damage_without_an_entity_names_nobody", |cx| {
         let before = items(cx, ItemOp::Status).attackers.len();
-        let reply = cx.r(&format!("damage {n} 1 minecraft:generic"));
+        let reply = cx.act(&acts(), "damage_generic").remove(0);
         sleep(Duration::from_millis(600));
         let after = items(cx, ItemOp::Status).attackers.len();
         (after == before, format!("RCON `damage generic` (no source entity), reply {reply:?}: bot's attackers {before} -> {after} (want unchanged)"))
@@ -571,6 +582,8 @@ pub fn a8(cx: &mut Ctx) -> Vec<Outcome> {
             if let Err(e) = start(cx, ItemOp::WatchAttackers) {
                 return (false, e);
             }
+            // The vanilla client's scene has no second player: its act (`acts`) hits from a stand-in at the same spot.
+            cx.mark_act(name);
             let reply = cx.r(&cmd);
             let seen = finish(cx);
             let h1 = health_of(cx, &n);
@@ -590,4 +603,64 @@ pub fn a8(cx: &mut Ctx) -> Vec<Outcome> {
     cx.r(&format!("kill @e[type=minecraft:pig,tag=itm_target,{BOX}]"));
     cx.clean_in(AREA);
     out
+}
+
+/// Where the second account stands in A8, and where the vanilla client's stand-in does.
+const OTHER_AT: &str = "540.5 200 345.5 0 0";
+
+/// The A8 target pig (both runs).
+fn a8_pig(cx: &mut Ctx) {
+    cx.r("summon minecraft:pig 543.5 200 349.5 {NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:[\"itm_target\"]}");
+    sleep(Duration::from_millis(2000));
+}
+
+/// The RCON actions inside the rows' windows (the vanilla client's scene runs them at the same input tick).
+/// `use_hold` and `use_release` have no command: the replay mod reads them (it holds the use key between them).
+// Spec: specs/plans/VD3_BRIEF.md T4
+fn acts() -> Acts {
+    let hit = |dz: f64| format!("damage {{n}} 6 minecraft:player_attack at {} {} {}", SPAWN.0, SPAWN.1, SPAWN.2 + dz);
+    vec![
+        ("use_hold", vec![]),
+        ("use_release", vec![]),
+        ("tp_spawn", vec![format!("tp {{n}} {} {} {} 0 0", SPAWN.0, SPAWN.1, SPAWN.2)]),
+        ("hit_front", vec![hit(4.0)]),
+        ("hit_back", vec![hit(-4.0)]),
+        ("heal", vec!["effect give {n} minecraft:instant_health 1 10 true".into()]),
+        ("damage_generic", vec!["damage {n} 1 minecraft:generic".into()]),
+        // A8: the second account is a NoAI pig at its place.
+        ("melee_by_named_player", vec![format!("damage {{n}} 2 minecraft:player_attack by @e[tag=a8other,limit=1]")]),
+        ("projectile_names_the_shooter", vec![format!("damage {{n}} 2 minecraft:indirect_magic by @e[type=minecraft:pig,tag=itm_target,{BOX},limit=1] from @e[tag=a8other,limit=1]")]),
+    ]
+}
+
+/// Sets the scene of row `row` of A5-A8 for a vanilla client (`--prepare-scene A5:<row>`) and returns the row's RCON actions.
+// Spec: specs/plans/VD3_BRIEF.md T4
+pub(crate) fn prepare_row(cx: &mut Ctx, module: &str, row: &str) -> Acts {
+    match (module, row) {
+        ("A5", "eat_takes_32_ticks" | "release_early_eats_nothing") => {
+            scene(cx, &[(0, "golden_apple", 3)]);
+            lower_food(cx);
+        }
+        ("A5", "movement_slowed_while_eating") => scene(cx, &[(0, "golden_apple", 3)]),
+        ("A5", "full_food_bread_is_refused") => scene(cx, &[(0, "bread", 3)]),
+        ("A6", _) => {
+            let item = match row {
+                "delay_belief_shield_with_1s_delay" => SLOW_SHIELD,
+                _ => "shield",
+            };
+            scene(cx, &[(0, item, 1)]);
+            // The damage rows and the sweeps run with natural regeneration off, as `a6` sets it.
+            if row != "movement_slowed_while_raised" {
+                cx.r("gamerule natural_health_regeneration false");
+            }
+        }
+        ("A7", _) => a7_scene(cx),
+        ("A8", _) => {
+            scene(cx, &[(0, "iron_sword", 1)]);
+            cx.r(&format!("summon minecraft:pig {} {} {} {{NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:[\"a8other\"]}}", 540.5, 200, 345.5));
+            a8_pig(cx);
+        }
+        _ => panic!("no {module} scene for row {row}"),
+    }
+    acts()
 }

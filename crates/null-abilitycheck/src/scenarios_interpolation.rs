@@ -39,7 +39,7 @@ use azalea::{
     registry::builtin::EntityKind,
 };
 
-use crate::scenarios::{Ctx, Outcome};
+use crate::scenarios::{Acts, Ctx, Outcome};
 
 const AREA: (i32, i32) = (920, 342);
 /// The main bot: facing +z (yaw 0), level.
@@ -193,12 +193,12 @@ fn wait_for(secs: f64, mut f: impl FnMut() -> bool) -> bool {
 }
 
 // Spec: specs/F5-version-layer.md §4.6 (What Null computes: interpolation of other entities)
-/// Trace the villager while `cmd` moves it. Returns the samples.
-fn trace_mob(cx: &mut Ctx, cmd: &str) -> Vec<MobTick> {
+/// Trace the villager while the act `label` moves it. Returns the samples.
+fn trace_mob(cx: &mut Ctx, label: &str) -> Vec<MobTick> {
     MOB_TRACE.lock().unwrap().clear();
     MOB_ON.store(true, Ordering::Relaxed);
     wait_for(5.0, || MOB_TRACE.lock().unwrap().len() >= 6);
-    cx.r(cmd);
+    cx.act(&acts(), label);
     sleep(Duration::from_millis(1000));
     MOB_ON.store(false, Ordering::Relaxed);
     sleep(Duration::from_millis(100));
@@ -207,6 +207,46 @@ fn trace_mob(cx: &mut Ctx, cmd: &str) -> Vec<MobTick> {
 
 fn show(runs: &[(f64, usize)]) -> String {
     runs.iter().map(|(v, n)| format!("{v:.3}x{n}")).collect::<Vec<_>>().join(" ")
+}
+
+/// The summon of a motionless villager tagged `tag` (the target of rows 1-2, and the vanilla client's stand-in for the second bot).
+fn villager_summon(tag: &str, at: (f64, f64, f64)) -> String {
+    format!("summon minecraft:villager {} {} {} {{NoAI:1b,Silent:1b,Invulnerable:1b,PersistenceRequired:1b,Tags:[\"{tag}\"],Rotation:[0f,0f]}}", at.0, at.1, at.2)
+}
+
+/// The RCON actions inside the rows' windows (the vanilla client's scene runs them at the same input tick). The
+/// three `other_*` acts stand in for the tp of the second bot: a villager that is the vanilla client's other entity.
+// Spec: specs/plans/VD3_BRIEF.md T4
+fn acts() -> Acts {
+    let to = |p: (f64, f64, f64)| format!("tp @e[tag=a18other,limit=1] {} {} {} 0 0", p.0, p.1, p.2);
+    vec![
+        ("move6", vec![format!("execute as {SEL} at @s run tp @s ~6 ~ ~")]),
+        ("move06", vec![format!("execute as {SEL} at @s run tp @s ~0.6 ~ ~")]),
+        ("other_moved", vec![to(MOVED)]),
+        ("other_far", vec![to(FAR)]),
+        ("other_near", vec![to(NEAR)]),
+    ]
+}
+
+/// Sets the scene of A18 row `row` for a vanilla client (`--prepare-scene A18:<row>`) and returns the row's RCON actions.
+/// Rows 3-5 have a second bot in the Null run; the vanilla client gets a villager at the bot's place instead.
+// Spec: specs/plans/VD3_BRIEF.md T4
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) -> Acts {
+    cx.scene_in(AREA, &[], STAND);
+    match row {
+        "mob_moved_by_rcon_is_reached_in_three_steps" | "ray_reads_the_smoothed_box_step_by_step" => {
+            cx.r(&villager_summon("a18v", VILLAGER));
+        }
+        "two_bots_near_each_other_hold_each_other_from_server_packets" | "server_move_of_a_bot_shows_in_the_other_bots_view_in_three_steps" => {
+            cx.r(&villager_summon("a18other", NEAR));
+        }
+        "bot_beyond_16_blocks_is_not_kept_and_comes_back" => {
+            cx.r(&villager_summon("a18other", MOVED));
+        }
+        _ => panic!("no A18 scene for row {row}"),
+    }
+    sleep(Duration::from_millis(1500));
+    acts()
 }
 
 // Spec: specs/F5-version-layer.md §4.6 (What Null computes: interpolation of other entities); specs/B1-movement.md §4.2
@@ -223,16 +263,12 @@ pub fn a18(cx: &mut Ctx) -> Vec<Outcome> {
     // The second bot is out of the way while the villager rows run.
     cx.r(&format!("gamemode survival {other}"));
     cx.r(&format!("tp {other} {} {} {} 0 0", FAR.0, FAR.1, FAR.2));
-    let summon = format!(
-        "summon minecraft:villager {} {} {} {{NoAI:1b,Silent:1b,Invulnerable:1b,PersistenceRequired:1b,Tags:[\"a18v\"],Rotation:[0f,0f]}}",
-        VILLAGER.0, VILLAGER.1, VILLAGER.2
-    );
-    cx.r(&summon);
+    cx.r(&villager_summon("a18v", VILLAGER));
     sleep(Duration::from_millis(1500));
 
     // ---- row 1: three equal steps on three consecutive ticks --------------------------------
     out.push(cx.run("A18", "mob_moved_by_rcon_is_reached_in_three_steps", |cx| {
-        let t = trace_mob(cx, &format!("execute as {SEL} at @s run tp @s ~6 ~ ~"));
+        let t = trace_mob(cx, "move6");
         let xs: Vec<f64> = t.iter().map(|m| m.x).collect();
         let r = runs(&xs, 0.002);
         let ok = is_three_steps(&r, VILLAGER.0, 6.0, 0.005);
@@ -253,7 +289,7 @@ pub fn a18(cx: &mut Ctx) -> Vec<Outcome> {
     cx.r(&format!("execute as {SEL} at @s run tp @s {} {} {}", VILLAGER.0, VILLAGER.1, VILLAGER.2));
     sleep(Duration::from_millis(1500));
     out.push(cx.run("A18", "ray_reads_the_smoothed_box_step_by_step", |cx| {
-        let t = trace_mob(cx, &format!("execute as {SEL} at @s run tp @s ~0.6 ~ ~"));
+        let t = trace_mob(cx, "move06");
         let xs: Vec<f64> = t.iter().map(|m| m.x).collect();
         let r = runs(&xs, 0.002);
         let steps_ok = is_three_steps(&r, VILLAGER.0, 0.6, 0.004);
@@ -299,6 +335,7 @@ pub fn a18(cx: &mut Ctx) -> Vec<Outcome> {
     out.push(cx.run("A18", "server_move_of_a_bot_shows_in_the_other_bots_view_in_three_steps", |cx| {
         BOT_TRACE.lock().unwrap().clear();
         wait_for(3.0, || BOT_TRACE.lock().unwrap().len() >= 6);
+        cx.mark_act("other_moved");
         cx.r(&format!("tp {other} {} {} {} 0 0", MOVED.0, MOVED.1, MOVED.2));
         sleep(Duration::from_millis(1000));
         let t = BOT_TRACE.lock().unwrap().clone();
@@ -322,11 +359,13 @@ pub fn a18(cx: &mut Ctx) -> Vec<Outcome> {
     }));
 
     out.push(cx.run("A18", "bot_beyond_16_blocks_is_not_kept_and_comes_back", |cx| {
+        cx.mark_act("other_far");
         cx.r(&format!("tp {other} {} {} {} 0 0", FAR.0, FAR.1, FAR.2));
         sleep(Duration::from_millis(1500));
         let far = BOT_TRACE.lock().unwrap().last().cloned();
         let (fm, fo) = far.as_ref().map_or((9, 9), |b| (b.main_len, b.other_len));
         let none_view = far.as_ref().is_some_and(|b| b.view_x.is_none());
+        cx.mark_act("other_near");
         cx.r(&format!("tp {other} {} {} {} 0 0", NEAR.0, NEAR.1, NEAR.2));
         sleep(Duration::from_millis(1500));
         let back = BOT_TRACE.lock().unwrap().last().cloned();

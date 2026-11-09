@@ -39,7 +39,7 @@ use azalea::{
 };
 
 use crate::{
-    scenarios::{Ctx, FLOOR_Y, Outcome},
+    scenarios::{Acts, Ctx, FLOOR_Y, Outcome},
     scenarios_block_effects::{bot_pos, floats},
 };
 
@@ -252,30 +252,67 @@ fn mob_pos(cx: &mut Ctx) -> Option<(f64, f64)> {
     Some((f[k], f[k + 2]))
 }
 
-fn summon(cx: &mut Ctx, kind: &str, dx: f64) {
-    summon_at(cx, kind, dx, STAND.1);
-}
-
-fn summon_at(cx: &mut Ctx, kind: &str, dx: f64, y: f64) {
-    cx.r(&format!(
+/// The summon of a motionless, silent mob tagged `a19c`, `dx` east of the stand at height `y`.
+fn summon_cmd(kind: &str, dx: f64, y: f64) -> String {
+    format!(
         "summon minecraft:{kind} {} {y} {} {{NoAI:1b,NoGravity:1b,Silent:1b,Invulnerable:1b,PersistenceRequired:1b,Tags:[\"a19c\"]}}",
         STAND.0 + dx, STAND.2
-    ));
+    )
+}
+
+/// The RCON actions inside the rows' windows (the vanilla client's scene runs them at the same input tick).
+/// `other_on` and `other_aside` stand in for the second bot's two teleports (`pushed_by_bot`): a motionless villager,
+/// as wide as a player, tagged `a19c`.
+// Spec: specs/plans/VD3_BRIEF.md T5
+fn acts() -> Acts {
+    let team = |rule: &str| format!("team modify {TEAM} collisionRule {rule}");
+    vec![
+        ("reset_kill", vec!["kill @e[tag=a19c]".into(), format!("team empty {TEAM}"), format!("team remove {TEAM}")]),
+        ("reset_tp", vec![format!("tp {{n}} {} {} {} 0 0", STAND.0, STAND.1, STAND.2)]),
+        ("cow_03", vec![summon_cmd("cow", 0.3, STAND.1)]),
+        ("stand_03", vec![summon_cmd("armor_stand", 0.3, STAND.1)]),
+        ("boat_high", vec![summon_cmd("oak_boat", 1.1, 200.5)]),
+        ("boat_low", vec![summon_cmd("oak_boat", 1.1, 199.5)]),
+        ("never_team_bot", vec![format!("team add {TEAM}"), team("never"), format!("team join {TEAM} {{n}}")]),
+        ("never_cow_in_bot_out", vec![format!("team join {TEAM} {SEL}"), "team leave {n}".into()]),
+        ("join_bot", vec![format!("team join {TEAM} {{n}}")]),
+        ("leave_both", vec!["team leave {n}".into(), format!("team leave {SEL}")]),
+        (
+            "own_setup",
+            vec![format!("team add {TEAM}"), team("pushOwnTeam"), summon_cmd("cow", 6.0, STAND.1), format!("team join {TEAM} {{n}}"), format!("team join {TEAM} {SEL}")],
+        ),
+        ("own_cow_in", vec![format!("tp {SEL} {} {} {} 0 0", STAND.0 + 0.3, STAND.1, STAND.2)]),
+        ("leave_bot", vec!["team leave {n}".into()]),
+        ("other_setup", vec![format!("team add {TEAM}"), team("pushOtherTeams"), format!("team join {TEAM} {{n}}"), summon_cmd("cow", 0.3, STAND.1)]),
+        ("join_cow", vec![format!("team join {TEAM} {SEL}")]),
+        ("other_on", vec![summon_cmd("villager", 0.0, STAND.1)]),
+        ("other_aside", vec![format!("tp {SEL} {} {} {} 0 0", STAND.0 + 0.3, STAND.1, STAND.2)]),
+    ]
+}
+
+/// Sets the scene of A19 row `row` for a vanilla client (`--prepare-scene A19:<row>`) and returns the row's RCON actions.
+/// Every row starts with the bot at the stand and no mob; the companion and the second account have no vanilla counterpart.
+// Spec: specs/plans/VD3_BRIEF.md T5
+pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) -> Acts {
+    assert!(
+        ["pushed_by_mob", "armor_stand_no_push", "team_never_no_push", "pushed_by_boat", "team_push_own_team_allied_no_push", "push_tick_order", "pushed_by_bot"].contains(&row),
+        "no A19 scene for row {row}"
+    );
+    cx.scene_in(AREA, &[], STAND);
+    acts()
 }
 
 /// Put the bot back at the stand with no mob, and wait for it to settle.
 fn reset(cx: &mut Ctx) {
-    let n = cx.name.clone();
+    let acts = acts();
     // A killed mob stays on the client for its death animation (about 20 ticks) and pushes until
     // the server removes it; wait until it is gone before the bot goes back.
-    cx.r("kill @e[tag=a19c]");
     // Members leave before the team goes: Grim's `EntityTeam` never fills `entries`, so a removed
     // team keeps its members mapped and Grim then allows no push from them (ABILITY_CHECK, A19).
-    cx.r(&format!("team empty {TEAM}"));
-    cx.r(&format!("team remove {TEAM}"));
+    cx.act(&acts, "reset_kill");
     cx.poll(5.0, |cx| cx.r("execute if entity @e[tag=a19c]").contains("failed"));
     sleep(Duration::from_millis(1500));
-    cx.r(&format!("tp {n} {} {} {} 0 0", STAND.0, STAND.1, STAND.2));
+    cx.act(&acts, "reset_tp");
     sleep(Duration::from_millis(1500));
 }
 
@@ -310,7 +347,7 @@ fn pushed_by_mob(cx: &mut Ctx) -> Outcome {
         reset(cx);
         trace_start();
         wait_for_ticks(6);
-        summon(cx, "cow", 0.3);
+        cx.act(&acts(), "cow_03");
         sleep(Duration::from_millis(2500));
         let t = trace_stop();
         let cow = mob_pos(cx).unwrap_or((f64::NAN, f64::NAN));
@@ -341,7 +378,7 @@ fn armor_stand_no_push(cx: &mut Ctx) -> Outcome {
         reset(cx);
         trace_start();
         wait_for_ticks(6);
-        summon(cx, "armor_stand", 0.3);
+        cx.act(&acts(), "stand_03");
         sleep(Duration::from_millis(2000));
         let t = trace_stop();
         let stand_ticks = t.iter().filter(|s| s.touching.contains(&EntityKind::ArmorStand)).count();
@@ -388,35 +425,30 @@ fn hold(n: usize) -> (u64, f64, usize) {
 // Spec: specs/B1-movement.md §4.2 (Pushes from entities: team collision rules)
 fn team_never_no_push(cx: &mut Ctx) -> Outcome {
     cx.run("A19", "team_never_no_push", |cx| {
-        let n = cx.name.clone();
         reset(cx);
-        cx.r(&format!("team add {TEAM}"));
-        cx.r(&format!("team modify {TEAM} collisionRule never"));
         // Phase A: only the bot is in the team (the rule is read from the target's team too).
-        cx.r(&format!("team join {TEAM} {n}"));
+        cx.act(&acts(), "never_team_bot");
         sleep(Duration::from_millis(300));
-        summon(cx, "cow", 0.3);
+        cx.act(&acts(), "cow_03");
         trace_start();
         sleep(Duration::from_millis(500));
         let ma = members(cx);
         let a = hold(40);
         // Phase B: only the cow (a mob is a member by its UUID text).
         // Cow in first: bot out first leaves a tick with no rule, and the cow pushes (mac54, Grim).
-        cx.r(&format!("team join {TEAM} {SEL}"));
-        cx.r(&format!("team leave {n}"));
+        cx.act(&acts(), "never_cow_in_bot_out");
         sleep(Duration::from_millis(300));
         let mb = members(cx);
         let b = hold(40);
         // Phase C: both.
-        cx.r(&format!("team join {TEAM} {n}"));
+        cx.act(&acts(), "join_bot");
         sleep(Duration::from_millis(300));
         let mc = members(cx);
         let c = hold(40);
         // Phase D: neither (Leave on both): the cow pushes again, as the model says.
         // Mark before the Leave: the 8 pushes take 400 ms, so a mark after the wait can miss them all.
         let mark = samples();
-        cx.r(&format!("team leave {n}"));
-        cx.r(&format!("team leave {SEL}"));
+        cx.act(&acts(), "leave_both");
         sleep(Duration::from_millis(300));
         let md = members(cx);
         sleep(Duration::from_millis(2500));
@@ -464,11 +496,14 @@ fn pushed_by_bot(cx: &mut Ctx) -> Outcome {
         // Teleporting it in from afar would let it push the first bot away before the first bot's
         // smoothed view of it arrives (a vanilla client would see the same lag).
         reset(cx);
+        // The vanilla client's scene has no second player: its act puts a villager there (a stand-in).
+        cx.mark_act("other_on");
         cx.r(&format!("tp {other} {} {} {} 0 0", STAND.0, STAND.1, STAND.2));
         sleep(Duration::from_millis(2000));
         let log_mark = cx.log_len();
         trace_start();
         wait_for_ticks(6);
+        cx.mark_act("other_aside");
         cx.r(&format!("tp {other} {} {} {} 0 0", STAND.0 + 0.3, STAND.1, STAND.2));
         sleep(Duration::from_millis(2500));
         let t1 = trace_stop();
@@ -513,7 +548,7 @@ fn pushed_by_boat(cx: &mut Ctx) -> Outcome {
         reset(cx);
         trace_start();
         wait_for_ticks(6);
-        summon_at(cx, "oak_boat", 1.1, 200.5);
+        cx.act(&acts(), "boat_high");
         sleep(Duration::from_millis(2500));
         let t = trace_stop();
         let boat = mob_pos(cx).unwrap_or((f64::NAN, f64::NAN));
@@ -531,7 +566,7 @@ fn pushed_by_boat(cx: &mut Ctx) -> Outcome {
         reset(cx);
         trace_start();
         wait_for_ticks(6);
-        summon_at(cx, "oak_boat", 1.1, 199.5);
+        cx.act(&acts(), "boat_low");
         sleep(Duration::from_millis(1500));
         let t2 = trace_stop();
         let low = mob_pos(cx).unwrap_or((f64::NAN, f64::NAN));
@@ -551,20 +586,15 @@ fn pushed_by_boat(cx: &mut Ctx) -> Outcome {
 // Spec: specs/B1-movement.md §4.2 (Pushes from entities: team collision rules, pushOwnTeam)
 fn team_push_own_team_allied_no_push(cx: &mut Ctx) -> Outcome {
     cx.run("A19", "team_push_own_team_allied_no_push", |cx| {
-        let n = cx.name.clone();
         // Phase A: bot and cow in one team with pushOwnTeam: allied, so no push. The cow waits 6
         // blocks away while both join (a cow outside the team would push), then comes to 0.3.
         reset(cx);
-        cx.r(&format!("team add {TEAM}"));
-        cx.r(&format!("team modify {TEAM} collisionRule pushOwnTeam"));
-        summon(cx, "cow", 6.0);
-        cx.r(&format!("team join {TEAM} {n}"));
-        cx.r(&format!("team join {TEAM} {SEL}"));
+        cx.act(&acts(), "own_setup");
         sleep(Duration::from_millis(300));
         let ma = members(cx);
         trace_start();
         wait_for_ticks(6);
-        cx.r(&format!("tp {SEL} {} {} {} 0 0", STAND.0 + 0.3, STAND.1, STAND.2));
+        cx.act(&acts(), "own_cow_in");
         sleep(Duration::from_millis(500));
         let a = hold(40);
         let a_diag = describe(&TRACE.lock().unwrap());
@@ -572,7 +602,7 @@ fn team_push_own_team_allied_no_push(cx: &mut Ctx) -> Outcome {
         // Phase B: the bot leaves; the cow alone is in a pushOwnTeam team. Not allied (no team never
         // is), and neither is pushOtherTeams, so it pushes.
         let mark = samples();
-        cx.r(&format!("team leave {n}"));
+        cx.act(&acts(), "leave_bot");
         sleep(Duration::from_millis(300));
         let mb = members(cx);
         sleep(Duration::from_millis(2500));
@@ -583,14 +613,11 @@ fn team_push_own_team_allied_no_push(cx: &mut Ctx) -> Outcome {
         let resumed = after.last().map_or(0, |l| l.pushes_total) > after.first().map_or(0, |l| l.pushes_total);
         // Phase C: pushOtherTeams with both in it: allied, so it pushes ("or when allied").
         reset(cx);
-        cx.r(&format!("team add {TEAM}"));
-        cx.r(&format!("team modify {TEAM} collisionRule pushOtherTeams"));
-        cx.r(&format!("team join {TEAM} {n}"));
-        summon(cx, "cow", 0.3);
+        cx.act(&acts(), "other_setup");
         sleep(Duration::from_millis(800));
         trace_start();
         wait_for_ticks(6);
-        cx.r(&format!("team join {TEAM} {SEL}"));
+        cx.act(&acts(), "join_cow");
         sleep(Duration::from_millis(2000));
         let tc = trace_stop();
         let cow_c = mob_pos(cx).unwrap_or((f64::NAN, f64::NAN));
@@ -618,7 +645,7 @@ fn push_tick_order(cx: &mut Ctx) -> Outcome {
         reset(cx);
         trace_start();
         wait_for_ticks(6);
-        summon(cx, "cow", 0.3);
+        cx.act(&acts(), "cow_03");
         sleep(Duration::from_millis(2000));
         let t = trace_stop();
         let Some(k) = t.windows(2).position(|w| w[1].pushes_total > w[0].pushes_total) else {
