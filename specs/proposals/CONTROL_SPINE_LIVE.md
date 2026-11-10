@@ -1,6 +1,6 @@
 # The control spine on real bots: leases, holds and claims for physical work
 
-> **Status (2026-11-10): proposal, decisions open (§9).** Design level only: the exact code is decided when each part is built (Allen, 2026-11-10). Nothing here is built. The code facts were read in `crates/null-squad`, `crates/null-botlink`, `crates/null-node/src/spine.rs` and `crates/null-proto` on branch `burst-2026-11-10`. Open items it answers: BUILD_PLAN S3 "Done 2026-10-24", `plans/S6_BRIEF.md`, and the two questions in `plans/BURST_2026-11-10.md`.
+> **Status (2026-11-10): adopted by Allen (§9), not built. §5a was added after the decisions and is open (§9a).** Design level only: the exact code is decided when each part is built (Allen, 2026-11-10). Nothing here is built. The code facts were read in `crates/null-squad`, `crates/null-botlink`, `crates/null-node/src/spine.rs` and `crates/null-proto` on branch `burst-2026-11-10`. Open items it answers: BUILD_PLAN S3 "Done 2026-10-24", `plans/S6_BRIEF.md`, and the two questions in `plans/BURST_2026-11-10.md`.
 
 ## 1. Why now
 
@@ -52,9 +52,37 @@ A claim today is a set of cells. Physical work needs three things kept apart.
 | **Transit** | Walking needs no claim. A bot may cross any claim on foot. It may not dig or place its way through: the pathfinder's mining and placing moves are off outside the bot's own claim (DECISIONS AD-B1.1 already says B1 turns mining off outside digging jobs) |
 | **Effect** | A change can alter cells outside the claim: a fence joins, a torch drops, gravel falls, a fluid flows. Bounded effects are covered by a margin between the work volumes of different bots, set per job kind as data (B4 §4.12 already spaces fishbone branches). Unbounded effects (fluids) are not covered by any margin: the miner seals before it opens (§6), and a failure is an interrupt |
 
+**The transit row covers walking only.** A route that needs a change is §5a.
+
 **Shared corridors.** A fishbone's main tunnel is used by all its bots. The operation holds it as a claim that nobody may change, so no bot's job can take it.
 
 **Bodies are checked by sight, not by claim.** Before a break, the bot checks that the cell does not support a player it can see, and that a player is not inside a cell that the break would fill or flood. With own worlds, other bots are ordinary player entities in the bot's world, so one check covers Null's bots and real players. A claim cannot do this: a body is not in the registry, and a person never is.
+
+## 5a. Path moves that change the world (raised by Allen, 2026-11-10; open)
+
+Sometimes the best route, or the only route, needs a change on the way: a block to stand on, a gap bridged, a door opened, a wall dug through. Each of these is a world-changing command, so the permit of rule 1 applies to it. §5 covered walking only.
+
+**Today the pathfinder cannot do it.** The fork's planner has walking, climbing one block, dropping, parkour, digging down and surface swimming (`azalea/src/pathfinder/moves/`). It has no move that places a block or opens a door. B1 lists bridging and pillaring as missing moves, and names "pillar out with a temp block" as a recovery step. The only place-while-moving ability that exists is the click itself, in ability row A22 `pillar_jump_places_under_feet`.
+
+**Three classes of path move.**
+
+| Class | Examples | Rule |
+|---|---|---|
+| Walk | every move the planner has today except digging | No claim, no permit (§5) |
+| Temporary change | a pillar block, a bridge block, a door or gate opened | A change with a duty to restore: remove the block, close the door. Needs a transit lease |
+| Permanent change | digging through | Cannot be restored in general (stone drops cobblestone). Allowed only inside the bot's own claim, or by a job that claims it |
+
+**The transit lease.** The planner first looks for a walking route. If there is none, or it costs far more, the planner may use temporary changes, and the route then carries the list of cells it will change. The bot asks for a short lease on exactly those cells, through its squad, by rule 4: it walks the part before the first change while the answer comes. The permit opens for those cells only, so a permit is a set of cells with a deadline, and a bot can hold its job's lease and a transit lease at once. A cell inside another bot's claim, or inside a shared corridor, is refused, and the planner treats it as a wall.
+
+**The duty to restore.** Each temporary change is recorded when it is made and cleared when it is undone. A bot cannot always undo it: a pillar taller than its reach stays, and a lease can end in the middle of a crossing. What stays is reported as changed cells, like the seals of B4 §4.13, and belief keeps it, so the next bot can use the pillar or the bridge as ground. Whether a leftover is acceptable is a policy of the place: fine in open country, not inside another player's build (AD-K2.2: no breaking, and so no littering, of someone else's build).
+
+**A stop in the middle.** A bot on a half-built bridge or pillar stands on its own block, which is safe. The stop rule of §4 needs nothing new.
+
+**Supply.** Temporary blocks come from the bot's inventory. The job's kit names how many it carries, and the planner gets that count as a budget. With none, it plans walking routes only.
+
+**What it needs before it can be built.** Placing moves in the fork's planner (pillar one block, bridge one gap), each with rows on both servers; place prediction for the block kinds used (full cubes are known); the door use as a predicted change (CLIENT_LEVEL_MODEL §2, the scopes audit).
+
+**When.** The first `mine` does not need it: the miner changes cells inside its own claim, where its job's lease already opens the permit, and it reaches the claim through a shared corridor on foot. It is needed for general travel (BUILD_PLAN step 2, survival core, and exploration).
 
 ## 6. Hazard steps in `mine`
 
@@ -76,7 +104,12 @@ B4 §4.13 says the miner handles underground hazards itself, and may place a blo
 4. Rule 2 (lease as a length of time): with step 3, since the permit needs it.
 5. §5 and §6 with `mine`: the margin data, the corridor claim, the body check and the shell.
 
-## 9. Decisions for Allen
+## 9a. Open (§5a)
+
+1. Temporary changes in transit use a transit lease and carry a duty to restore, as in §5a?
+2. Build it with the survival core (step 2), not before `mine`?
+
+## 9. Decisions (Allen, 2026-11-10: yes to all five)
 
 1. **`resume(scope)` and holds with owners.** This changes the K2 command set. Recommended: yes, with the person able to clear any hold and the commander only its own.
 2. **Retire waits for the lease end** (up to 5 s) and not 40 ticks. Recommended: yes.
