@@ -22,9 +22,10 @@ Null is a swarm of Minecraft bots (Rust, on a public Azalea fork) with an LLM co
 ## The Azalea fork
 
 - Public fork `allen546/azalea`, branch `null-main`; local clone `~/Desktop/null-spikes/azalea` (remote `null`). No upstream PRs or issues: upstream asks for no AI-written contributions.
-- One commit per patch, named `null patch: <n>-<name>`, pushed to `null-main`. Each patch gets a row in `specs/reference/AZALEA_PATCHES.md` (files, problem, fix, test, how found, bug fix or Null-only) and a diff in `specs/reference/azalea-patches/`. Then move the pinned `rev` in `Cargo.toml` to the new head.
+- One commit per patch, named `null patch: <n>-<name>`, pushed to `null-main`. Each patch gets a row in `specs/reference/AZALEA_PATCHES.md` (files, problem, fix, test, how found, layer touched) and a diff in `specs/reference/azalea-patches/`. Then move the pinned `rev` in `Cargo.toml` to the new head.
 - A patch that reproduces vanilla names the vanilla method (Mojang names, e.g. `AbstractContainerMenu#doClick`) and the Grim check it must pass. Read the source in `~/Desktop/null-reference/` (`vanilla-1.21.11-src/`, `paper/`, `grimac/`; see its `MANIFEST.md`). Describe behaviour in our own words; never copy Mojang, Paper or Grim code.
-- Keep patches small and mostly additive, so rebases onto a new upstream stay cheap.
+- The fork has three layers, each with its own rule (Allen, 2026-11-10; `specs/proposals/FORK_BOUNDARY.md`). **Data and wire** (`azalea-protocol`, `-buf`, `-registry`, `-core`, `-chat`, `-auth`, `-nbt`, generated block and item data): track upstream unchanged; a change here needs a blocking bug and is listed. **Simulation** (`azalea-physics`, `-entity`, `-world`, block and item behaviour): upstream is the reference, and the tests that hold vanilla's values decide a conflict. **Client and bot** (`azalea-client`, `azalea`): Null's own code, restructured where vanilla's behaviour needs it. "Small and mostly additive" holds for the data and wire layer only; elsewhere a patch is one reviewable change of the size it needs.
+- An upstream update is one merge into `null-main`, never a rebase of the patches.
 - `~/.cargo/config.toml` has a `[patch]` that builds Null against the local clone, so local fork edits take effect at once. The pushed head must equal what was tested.
 - Vanilla item component hashes: `harness/vanilla-hash/` (`VanillaHash.java`, `ComponentDump.java`) prints vanilla's values; the fork's `azalea-inventory/tests/vanilla_component_hashes.rs` checks them.
 

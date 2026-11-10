@@ -1,6 +1,6 @@
 # The fork boundary: which parts of Azalea are Null's own
 
-> **Status (2026-11-10): proposal, decisions open (§8).** Design level only. Nothing here changes code. The numbers were measured on 2026-11-10 in `~/Desktop/null-spikes/azalea`: branch `patch-stack-burst` (`ee7d418`) against its base on upstream's `1.21.11` branch (`41a9ae6`, 2026-03-22), and against upstream `main` as the clone last fetched it (`0d38e0d`, 2026-10-16). It answers the question deferred in DECISIONS on 2026-10-16 ("replace Azalea's stateful client glue with our own") and fits under AD-F5.5.
+> **Status (2026-11-10): adopted by Allen (§8: yes to all four). CLAUDE.md and F5 §4.7 carry the new rules; no code changed.** Design level only. The numbers were measured on 2026-11-10 in `~/Desktop/null-spikes/azalea`: branch `patch-stack-burst` (`ee7d418`) against its base on upstream's `1.21.11` branch (`41a9ae6`, 2026-03-22), and against upstream `main` as the clone last fetched it (`0d38e0d`, 2026-10-16). It answers the question deferred in DECISIONS on 2026-10-16 ("replace Azalea's stateful client glue with our own") and fits under AD-F5.5.
 
 ## 1. The question
 
@@ -88,7 +88,7 @@ Today's rule implies re-applying each patch on a new upstream. With 72 patches a
 
 A first real merge of upstream `main` is worth doing soon, after the stack is pushed, while it is 43 files and not more. It also brings upstream's fixes of 7 months.
 
-## 8. Decisions for Allen
+## 8. Decisions (Allen, 2026-11-10: yes to all four)
 
 1. **The three layers and their rules** (§4). Recommended: yes.
 2. **Merge, never rebase** (§5). Recommended: yes.
