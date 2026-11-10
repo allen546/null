@@ -500,6 +500,8 @@ Spec: [F5](F5-version-layer.md) §4.6 (load contract, L4). Problem: [plans/SWARM
 
 **Decided by Allen, 2026-11-04: one `World` per bot, in one process per machine, with sections shared by content.** A section is immutable and stored once. A bot parses its own packets, and it links a section only when its own packet held the same content. An edit makes a new section for that bot, and bots that reach the same content share it again. A hash finds the match and a full comparison confirms it, until that comparison is the limiting factor.
 
+**Added by Allen, 2026-11-10: a process runs its bots in shards.** A shard is one thread with its own app, loop and tick clock, and all shards of a process share the section store. Its purpose is to spread the bots over the CPU cores; it also limits a slow pass to one shard's bots and gives the shards different phases. Several processes on one machine stay as the fallback. The common phase inside a shard is an accepted limit for v1. The spike runs after the next pair. Not built: [proposals/UNIT_OF_EXECUTION.md](proposals/UNIT_OF_EXECUTION.md).
+
 **For own worlds with shared sections.**
 - The second leak, the shared mob updates and the shared entity index go away by design. Read sites need no change, so a forgotten read site cannot leak.
 - Other bots become ordinary entities, as on a vanilla client.
