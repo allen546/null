@@ -28,7 +28,7 @@ None of these blocks current work. Each has a default.
 
 | item | when it matters | default now | where |
 |---|---|---|---|
-| AD-K2.1 commander API: imperative commands or a desired-state manifest. Bake-off ran 2026-10-14: no decisive difference | before the LLM commander | manifest hybrid | K2, DECISIONS, `specs/reference/BAKEOFF_K21_2026-10-14.md` |
+| The rubric for the commander's decision quality (F3 §4.7), which only Allen writes | before the long commander test (COMMANDER_HARNESS §9 step 4) | mechanical scores only | F3, `specs/proposals/COMMANDER_HARNESS.md` §8 |
 | AD-C3.1 central depots or storage per operation | large logistics | per operation, depots when shared | C3 |
 | AD-C7.1 fights bigger than one squad | large fights | bigger squads first | C7 |
 | AD-C8.1 bots talk to people in v1 | first public server | silent | C8 |

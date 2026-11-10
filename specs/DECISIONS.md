@@ -17,7 +17,7 @@ Context used throughout (Allen, 2026-10-13): local testing is per component, not
 | [AD-C7.1](#ad-c71-what-coordinates-fights-bigger-than-one-squad) big fights | **deferred** (Allen, 2026-10-15); lean: bigger squads first, spread out (updated) | measured losses from slow cross-squad reaction |
 | [AD-C8.1](#ad-c81-should-bots-talk-to-people-in-v1) bot chat | **deferred** (Allen, 2026-10-15); lean: silent in v1 | a target server where silence causes trouble |
 | [AD-C9.1](#ad-c91-can-one-convoys-escort-span-two-nodes) convoy escort | **deferred** (Allen, 2026-10-15); lean: one node only | node failures common enough to lose convoys |
-| [AD-K2.1](#ad-k21-imperative-commands-or-a-desired-state-manifest) commander API | **open; bake-off run 2026-10-14, no decisive difference**; lean: manifest hybrid | a longer test at spec scale with a concurrent person, or Allen's call |
+| [AD-K2.1](#ad-k21-imperative-commands-or-a-desired-state-manifest) commander API | **decided:** the digest shows the standing state; writes are K2's verbs, each with a snapshot condition; no manifest and no reconciler | (Allen, 2026-11-10; [proposals/COMMANDER_HARNESS.md](proposals/COMMANDER_HARNESS.md) §4) |
 | [AD-K2.2](#ad-k22-share-the-commander-seat-and-on-what-terms) commander seat | **decided:** the LLM in full control; the person holds halt and recall; boundaries are permission checks set once (no attacking a player first, no breaking others' builds) | (Allen, 2026-10-15) |
 | [AD-K5.1](#ad-k51-llm-officers-at-the-operation-level-in-v1) LLM officers | **decided:** none in v1; the commander alone | (Allen, 2026-10-15) |
 | [AD-K5.2](#ad-k52-scenario-knowledge-as-data-or-as-method-code) scenario knowledge | **decided:** facts as data from the jar, observation and the LLM prior; code only for cost-ranked important skills; goals to state and check tasks; the LLM plans in stretches behind a validator and quotes ([GENERALIZATION.md](proposals/GENERALIZATION.md) §0) | (Allen, 2026-10-15) |
@@ -231,6 +231,8 @@ Spec: [C9](C9-entity-logistics.md).
 **Lean.** One node only, with node failure handled by park points and checkpoints.
 
 ## AD-K2.1 Imperative commands, or a desired-state manifest?
+
+**Decided by Allen, 2026-11-10: reads show the state, and writes are verbs with a condition.** The digest shows the goal tree, the policies and the standing orders on every wake. The model writes with K2's verbs, and each write names the snapshot it was decided on; HQ refuses a write whose target changed since then. There is no manifest and no reconciler. The grounds are not the bake-off, which was a tie: a goal is already a desired state since AD-K5.2, AD-K2.2 removed the shared seat that conditional patches were for, and the digest carried the memory on both interfaces. Design: [proposals/COMMANDER_HARNESS.md](proposals/COMMANDER_HARNESS.md) §4. The text below is the record from before the decision.
 
 **Deferred by Allen, 2026-10-15, until the bake-off**, which runs before the LLM commander is built. **The bake-off ran on 2026-10-14 and did not separate the options** ([reference/BAKEOFF_K21_2026-10-14.md](reference/BAKEOFF_K21_2026-10-14.md)): no injection followed, no rejected writes and almost no thrash on either interface; the hybrid's input cost per wake was 20% lower on haiku, about equal on sonnet and 33% higher on opus. Standing orders and damping in both digests did most of what the manifest was meant to do. Its claimed strengths (memory over long runs, safe concurrent edits, caching) were not tested.
 

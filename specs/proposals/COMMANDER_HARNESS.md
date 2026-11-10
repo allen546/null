@@ -1,6 +1,6 @@
 # The harness for an LLM that drives Null
 
-> **Status (2026-11-10): proposal, decisions open (§10).** Design level only: the exact code is decided when each part is built. Nothing here is built. It extends K3 (LLM commander adapter, v1 of 2026-10-13) with what was decided or learned since: AD-K2.2 (the LLM in full control, the person holds halt and recall), AD-K5.1 (no officers in v1), AD-K5.2 (the LLM plans the steps that have no model, in validated stretches), the bake-off of 2026-10-14, and the control spine built in S3 and S6. It proposes an answer to AD-K2.1, which is still open.
+> **Status (2026-11-10): adopted by Allen (§10: yes to all seven), not built.** Design level only: the exact code is decided when each part is built. It extends K3 (LLM commander adapter, v1 of 2026-10-13) with what was decided or learned since: AD-K2.2 (the LLM in full control, the person holds halt and recall), AD-K5.1 (no officers in v1), AD-K5.2 (the LLM plans the steps that have no model, in validated stretches), the bake-off of 2026-10-14, and the control spine built in S3 and S6. Its §4 is the decided answer to AD-K2.1.
 
 ## 1. What K3 has, and what it lacks
 
@@ -94,7 +94,7 @@ The fake HQ of the bake-off is retired.
 
 Steps 1 to 4 need no Minecraft server and no fork change. They can run beside `mine`.
 
-## 10. Decisions for Allen
+## 10. Decisions (Allen, 2026-11-10: yes to all seven)
 
 1. **Three kinds of session** (§3), with a plan session as the commander in its own context, not an officer. Recommended: yes.
 2. **AD-K2.1:** state in the digest, verbs with a snapshot condition, no manifest and no reconciler (§4). Recommended: yes. This closes the decision.
