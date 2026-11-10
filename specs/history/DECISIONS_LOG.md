@@ -7,6 +7,7 @@
 - Client level model: with own worlds, a bot's prediction is written into its own `World`, as vanilla's `ClientLevel` does; the patch 53 overlay and `BotWorld` go. It lands as one fork patch directly after the own-worlds patch, before the next pair. `specs/proposals/CLIENT_LEVEL_MODEL.md`.
 - Block-entity state: the audit and the storage design now, the shulker box as the first kind; the piston stays refused until `mine` or building needs it. `specs/proposals/BLOCK_ENTITY_STATE.md`.
 - Unit of execution (adds to AD-F5.6): a process runs its bots in shards, each one thread with its own app, loop and clock, over one section store, to spread the bots over the cores. Several processes per machine are the fallback. The common phase inside a shard is an accepted v1 limit. The spike (two shards of 25 against one swarm of 50, Mac) runs after the next pair. `specs/proposals/UNIT_OF_EXECUTION.md`.
+- Test gate: a recorded vanilla session (inputs, server packets by exact client tick, client packets) becomes an offline test of the fork, as the everyday tier. The spike is built now; the exact code is decided then. VD3 T3 to T6 in full stays required until the spike passes, then the scenes are finished only as far as fixtures need. The VD3 side owns the fixture format. The pair stays the gate until the proof in LOAD_CONTRACT is done. `specs/proposals/TEST_GATE.md`.
 
 ## Decided 2026-11-04
 
