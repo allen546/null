@@ -1,6 +1,6 @@
 # Sight mode and hidden state: what a bot may know
 
-> **Status (2026-11-10): proposal, decisions open (§10).** Design level only: the exact code is decided when each part is built. Nothing here is built. It builds on B4 §4.11 (sight mode, Allen, 2026-10-19), B4 §4.13 (underground hazards), F2 §4.1 (the `how` of an observation) and `crates/null-belief`, which has no `how` yet. It is needed before `mine` (OPEN §1 item 3).
+> **Status (2026-11-10): adopted by Allen (§10: yes to all five, the ray kept), not built.** Design level only: the exact code is decided when each part is built. It builds on B4 §4.11 (sight mode, Allen, 2026-10-19), B4 §4.13 (underground hazards), F2 §4.1 (the `how` of an observation) and `crates/null-belief`, which has no `how` yet. It is needed before `mine` (OPEN §1 item 3).
 
 ## 1. Why
 
@@ -94,7 +94,7 @@ The fork's pathfinder reads the world directly, and its passability test is not 
 
 Step 6 needs a Paper server with anti-x-ray enabled. The Paper + Grim test server can turn it on for those rows.
 
-## 10. Decisions for Allen
+## 10. Decisions (Allen, 2026-11-10: yes to all five)
 
 1. **Sight mode is a view for every decision above the client** (targets, hazards, paths, belief), not only a filter on targets. Recommended: yes. It is what "no decision" in the rule says.
 2. **Hazards in sight mode have no look-ahead** (§5): worst-case posture, then react. This changes B4 §4.13 for sight mode. Recommended: yes.
