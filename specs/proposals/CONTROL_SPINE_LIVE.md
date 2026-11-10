@@ -1,6 +1,6 @@
 # The control spine on real bots: leases, holds and claims for physical work
 
-> **Status (2026-11-10): adopted by Allen (§9), not built. §5a was added after the decisions and is open (§9a).** Design level only: the exact code is decided when each part is built (Allen, 2026-11-10). Nothing here is built. The code facts were read in `crates/null-squad`, `crates/null-botlink`, `crates/null-node/src/spine.rs` and `crates/null-proto` on branch `burst-2026-11-10`. Open items it answers: BUILD_PLAN S3 "Done 2026-10-24", `plans/S6_BRIEF.md`, and the two questions in `plans/BURST_2026-11-10.md`.
+> **Status (2026-11-10): adopted by Allen (§9), not built. §5a was added after the decisions and is adopted too (§9a).** Design level only: the exact code is decided when each part is built (Allen, 2026-11-10). Nothing here is built. The code facts were read in `crates/null-squad`, `crates/null-botlink`, `crates/null-node/src/spine.rs` and `crates/null-proto` on branch `burst-2026-11-10`. Open items it answers: BUILD_PLAN S3 "Done 2026-10-24", `plans/S6_BRIEF.md`, and the two questions in `plans/BURST_2026-11-10.md`.
 
 ## 1. Why now
 
@@ -58,7 +58,7 @@ A claim today is a set of cells. Physical work needs three things kept apart.
 
 **Bodies are checked by sight, not by claim.** Before a break, the bot checks that the cell does not support a player it can see, and that a player is not inside a cell that the break would fill or flood. With own worlds, other bots are ordinary player entities in the bot's world, so one check covers Null's bots and real players. A claim cannot do this: a body is not in the registry, and a person never is.
 
-## 5a. Path moves that change the world (raised by Allen, 2026-11-10; open)
+## 5a. Path moves that change the world (raised by Allen, 2026-11-10; adopted)
 
 Sometimes the best route, or the only route, needs a change on the way: a block to stand on, a gap bridged, a door opened, a wall dug through. Each of these is a world-changing command, so the permit of rule 1 applies to it. §5 covered walking only.
 
@@ -104,7 +104,7 @@ B4 §4.13 says the miner handles underground hazards itself, and may place a blo
 4. Rule 2 (lease as a length of time): with step 3, since the permit needs it.
 5. §5 and §6 with `mine`: the margin data, the corridor claim, the body check and the shell.
 
-## 9a. Open (§5a)
+## 9a. Decisions on §5a (Allen, 2026-11-10: yes to both)
 
 1. Temporary changes in transit use a transit lease and carry a duty to restore, as in §5a?
 2. Build it with the survival core (step 2), not before `mine`?
