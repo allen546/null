@@ -20,7 +20,7 @@ Sizes are estimates from the names and the vanilla methods, not from a design. N
 | Honey wall | disconnects, pathfinder goes around | honey block side contact | A21 honey | small |
 | Scaffolding | disconnects, pathfinder goes around | scaffolding collision and climb | A21 scaffolding | medium |
 | Bubble column | disconnects, pathfinder goes around | bubble column motion | A21 bubble, A17 `disconnect_in_bubble_column` | medium |
-| Piston faces | disconnects, pathfinder goes around | block push and sticky faces | A21 piston | medium |
+| Piston faces | disconnects, pathfinder goes around | `PistonBaseBlock#triggerEvent` and `#moveBlocks` (the client runs both from one block event), `PistonStructureResolver`, `PistonMovingBlockEntity#tick` | A21 piston | large: the client simulates the whole move, and it needs block-entity state first ([BLOCK_ENTITY_STATE](../proposals/BLOCK_ENTITY_STATE.md)). Stays refused until `mine` or building needs it (Allen, 2026-11-10) |
 | World border contact | disconnects, pathfinder stays out | `WorldBorder` collision | A21 border | medium |
 | Riptide | refuses the use | `TridentItem#releaseUsing`; needs weather state | A20 `refuse_riptide_in_water` | medium |
 | Elytra | refuses the jump | `LocalPlayer#aiStep`, `LivingEntity#updateFallFlying`, `travelFallFlying` | A20 `refuse_elytra_jump_in_air` | large |

@@ -2,6 +2,11 @@
 
 **Historical.** Moved from `OPEN.md` on 2026-10-19 so that OPEN stays a short start page. Each entry is a one-line record; the full reasoning is in `DECISIONS.md` and the specs each entry names. Paths are relative to the repo root unless they start with `specs/`.
 
+## Decided 2026-11-10
+
+- Client level model: with own worlds, a bot's prediction is written into its own `World`, as vanilla's `ClientLevel` does; the patch 53 overlay and `BotWorld` go. It lands as one fork patch directly after the own-worlds patch, before the next pair. `specs/proposals/CLIENT_LEVEL_MODEL.md`.
+- Block-entity state: the audit and the storage design now, the shulker box as the first kind; the piston stays refused until `mine` or building needs it. `specs/proposals/BLOCK_ENTITY_STATE.md`.
+
 ## Decided 2026-11-04
 
 - Swarm world (AD-F5.6): one `World` per bot, one process per machine, sections stored once by content, as git stores objects. The full comparison on a hash match stays until it really becomes the limiting factor. Second leak closed by this once built; `plans/SWARM_WORLD_PROBLEM.md`, `plans/LOAD_CONTRACT.md`.
