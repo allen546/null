@@ -38,7 +38,6 @@ None of these blocks current work. Each has a default.
 | World transformation §7 item 6: access planning (placement options, strict layers, scaffolding temps) for large technical builds | after test T-ACC | adopt; devise something else if unsafe | same, §5.3, §8 |
 | Builder execution model: packet replay, skills or a hybrid | builder build-out | deferred | same, §7 |
 | A rule for conditional mob states (wither, shulker) | when a third case appears | none | GENERALIZATION §0.5 |
-| AD-B2.1 after a death: recovery against quarantine, and whether a death is a hard interrupt | step 2 design | working rule: go back to work, or escalate | DECISIONS |
 | When the commander's load justifies LLM officers | when the commander's context or wake budget overflows | no officers (AD-K5.1) | K5, GENERALIZATION §0.6 |
 
 Nothing else blocks building: all 23 architecture decisions are decided (17) or deferred (6), and unflagged §9 questions in the component specs are measurements or details, deferred to the build by rule (CONVENTIONS, Flags).

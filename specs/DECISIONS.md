@@ -29,7 +29,7 @@ Context used throughout (Allen, 2026-10-13): local testing is per component, not
 | [AD-F5.4](#ad-f54-how-do-skills-read-the-results-of-their-actions) action results | **decided:** action ids; a mailbox per owner, pruned by owner release and end, not by time; a leak guard | (Allen, 2026-10-19) |
 | [AD-F5.5](#ad-f55-how-much-of-the-vanilla-client-does-the-fork-model) client parity | **decided:** a safe envelope in tiers, not full parity; an unmodelled input that moves the bot by itself disconnects it | (Allen, 2026-10-20) |
 | [AD-F5.6](#ad-f56-how-do-the-bots-of-one-process-hold-the-world) swarm world | **decided:** one `World` per bot, in one process, with sections shared by content | (Allen, 2026-11-04) |
-| [AD-B2.1](#ad-b21-what-does-the-swarm-do-after-a-bots-death) after a death | **working rule** (Allen, 2026-10-19): go back to work, or escalate; **open:** recovery against quarantine, and whether a death is a hard interrupt or the skill decides | a step 2 design, or Allen's call |
+| [AD-B2.1](#ad-b21-what-does-the-swarm-do-after-a-bots-death) after a death | **decided** (Allen, 2026-11-10; [proposals/AFTER_DEATH.md](proposals/AFTER_DEATH.md)): a death is always reported and marked; a job resumes by rule; recovery passes four checks. Before that: **working rule** (Allen, 2026-10-19): go back to work, or escalate; **open:** recovery against quarantine, and whether a death is a hard interrupt or the skill decides | a step 2 design, or Allen's call |
 
 ---
 

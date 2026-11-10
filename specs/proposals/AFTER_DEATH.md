@@ -1,6 +1,6 @@
 # After a bot's death: contain always, resume by rule, recover by price
 
-> **Status (2026-11-10): proposal, decisions open (§8).** Design level only. Nothing here is built. It proposes answers to the two points AD-B2.1 leaves open: recovery against quarantine, and who decides after a death. The working rule of 2026-10-19 (go back to work, or escalate; one try per cause; log out under spawn camping) stands and is not repeated. Needed for BUILD_PLAN step 2 (survival core), not for `mine`'s first rows.
+> **Status (2026-11-10): adopted by Allen (§8: yes to all five), not built. This settles AD-B2.1.** Design level only. It gives the answers to the two points AD-B2.1 leaves open: recovery against quarantine, and who decides after a death. The working rule of 2026-10-19 (go back to work, or escalate; one try per cause; log out under spawn camping) stands and is not repeated. Needed for BUILD_PLAN step 2 (survival core), not for `mine`'s first rows.
 
 ## 1. The two open points are one question
 
@@ -69,7 +69,7 @@ A goal's quote already states expected losses, and a stretch can say "no deaths"
 3. The recovery checks in the operation, with C3.
 4. The loss budget, when quotes exist (K7).
 
-## 8. Decisions for Allen
+## 8. Decisions (Allen, 2026-11-10: yes to all five)
 
 1. **A death is always reported and marked,** whatever the skill (§2). Recommended: yes.
 2. **A job resumes only when the skill says `Keep`, the mark does not cover the work, and it is the first death from that cause** (§3). Recommended: yes. This settles "the skill, or the interrupt path": both, in that order.
