@@ -70,7 +70,7 @@ Observation {
 
 - `seen_sight` (Allen, 2026-10-19): a ray from the observer's eye reached the block with nothing in the way (B4 §4.11). It is the only provenance sight mode trusts on servers with anti-x-ray; `seen_chunk_data` for a block no ray reached may be fake there. A sighting stays valid until the cell changes.
 - Observations stay on the node and in the owning operation's shard. Nothing per-block crosses to HQ (§3.7).
-- Bots in one node share Azalea's world storage; F2 adds the timestamps and provenance Azalea doesn't keep.
+- Bots in one node share Azalea's world storage; F2 adds the timestamps and provenance Azalea doesn't keep. *Out of date since AD-F5.6 (2026-11-04): each bot gets its own `World`, and only equal sections are stored once. So one bot's observation is no longer another bot's, and belief is where bots share what they know. Corrected 2026-11-10; the own-worlds patch is not pushed yet.*
 - Azalea discards server game time (`ClientboundSetTime`), light data, block entities and container progress data. F2 records them itself from packet observers (`ReceiveGamePacketEvent`), including the game-time clock behind `at_gt` (Azalea reality check, 2026-10-13).
 
 ### 4.2 Merging beliefs
