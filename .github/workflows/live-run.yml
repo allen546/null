@@ -62,9 +62,11 @@ jobs:
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
       - uses: Swatinem/rust-cache@v2
       # No [patch] here: this builds the fork rev pinned in Cargo.toml, so the run tests the pushed fork head.
+      # No --locked: Cargo.lock is written under the local [patch] (path sources), so cargo adds the fork's
+      # git entries here. The other locked versions stay as they are.
       - name: Build null-abilitycheck
         run: |
-          cargo build --release --locked -p null-abilitycheck
+          cargo build --release -p null-abilitycheck
           mkdir -p "$NULL_HARNESS/bin" "$NULL_HARNESS/logs"
           cp target/release/null-abilitycheck "$NULL_HARNESS/bin/"
       - name: Build the server
