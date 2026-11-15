@@ -58,6 +58,8 @@ None of these fails a row today. Each stays here until it is fixed or closed.
 - `azalea/src/auto_tool.rs:42` and `azalea/src/container.rs:80` still read shared truth; Null does not call them.
 - Place prediction stages 2 and 3 (B6 §4.10): 722 block families are `Unknown`.
 - Fork gaps listed in ABILITY_CHECK "p44 results": `water_fluid_height` uses own height, `travel.rs` patch 38 reads the shared chunk map, `is_face_sturdy` covers full cubes only.
+- Step-up bound (verifier, 2026-11-15, read from code, not tested): vanilla caps the step at 0.6 above the landing box (`Entity#move`); the fork sweeps 0.6 above the start box, so a falling bot can climb a 0.6875 ledge that vanilla refuses. Details in BURST_2026-11-10 "Weak or unproven".
+- Eye in fluid while riding (found 2026-11-15, verifier of patch 66 in `patch-stack-burst`): vanilla's `Entity#updateFluidOnEyes` has a vehicle (boat) case; the fork does not model it. The fork's code comment notes it.
 - `ItemInUse::server_ticks` keeps an inherent error of about one tick either way under load. The shield belief errs long, so it stays safe (F5 §4.6, B5 §4.5).
 - Later: a stubbed vanilla client on Paper + Grim, to compare alerts one for one instead of proving each allowed alert by trace (VD3 may cover this; `specs/reference/grim-a23-resync-loop.md`).
 

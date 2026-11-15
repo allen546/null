@@ -1,0 +1,44 @@
+From 14e8577758d53756ae3e61d7021b00b04331288e Mon Sep 17 00:00:00 2001
+From: bench <bench@local>
+Date: Tue, 10 Nov 2026 00:44:57 +0800
+Subject: [PATCH] null patch: 68-throw-all-compares-item-kind
+
+---
+ azalea-entity/src/inventory.rs | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/azalea-entity/src/inventory.rs b/azalea-entity/src/inventory.rs
+index 27aeaa1..beff124 100644
+--- a/azalea-entity/src/inventory.rs
++++ b/azalea-entity/src/inventory.rs
+@@ -126,7 +126,7 @@ impl Inventory {
+             }
+             after_take(self, slot_index);
+             let same = match (&dropped, self.menu().slot(slot_index)) {
+-                (ItemStack::Present(d), Some(ItemStack::Present(now))) => d.is_same_item_and_components(now),
++                (ItemStack::Present(d), Some(ItemStack::Present(now))) => d.kind == now.kind,
+                 _ => false,
+             };
+             if !all || !same {
+@@ -905,6 +905,18 @@ mod tests {
+         assert_eq!(inv.throw_drops(9, false, |i, _| refill(i, &mut left)), 1, "single throws once");
+         assert_eq!(inv.inventory_menu.slot(9), Some(&ItemStack::new(ItemKind::Stone, 4)));
+ 
++        // a refill of the same item with other components keeps the loop going
++        // (`ItemStack#isSameItem` compares the kind only)
++        let mut inv = player(&[(9, ItemKind::Stone, 4)]);
++        let mut left = 1;
++        let n = inv.throw_drops(9, true, |i, _| {
++            if left > 0 {
++                left -= 1;
++                *i.inventory_menu.slot_mut(9).unwrap() =
++                    ItemStack::new(ItemKind::Stone, 4).with_component(azalea_inventory::components::MapId { id: 1 });
++            }
++        });
++        assert_eq!(n, 2, "same kind, different components: still the same item");
+         // a refill with another item ends the loop
+         let mut inv = player(&[(9, ItemKind::Stone, 4)]);
+         let n = inv.throw_drops(9, true, |i, _| {
+-- 
+2.56.0
+

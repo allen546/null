@@ -1,0 +1,141 @@
+From bbd9adb5a8e7f0eebba178744f65dec8a962c112 Mon Sep 17 00:00:00 2001
+From: bench <bench@local>
+Date: Tue, 10 Nov 2026 00:56:11 +0800
+Subject: [PATCH] null patch: 60-per-entity-systems-where-read
+
+update_fluid_on_eyes runs only for the bot's own entity and update_in_loaded_chunk only for entities marked ReadsInLoadedChunk (nothing in the fork sets it). With one World per bot each bot holds a copy of every other bot, and these two systems were about 40 percent of the CPU that own worlds add. Every reader (mining, auto tool, loading, events) sits on the bot's own entity. Null-only: a user query of InLoadedChunk on mobs no longer finds the flag.
+
+Vanilla: Entity#updateFluidOnEyes runs for every entity, but no client decision reads another entity's value. Grim: no packet depends on a copy's value.
+---
+ .../tests/simulation/copy_systems_skip.rs     | 56 +++++++++++++++++++
+ azalea-client/tests/simulation/mod.rs         |  1 +
+ azalea-entity/src/plugin/mod.rs               | 19 ++++++-
+ 3 files changed, 73 insertions(+), 3 deletions(-)
+ create mode 100644 azalea-client/tests/simulation/copy_systems_skip.rs
+
+diff --git a/azalea-client/tests/simulation/copy_systems_skip.rs b/azalea-client/tests/simulation/copy_systems_skip.rs
+new file mode 100644
+index 0000000..9dbcfcb
+--- /dev/null
++++ b/azalea-client/tests/simulation/copy_systems_skip.rs
+@@ -0,0 +1,56 @@
++use azalea_block::{BlockState, fluid_state::FluidKind};
++use azalea_client::test_utils::prelude::*;
++use azalea_core::position::{BlockPos, ChunkPos, Vec3};
++use azalea_entity::{FluidOnEyes, InLoadedChunk, LookDirection, ReadsInLoadedChunk};
++use azalea_protocol::{
++    common::movements::{PositionMoveRotation, RelativeMovements},
++    packets::{
++        ConnectionProtocol,
++        game::{ClientboundBlockUpdate, ClientboundPlayerPosition},
++    },
++};
++use azalea_registry::builtin::{BlockKind, EntityKind};
++
++// Spec: specs/plans/LOAD_CONTRACT.md "Where the added CPU goes"
++// The fluid-on-eyes and in-loaded-chunk systems run only where a reader exists: the bot's own
++// entity for the fluid, and entities marked `ReadsInLoadedChunk` for the chunk flag. A copy (here
++// a pig) standing in water gets neither. Each skip has its control in the same test.
++#[test]
++fn copies_skip_the_fluid_and_chunk_systems_unless_a_reader_is_marked() {
++    let _lock = init();
++    let mut s = Simulation::new(ConnectionProtocol::Game);
++    s.receive_packet(default_login_packet());
++    s.receive_packet(make_basic_empty_chunk(ChunkPos::new(0, 0), (384 + 64) / 16));
++    for x in 1..=6 {
++        for z in 1..=6 {
++            for y in 63..=68 {
++                s.receive_packet(ClientboundBlockUpdate { pos: BlockPos::new(x, y, z), block_state: BlockState::from(BlockKind::Water) });
++            }
++        }
++    }
++    s.receive_packet(ClientboundPlayerPosition {
++        id: 1,
++        change: PositionMoveRotation { pos: Vec3::new(3.5, 64., 3.5), delta: Vec3::ZERO, look_direction: LookDirection::default() },
++        relative: RelativeMovements::all_absolute(),
++    });
++    let mut pig = make_basic_add_entity(EntityKind::Pig, 50, (4.5, 64., 4.5));
++    pig.uuid = uuid::Uuid::from_u128(20_050);
++    s.receive_packet(pig);
++    for _ in 0..4 {
++        s.tick();
++    }
++    let me = s.entity;
++    let world = s.app.world();
++    let pig = world
++        .get::<azalea_entity::indexing::EntityIdIndex>(me)
++        .unwrap()
++        .get_by_minecraft_entity(azalea_core::entity_id::MinecraftEntityId(50))
++        .expect("the pig is loaded");
++    assert_eq!(**world.get::<FluidOnEyes>(me).unwrap(), FluidKind::Water, "control: the bot's own eyes are in water");
++    assert_eq!(**world.get::<FluidOnEyes>(pig).unwrap(), FluidKind::Empty, "a copy does not run the fluid system");
++    assert!(world.get::<InLoadedChunk>(pig).is_none(), "an unmarked copy gets no chunk flag");
++
++    s.app.world_mut().entity_mut(pig).insert(ReadsInLoadedChunk);
++    s.tick();
++    assert!(s.app.world().get::<InLoadedChunk>(pig).is_some(), "control: a marked entity gets the flag");
++}
+diff --git a/azalea-client/tests/simulation/mod.rs b/azalea-client/tests/simulation/mod.rs
+index bff2a57..aef28c4 100644
+--- a/azalea-client/tests/simulation/mod.rs
++++ b/azalea-client/tests/simulation/mod.rs
+@@ -8,6 +8,7 @@ mod chunks_in_packet_order_at_dimension_change;
+ mod client_disconnect;
+ mod client_refusals;
+ mod close_open_container;
++mod copy_systems_skip;
+ mod correct_movement;
+ mod correct_sneak_movement;
+ mod correct_sprint_sneak_movement;
+diff --git a/azalea-entity/src/plugin/mod.rs b/azalea-entity/src/plugin/mod.rs
+index 767fd74..e39facb 100644
+--- a/azalea-entity/src/plugin/mod.rs
++++ b/azalea-entity/src/plugin/mod.rs
+@@ -104,6 +104,10 @@ pub fn add_dead(
+     }
+ }
+ 
++/// Update [`FluidOnEyes`] of the bots' own entities. Every reader (mining, auto tool) reads a
++/// bot's own entity, and no packet depends on a copy's value, so copies skip it (it was about 40%
++/// of the CPU that own worlds add).
++// Spec: specs/plans/LOAD_CONTRACT.md "Where the added CPU goes"
+ pub fn update_fluid_on_eyes(
+     mut query: Query<
+         (
+@@ -113,7 +117,7 @@ pub fn update_fluid_on_eyes(
+             &WorldName,
+             Option<&BlockStatePredictionHandler>,
+         ),
+-        With<metadata::AbstractLiving>,
++        (With<metadata::AbstractLiving>, With<LocalEntity>),
+     >,
+     worlds: Res<Worlds>,
+ ) {
+@@ -275,13 +279,22 @@ pub fn update_crouching(
+ #[derive(Clone, Component, Copy, Debug)]
+ pub struct InLoadedChunk;
+ 
+-/// Update the [`InLoadedChunk`] component for all entities in the world that are not clients.
++/// Marks a non-client entity whose [`InLoadedChunk`] something reads. Nothing in the fork sets it:
++/// the readers all sit on a bot's own entity, so copies and mobs skip the chunk lookup.
++// Spec: specs/plans/LOAD_CONTRACT.md "Where the added CPU goes"
++#[derive(Clone, Component, Copy, Debug, Default)]
++pub struct ReadsInLoadedChunk;
++
++/// Update the [`InLoadedChunk`] component for the entities marked [`ReadsInLoadedChunk`] that are not clients.
+ /// A client (`LocalEntity`) is loaded when its own client holds the chunk, not when another bot of
+ /// the swarm does: `azalea_client::loading::update_in_loaded_chunk_of_clients` sets it (patch 43).
+ // Spec: specs/F5-version-layer.md §4.6 (What Null computes)
+ pub fn update_in_loaded_chunk(
+     mut commands: bevy_ecs::system::Commands,
+-    query: Query<(Entity, &WorldName, &Position, Option<&InLoadedChunk>), Without<LocalEntity>>,
++    query: Query<
++        (Entity, &WorldName, &Position, Option<&InLoadedChunk>),
++        (Without<LocalEntity>, With<ReadsInLoadedChunk>),
++    >,
+     worlds: Res<Worlds>,
+ ) {
+     for (entity, world_name, position, last_in_loaded_chunk) in &query {
+-- 
+2.56.0
+

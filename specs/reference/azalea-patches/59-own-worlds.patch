@@ -1,0 +1,1946 @@
+From ce57cc42a55b2c4a302d42f4881eaba5f341edd7 Mon Sep 17 00:00:00 2001
+From: bench <bench@local>
+Date: Tue, 10 Nov 2026 00:46:50 +0800
+Subject: [PATCH] null patch: 59-own-worlds
+
+Each bot has its own World: WorldName holds a hidden owner part, so Worlds keeps one World per bot and dimension, as a vanilla client has one level per connection. Every bot parses its own chunk packet (the section store shares equal sections). Other bots are ordinary entities in each bot's world. The shared-world code of patches 31 and 44 that cannot run any more is removed: the chunk-skip, the twin adoption, UpdatedBy and the per-client arbitration, and the bot-to-bot view (PeerView and its readers in pushes, picks, aim, entity clicks and placement). The patch 53 overlay stays.
+
+Vanilla: ClientPacketListener#handleLogin / #handleRespawn (one ClientLevel per connection), #updateLevelChunk, #handleAddEntity, #handleMoveEntity. Grim: every check reads only the packets of its own bot (L4 contract tests).
+---
+ azalea-client/src/plugins/chunks.rs           |  16 +-
+ azalea-client/src/plugins/entity_actions.rs   |  41 +--
+ azalea-client/src/plugins/interact/pick.rs    |  31 +-
+ azalea-client/src/plugins/interpolation.rs    |   5 +-
+ azalea-client/src/plugins/packet/game/mod.rs  | 137 +-------
+ azalea-client/src/plugins/packet/mod.rs       |   6 +-
+ .../src/plugins/packet/relative_updates.rs    |  78 +----
+ azalea-client/src/plugins/place_prediction.rs |  19 +-
+ azalea-client/src/plugins/pushes.rs           |  22 +-
+ .../tests/simulation/bot_login_twin.rs        |  36 +-
+ .../tests/simulation/entity_interpolation.rs  | 128 +------
+ .../tests/simulation/entity_pushes.rs         |  69 +---
+ azalea-client/tests/simulation/l4_contract.rs | 222 ++++++++++++
+ azalea-client/tests/simulation/mod.rs         |   1 +
+ .../simulation/shared_world_prediction.rs     |   4 +
+ azalea-entity/src/interpolation.rs            | 329 +-----------------
+ azalea-entity/src/plugin/indexing.rs          |  32 +-
+ azalea-world/src/container.rs                 |  19 +-
+ 18 files changed, 324 insertions(+), 871 deletions(-)
+ create mode 100644 azalea-client/tests/simulation/l4_contract.rs
+
+diff --git a/azalea-client/src/plugins/chunks.rs b/azalea-client/src/plugins/chunks.rs
+index 24c5e72..3bbfe1e 100644
+--- a/azalea-client/src/plugins/chunks.rs
++++ b/azalea-client/src/plugins/chunks.rs
+@@ -97,19 +97,9 @@ pub fn handle_receive_chunk_event(
+         let mut world = local_player.shared.write();
+         let mut partial_world = local_player.partial.write();
+ 
+-        // OPTIMIZATION: if we already know about the chunk from the shared world (and
+-        // not ourselves), then we don't need to parse it again. This is only used when
+-        // we have a shared world, since we check that the chunk isn't currently owned
+-        // by this client.
+-        let shared_chunk = world.chunks.get(&pos);
+-        let this_client_has_chunk = partial_world.chunks.limited_get(&pos).is_some();
+-
+-        if !this_client_has_chunk && let Some(shared_chunk) = shared_chunk {
+-            trace!("Skipping parsing chunk {pos:?} because we already know about it");
+-            partial_world.chunks.limited_set(&pos, Some(shared_chunk));
+-            continue;
+-        }
+-
++        // Every bot parses its own packet: a bot links a section only when its own packet held
++        // the same content (section store), never because another bot had the chunk.
++        // Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 4
+         let heightmaps = &event.packet.chunk_data.heightmaps;
+ 
+         if let Err(e) = partial_world.chunks.replace_with_packet_data(
+diff --git a/azalea-client/src/plugins/entity_actions.rs b/azalea-client/src/plugins/entity_actions.rs
+index 3492671..c796f71 100644
+--- a/azalea-client/src/plugins/entity_actions.rs
++++ b/azalea-client/src/plugins/entity_actions.rs
+@@ -38,7 +38,7 @@ use azalea_core::{
+ };
+ use azalea_entity::{
+     Attributes, Crouching, metadata::{AbstractAgeableBaby, Tamed}, LookDirection, Physics, Position, dimensions::EntityDimensions,
+-    indexing::EntityIdIndex, interpolation::PeerView, inventory::Inventory, EntityKindComponent,
++    indexing::EntityIdIndex, inventory::Inventory, EntityKindComponent,
+     view_vector,
+ };
+ use azalea_physics::{
+@@ -521,7 +521,6 @@ fn crosshair(
+     attrs: &Attributes,
+     aabb_query: &AabbQuery,
+     pickable: &MaybePickableEntityQuery,
+-    peers: Option<&PeerView>,
+ ) -> HitResult {
+     let world = match pending {
+         Some(pending) => azalea_world::BotWorld::new(world, pending),
+@@ -537,7 +536,6 @@ fn crosshair(
+         block_pick_range: attrs.block_interaction_range.calculate(),
+         aabb_query,
+         pickable_query: pickable,
+-        peers,
+     })
+ }
+ 
+@@ -555,35 +553,26 @@ pub fn handle_look_at_entity_queued(
+         &Attributes,
+         &Physics,
+         &EntityIdIndex,
+-        Option<&mut PeerView>,
+     )>,
+     boxes: Query<&LastBoundingBox>,
+     aabb_query: AabbQuery,
+     pickable: MaybePickableEntityQuery,
+     pendings: Query<&azalea_world::BlockStatePredictionHandler>,
+ ) {
+-    for (entity, queued, mut look, world, position, dims, attrs, physics, ids, mut peers) in &mut query {
++    for (entity, queued, mut look, world, position, dims, attrs, physics, ids) in &mut query {
+         commands.entity(entity).remove::<LookAtEntityQueued>();
+         let Some(target) = ids.get_by_minecraft_entity(MinecraftEntityId(queued.entity_id)) else {
+             continue;
+         };
+-        // Patch 31: another bot is aimed at where this bot sees it, and stays in the view.
+-        if let Some(view) = peers.as_deref_mut() {
+-            view.set_aim_target(target);
+-        }
+-        let view = peers.as_deref();
+-        let target_box = match view.and_then(|v| v.get(target)) {
+-            Some(entry) => entry.bounding_box,
+-            None => match boxes.get(target) {
+-                Ok(b) => b.0,
+-                Err(_) => continue,
+-            },
++        let target_box = match boxes.get(target) {
++            Ok(b) => b.0,
++            Err(_) => continue,
+         };
+         let eye = position.up(dims.eye_height.into());
+         let world = world.shared.read();
+         let current = *look;
+         let aim = aim_at_entity(eye, &target_box, current, target, |l| {
+-            crosshair(entity, l, eye, &physics.bounding_box, &world, pendings.get(entity).ok(), attrs, &aabb_query, &pickable, view)
++            crosshair(entity, l, eye, &physics.bounding_box, &world, pendings.get(entity).ok(), attrs, &aabb_query, &pickable)
+         });
+         if let Some(aim) = aim {
+             look.update(aim);
+@@ -627,7 +616,7 @@ pub fn handle_use_entity_queued(
+         (&mut ClientMovementState, Option<&Crouching>, Has<AutoCrouchHold>),
+         &mut LookDirection,
+         (Has<OpenScreen>, Has<Mining>, Has<ItemInUse>, Has<DeathScreen>),
+-        (&Inventory, Option<&LocalGameMode>, Option<&mut PeerView>),
++        (&Inventory, Option<&LocalGameMode>),
+         &TicksConnected,
+     )>,
+     entities: EvidenceEntities,
+@@ -655,7 +644,7 @@ pub fn handle_use_entity_queued(
+         (mut mv, crouching, holding),
+         mut look,
+         (screen, mining, using, dead),
+-        (inv, game_mode, mut peers),
++        (inv, game_mode),
+         connected,
+     ) in &mut query
+     {
+@@ -674,26 +663,18 @@ pub fn handle_use_entity_queued(
+             refuse(&mut commands, entity, holding, &mut mv, &mut results, id, EntityUseRefusal::Spectator, None);
+             continue;
+         }
+-        // Patch 31: another bot is clicked at the position and box this bot sees it at.
+         let Some((target, (kind, target_position, target_box, facts))) = ids
+             .get_by_minecraft_entity(MinecraftEntityId(id))
+             .and_then(|e| {
+                 targets.get(e).ok().map(|(k, p, b, baby, tamed)| {
+                     let facts = MountFacts { baby: baby.map(|b| b.0), tamed: tamed.map(|t| t.0) };
+-                    match peers.as_deref().and_then(|v| v.get(e)) {
+-                        Some(entry) => (e, (k.0, entry.position, entry.bounding_box, facts)),
+-                        None => (e, (k.0, **p, b.0, facts)),
+-                    }
++                    (e, (k.0, **p, b.0, facts))
+                 })
+             })
+         else {
+             refuse(&mut commands, entity, holding, &mut mv, &mut results, id, EntityUseRefusal::UnknownEntity, None);
+             continue;
+         };
+-        if let Some(view) = peers.as_deref_mut() {
+-            view.set_aim_target(target);
+-        }
+-        let view = peers.as_deref();
+         let secondary = is_crouching(&mv, crouching);
+         let plan = entity_use_plan_with(kind, secondary, facts);
+         if plan == EntityUsePlan::Unsupported {
+@@ -702,7 +683,7 @@ pub fn handle_use_entity_queued(
+         }
+         let world = world.shared.read();
+         let eye = position.up(dims.eye_height.into());
+-        let hit = crosshair(entity, *look, eye, &physics.bounding_box, &world, pendings.get(entity).ok(), attrs, &aabb_query, &pickable, view);
++        let hit = crosshair(entity, *look, eye, &physics.bounding_box, &world, pendings.get(entity).ok(), attrs, &aabb_query, &pickable);
+         let range = attrs.entity_interaction_range.calculate();
+         let checked = check_entity_click(eye, view_vector(*look), range, target, &target_box, &hit);
+         // Patch 28: what this check saw, kept for a refusal. The pick above is fresh, so the hit
+@@ -737,7 +718,7 @@ pub fn handle_use_entity_queued(
+             let crouched_eye = position.up(CROUCH_EYE_HEIGHT);
+             let current = *look;
+             let aim = aim_at_entity(crouched_eye, &target_box, current, target, |l| {
+-                crosshair(entity, l, crouched_eye, &physics.bounding_box, &world, pendings.get(entity).ok(), attrs, &aabb_query, &pickable, view)
++                crosshair(entity, l, crouched_eye, &physics.bounding_box, &world, pendings.get(entity).ok(), attrs, &aabb_query, &pickable)
+             });
+             if let Some(aim) = aim {
+                 look.update(aim);
+diff --git a/azalea-client/src/plugins/interact/pick.rs b/azalea-client/src/plugins/interact/pick.rs
+index 7f1fb9d..42bfc5e 100644
+--- a/azalea-client/src/plugins/interact/pick.rs
++++ b/azalea-client/src/plugins/interact/pick.rs
+@@ -8,7 +8,6 @@ use azalea_core::{
+ use azalea_entity::{
+     Attributes, Dead, LocalEntity, LookDirection, Physics, Position,
+     dimensions::EntityDimensions,
+-    interpolation::PeerView,
+     metadata::{
+         AbstractArrow, AbstractBoat, AbstractLiving, AbstractMinecart, ArmorStand,
+         ArmorStandMarker, EndCrystal, FallingBlock, InGround, Interaction, ShulkerBullet, Tnt,
+@@ -62,7 +61,6 @@ pub fn update_hit_result_component(
+             &WorldName,
+             &Physics,
+             &Attributes,
+-            Option<&PeerView>,
+             &BlockStatePredictionHandler,
+         ),
+         With<LocalEntity>,
+@@ -71,7 +69,7 @@ pub fn update_hit_result_component(
+     aabb_query: AabbQuery,
+     pickable_query: MaybePickableEntityQuery,
+ ) {
+-    for (entity, hit_result_ref, position, dimensions, look_direction, world_name, physics, attributes, peers, pending) in
++    for (entity, hit_result_ref, position, dimensions, look_direction, world_name, physics, attributes, pending) in
+         &mut query
+     {
+         let Some(hit_result) = cast_hit_result(
+@@ -82,7 +80,6 @@ pub fn update_hit_result_component(
+             world_name,
+             physics,
+             attributes,
+-            peers,
+             pending,
+             &worlds,
+             &aabb_query,
+@@ -133,7 +130,6 @@ pub fn insert_initial_hit_result_component(
+             world_name,
+             physics,
+             attributes,
+-            None,
+             pending,
+             &worlds,
+             &aabb_query,
+@@ -155,7 +151,6 @@ fn cast_hit_result(
+     world_name: &WorldName,
+     physics: &Physics,
+     attributes: &Attributes,
+-    peers: Option<&PeerView>,
+     pending: &BlockStatePredictionHandler,
+     worlds: &Worlds,
+     aabb_query: &AabbQuery,
+@@ -177,7 +172,6 @@ fn cast_hit_result(
+         block_pick_range,
+         aabb_query,
+         pickable_query,
+-        peers,
+     }))
+ }
+ 
+@@ -218,9 +212,6 @@ pub struct PickOpts<'world, 'state, 'a, 'b, 'c> {
+     pub block_pick_range: f64,
+     pub aabb_query: &'a AabbQuery<'world, 'state, 'b>,
+     pub pickable_query: &'a MaybePickableEntityQuery<'world, 'state, 'c>,
+-    /// The picking bot's view of the other bots (patch 31): a bot in it is picked at the
+-    /// smoothed box this bot sees, not at the other bot's own.
+-    pub peers: Option<&'a PeerView>,
+ }
+ 
+ /// Get the block or entity that a player would be looking at if their eyes were
+@@ -297,7 +288,6 @@ pub fn pick(opts: PickOpts<'_, '_, '_, '_, '_>) -> HitResult {
+         predicate: &is_pickable,
+         aabb: &pick_aabb,
+         aabb_query: opts.aabb_query,
+-        peers: opts.peers,
+     });
+ 
+     if let Some(entity_hit_result) = entity_hit_result
+@@ -430,7 +420,6 @@ struct PickEntityOpts<'world, 'state, 'a, 'b> {
+     predicate: &'a dyn Fn(Entity) -> bool,
+     aabb: &'a Aabb,
+     aabb_query: &'a AabbQuery<'world, 'state, 'b>,
+-    peers: Option<&'a PeerView>,
+ }
+ 
+ // port of getEntityHitResult
+@@ -438,27 +427,13 @@ fn pick_entity(opts: PickEntityOpts) -> Option<EntityHitResult> {
+     let mut picked_distance_squared = opts.pick_range_squared;
+     let mut result = None;
+ 
+-    // Patch 31: a bot in the picking bot's view is a candidate at the box in that view; the world
+-    // lookup skips it (it would give the other bot's own box).
+-    let in_view = |e: Entity| opts.peers.is_some_and(|v| v.contains(e));
+-    let world_predicate = |e: Entity| !in_view(e) && (opts.predicate)(e);
+-    let mut candidates = get_entities(
++    let candidates = get_entities(
+         opts.world,
+         Some(opts.source_entity),
+         opts.aabb,
+-        &world_predicate,
++        opts.predicate,
+         opts.aabb_query,
+     );
+-    if let Some(view) = opts.peers {
+-        for (peer, entry) in view.iter() {
+-            if peer != opts.source_entity
+-                && (opts.predicate)(peer)
+-                && opts.aabb.intersects_aabb(&entry.bounding_box)
+-            {
+-                candidates.push((peer, entry.bounding_box));
+-            }
+-        }
+-    }
+     for (candidate, candidate_aabb) in candidates {
+         // TODO: if the entity is "REDIRECTABLE_PROJECTILE" then this should be 1.0.
+         // azalea needs support for entity tags first for this to be possible. see
+diff --git a/azalea-client/src/plugins/interpolation.rs b/azalea-client/src/plugins/interpolation.rs
+index 547e4aa..f23891d 100644
+--- a/azalea-client/src/plugins/interpolation.rs
++++ b/azalea-client/src/plugins/interpolation.rs
+@@ -1,4 +1,4 @@
+-//! Interpolation of other entities and the bot-to-bot view (fork patch 31).
++//! Interpolation of other entities (fork patch 31).
+ //!
+ //! Vanilla 1.21.11: `Minecraft#tick` applies the tick's packets, casts the crosshair ray
+ //! (`GameRenderer#pick`), handles the clicks (`handleKeybinds`), and only then ticks the entities
+@@ -11,7 +11,7 @@
+ //! Spec: specs/F5-version-layer.md §4.6 (What Null computes), specs/B1-movement.md §4.2
+ 
+ use azalea_core::tick::GameTick;
+-use azalea_entity::interpolation::{interpolate_entities, update_peer_views};
++use azalea_entity::interpolation::interpolate_entities;
+ use azalea_physics::{PhysicsSystems, collision::entity_collisions::update_last_bounding_box};
+ use bevy_app::{App, Plugin};
+ use bevy_ecs::prelude::*;
+@@ -23,7 +23,6 @@ impl Plugin for InterpolationPlugin {
+             GameTick,
+             (
+                 interpolate_entities,
+-                update_peer_views,
+                 // `LastBoundingBox` mirrors `Physics::bounding_box`; refresh it now, not in the
+                 // next `Update`, so the box does not lag a tick behind the position.
+                 update_last_bounding_box,
+diff --git a/azalea-client/src/plugins/packet/game/mod.rs b/azalea-client/src/plugins/packet/game/mod.rs
+index b64f2e3..2da82db 100644
+--- a/azalea-client/src/plugins/packet/game/mod.rs
++++ b/azalea-client/src/plugins/packet/game/mod.rs
+@@ -9,7 +9,7 @@ use azalea_core::{
+     position::{ChunkPos, Vec3},
+ };
+ use azalea_entity::{
+-    interpolation::{PeerEntry, PeerView, SNAP_DISTANCE_SQ, apply_server_pose},
++    interpolation::{SNAP_DISTANCE_SQ, apply_server_pose},
+     unmodelled::{RidingVehicle, WorldBorderState},
+     Attributes, Dead, EntityBundle, EntityKindComponent, HasClientLoaded, LoadedBy, LocalEntity, LookDirection,
+     Physics, PlayerAbilities, Position,
+@@ -47,7 +47,7 @@ use crate::{
+     movement::{KnockbackData, KnockbackEvent},
+     packet::{
+         as_system, declare_packet_handlers,
+-        relative_updates::{EntityUpdateQuery, RelativeEntityUpdate, UpdatedBy, should_apply_entity_update},
++        relative_updates::{EntityUpdateQuery, RelativeEntityUpdate, should_apply_entity_update},
+     },
+     player::{GameProfileComponent, PlayerInfo},
+     tick_counter::TicksConnected,
+@@ -210,29 +210,6 @@ pub struct GamePacketHandler<'a> {
+     pub player: Entity,
+ }
+ impl GamePacketHandler<'_> {
+-    /// Patch 31: a packet about another bot. The bot's own client owns its position, so the packet
+-    /// feeds this bot's smoothed view of it instead (`PeerView`). Returns true when the target is
+-    /// another bot (handled here, even if this bot keeps no view of it: it is out of the radius).
+-    // Spec: specs/F5-version-layer.md §4.6 (What Null computes)
+-    fn for_peer(&mut self, id: MinecraftEntityId, f: impl FnOnce(&mut PeerEntry)) -> bool {
+-        let Some(target) = self
+-            .ecs
+-            .get::<EntityIdIndex>(self.player)
+-            .and_then(|ids| ids.get_by_minecraft_entity(id))
+-        else {
+-            return false;
+-        };
+-        if target == self.player || self.ecs.get::<LocalEntity>(target).is_none() {
+-            return false;
+-        }
+-        if let Some(mut view) = self.ecs.get_mut::<PeerView>(self.player)
+-            && let Some(entry) = view.get_mut(target)
+-        {
+-            f(entry);
+-        }
+-        true
+-    }
+-
+     // Spec: specs/F5-version-layer.md §4.6 (What Null computes)
+     pub fn login(&mut self, p: &ClientboundLogin) {
+         debug!("Got login packet");
+@@ -273,7 +250,7 @@ impl GamePacketHandler<'_> {
+                     mut world_holder,
+                 ) = query.get_mut(self.player).unwrap();
+ 
+-                let new_world_name = WorldName(p.common.dimension.clone());
++                let new_world_name = WorldName::for_bot(p.common.dimension.clone(), self.player);
+ 
+                 if let Some(mut world_name) = world_name {
+                     *world_name = new_world_name.clone();
+@@ -347,21 +324,6 @@ impl GamePacketHandler<'_> {
+                     azalea_entity::push::PushRecord::default(),
+                 ));
+ 
+-                // Patch 44: the server may have announced this bot to an earlier bot of the swarm
+-                // before this Login. That bot then holds a plain player entity with this id (a
+-                // twin). Vanilla has one entity per id, so this Login adopts the twin.
+-                let shared = world_holder.shared.clone();
+-                let twin = shared
+-                    .read()
+-                    .entity_by_id
+-                    .get(&p.player_id)
+-                    .copied()
+-                    .filter(|&e| e != self.player && loaded_by_query.contains(e));
+-                let adopted_by: HashSet<Entity> = twin
+-                    .and_then(|t| loaded_by_query.get(t).ok())
+-                    .map(|l| l.0.clone())
+-                    .unwrap_or_default();
+-
+                 // Patch 32: a login starts the tick order again, with the player first
+                 // (`handleLogin` adds the local player before any other entity).
+                 entity_id_index.tick_order_mut().clear();
+@@ -379,28 +341,13 @@ impl GamePacketHandler<'_> {
+                     loaded_by.remove(&self.player);
+                 }
+ 
+-                // update or insert loaded_by (the clients that held the twin hold this bot now)
++                // update or insert loaded_by
+                 if let Some(mut loaded_by) = loaded_by {
+                     loaded_by.insert(self.player);
+-                    loaded_by.extend(adopted_by.iter().copied());
+                 } else {
+-                    let mut holders = adopted_by.clone();
+-                    holders.insert(self.player);
+-                    commands.entity(self.player).insert(LoadedBy(holders));
+-                }
+-
+-                if let Some(twin) = twin {
+-                    // Every client that held the twin now holds this bot's own entity, in the
+-                    // same tick-order place; the twin leaves the chunk index and the ECS.
+-                    for &holder in &adopted_by {
+-                        if let Ok((_, _, _, _, mut index, _)) = query.get_mut(holder) {
+-                            index.replace_entity(entity_id, twin, self.player);
+-                        }
+-                    }
+-                    for entities in shared.write().entities_by_chunk.values_mut() {
+-                        entities.remove(&twin);
+-                    }
+-                    commands.entity(twin).despawn();
++                    commands
++                        .entity(self.player)
++                        .insert(LoadedBy(HashSet::from([self.player])));
+                 }
+             },
+         );
+@@ -658,8 +605,7 @@ impl GamePacketHandler<'_> {
+             Query<Entity>,
+             Res<Worlds>,
+             ResMut<EntityUuidIndex>,
+-            Query<(Option<&UpdatedBy>, Has<LocalEntity>)>,
+-            Query<&mut PeerView>,
++            Query<Has<LocalEntity>>,
+         )>(
+             self.ecs,
+             |(
+@@ -669,8 +615,7 @@ impl GamePacketHandler<'_> {
+                 entity_query,
+                 worlds,
+                 mut entity_uuid_index,
+-                updated_by_query,
+-                mut peer_views,
++                local_query,
+             )| {
+                 let (mut entity_id_index, world_name, tab_list) =
+                     query.get_mut(self.player).unwrap();
+@@ -703,28 +648,13 @@ impl GamePacketHandler<'_> {
+                         }
+                         return;
+                     };
+-                    // Null fork: if no client still tracking it drives its updates, the
+-                    // stored position is stale (respawn, teleport, back in range); take
+-                    // the absolute one from this packet.
+-                    // Never for a local entity: another bot in our swarm owns its own position.
+-                    let (updated_by, local) = updated_by_query.get(ecs_entity).unwrap_or((None, true));
+-                    let driven = updated_by.is_some_and(|u| u.0 != self.player && loaded_by.contains(&u.0));
+-                    if local && ecs_entity != self.player {
+-                        // Patch 31: another bot. Its own client owns its position; this bot's
+-                        // view of it takes the packet's (`recreateFromPacket`: set at once).
+-                        let look: LookDirection =
+-                            CompactLookDirection { y_rot: p.y_rot, x_rot: p.x_rot }.into();
+-                        if let Ok(mut view) = peer_views.get_mut(self.player)
+-                            && let Some(entry) = view.get_mut(ecs_entity)
+-                        {
+-                            entry.on_add(p.position, (look.y_rot(), look.x_rot()));
+-                        }
+-                    } else if !driven && !local {
++                    let local = local_query.get(ecs_entity).unwrap_or(true);
++                    // The entity is in this bot's own world, so only this bot's packets move it.
++                    // A packet that adds it again sets its position at once (`recreateFromPacket`)
++                    // and ends any interpolation run. Never for the bot's own entity.
++                    if !local {
+                         let pos = p.position;
+-                        commands.entity(ecs_entity).insert(UpdatedBy(self.player));
+                         commands.entity(ecs_entity).queue(move |mut e: EntityWorldMut| {
+-                            // Patch 31: `recreateFromPacket` sets the position at once and ends
+-                            // any interpolation run.
+                             apply_server_pose(&mut e, Some(pos), None, true);
+                             if let Some(mut physics) = e.get_mut::<Physics>() {
+                                 physics.vec_delta_codec.set_base(pos);
+@@ -883,7 +813,6 @@ impl GamePacketHandler<'_> {
+             // this is to make sure the same entity velocity update doesn't get sent
+             // multiple times when in swarms
+             if should_apply_entity_update(
+-                &mut commands,
+                 &mut world_holder.partial.write(),
+                 entity,
+                 entity_update_query,
+@@ -976,25 +905,6 @@ impl GamePacketHandler<'_> {
+     pub fn teleport_entity(&mut self, p: &ClientboundTeleportEntity) {
+         debug!("Got teleport entity packet {p:?}");
+ 
+-        let handled = self.for_peer(p.id, |entry| {
+-            let r = &p.relative;
+-            let rel = |base: f64, relative: bool, change: f64| if relative { base + change } else { change };
+-            let pos = Vec3::new(
+-                rel(entry.position.x, r.x, p.change.pos.x),
+-                rel(entry.position.y, r.y, p.change.pos.y),
+-                rel(entry.position.z, r.z, p.change.pos.z),
+-            );
+-            let (y_rot, x_rot) = entry.rot();
+-            let look = LookDirection::new(
+-                rel(y_rot as f64, r.y_rot, p.change.look_direction.y_rot() as f64) as f32,
+-                rel(x_rot as f64, r.x_rot, p.change.look_direction.x_rot() as f64) as f32,
+-            );
+-            entry.on_teleport(pos, (look.y_rot(), look.x_rot()));
+-        });
+-        if handled {
+-            return;
+-        }
+-
+         as_system::<(Commands, Query<(&EntityIdIndex, &WorldHolder)>)>(
+             self.ecs,
+             |(mut commands, query)| {
+@@ -1034,9 +944,6 @@ impl GamePacketHandler<'_> {
+     pub fn rotate_head(&mut self, _p: &ClientboundRotateHead) {}
+ 
+     pub fn move_entity_pos(&mut self, p: &ClientboundMoveEntityPos) {
+-        if self.for_peer(p.entity_id, |e| e.on_move(Some(&p.delta), None)) {
+-            return;
+-        }
+         as_system::<(
+             Commands,
+             Query<(&EntityIdIndex, &WorldHolder)>,
+@@ -1062,9 +969,6 @@ impl GamePacketHandler<'_> {
+         );
+     }
+     pub fn move_entity_pos_rot(&mut self, p: &ClientboundMoveEntityPosRot) {
+-        if self.for_peer(p.entity_id, |e| e.on_move(Some(&p.delta), Some({ let l = LookDirection::from(p.look_direction); (l.y_rot(), l.x_rot()) }))) {
+-            return;
+-        }
+         as_system::<(
+             Commands,
+             Query<(&EntityIdIndex, &WorldHolder)>,
+@@ -1090,9 +994,6 @@ impl GamePacketHandler<'_> {
+         );
+     }
+     pub fn move_entity_rot(&mut self, p: &ClientboundMoveEntityRot) {
+-        if self.for_peer(p.entity_id, |e| e.on_move(None, Some({ let l = LookDirection::from(p.look_direction); (l.y_rot(), l.x_rot()) }))) {
+-            return;
+-        }
+         as_system::<(
+             Commands,
+             Query<(&EntityIdIndex, &WorldHolder)>,
+@@ -1292,7 +1193,6 @@ impl GamePacketHandler<'_> {
+             };
+ 
+             if !should_apply_entity_update(
+-                &mut commands,
+                 &mut world_holder.partial.write(),
+                 entity,
+                 entity_update_query,
+@@ -1598,7 +1498,6 @@ impl GamePacketHandler<'_> {
+             };
+ 
+             if !should_apply_entity_update(
+-                &mut commands,
+                 &mut world_holder.partial.write(),
+                 entity,
+                 entity_update_query,
+@@ -1706,7 +1605,7 @@ impl GamePacketHandler<'_> {
+                 };
+                 let old_attributes = old_attributes.cloned();
+ 
+-                let new_world_name = WorldName(p.common.dimension.clone());
++                let new_world_name = WorldName::for_bot(p.common.dimension.clone(), self.player);
+                 // Patch 32, `handleRespawn`: a respawn in the same dimension adds the new local
+                 // player to the same level, so it moves to the end of the tick order; another
+                 // dimension builds a new level with an empty list, so the player is first again.
+@@ -1831,10 +1730,6 @@ impl GamePacketHandler<'_> {
+     // entity as ticking, so the "not in the tick list: snap" case is not modelled.
+     // Spec: specs/F5-version-layer.md §4.6 (What Null computes)
+     pub fn entity_position_sync(&mut self, p: &ClientboundEntityPositionSync) {
+-        let look = p.values.look_direction;
+-        if self.for_peer(p.id, |e| e.on_position_sync(p.values.pos, (look.y_rot(), look.x_rot()))) {
+-            return;
+-        }
+         as_system::<(
+             Commands,
+             Query<(&EntityIdIndex, &WorldHolder)>,
+@@ -1859,7 +1754,6 @@ impl GamePacketHandler<'_> {
+                 let new_look_direction = p.values.look_direction;
+ 
+                 if !should_apply_entity_update(
+-                    &mut commands,
+                     &mut world_holder.partial.write(),
+                     entity,
+                     entity_update_query,
+@@ -2121,7 +2015,6 @@ fn move_entity(
+     };
+ 
+     if !should_apply_entity_update(
+-        &mut commands,
+         &mut world_holder.partial.write(),
+         entity,
+         entity_update_query,
+diff --git a/azalea-client/src/plugins/packet/mod.rs b/azalea-client/src/plugins/packet/mod.rs
+index f5fc270..c1c1d6e 100644
+--- a/azalea-client/src/plugins/packet/mod.rs
++++ b/azalea-client/src/plugins/packet/mod.rs
+@@ -78,11 +78,7 @@ pub fn death_event_on_0_health(
+ 
+ impl Plugin for PacketPlugin {
+     fn build(&self, app: &mut App) {
+-        app.add_systems(
+-            Update,
+-            relative_updates::debug_detect_updates_received_on_local_entities,
+-        )
+-        .add_observer(game::handle_outgoing_packets_observer)
++        app.add_observer(game::handle_outgoing_packets_observer)
+         .add_observer(config::handle_outgoing_packets_observer)
+         .add_observer(login::handle_outgoing_packets_observer)
+         .add_systems(
+diff --git a/azalea-client/src/plugins/packet/relative_updates.rs b/azalea-client/src/plugins/packet/relative_updates.rs
+index cd98193..71db747 100644
+--- a/azalea-client/src/plugins/packet/relative_updates.rs
++++ b/azalea-client/src/plugins/packet/relative_updates.rs
+@@ -1,23 +1,16 @@
+-// How entity updates are processed (to avoid issues with shared worlds)
+-// - Null fork: one client at a time, recorded in `UpdatedBy`, applies relative
+-//   updates for each non-local entity; packets for it from other clients are
+-//   ignored.
+-// - when the updater stops tracking the entity (it leaves the updater's
+-//   `LoadedBy`), the next client that gets an update for it takes over.
+-// - the old per-client counters were never synced when a client loaded an
+-//   entity, so after the leading client died or moved away, no client could
+-//   update the entity and it froze in place.
++// How entity updates are processed. Each bot has its own world and its own copy of every entity
++// (specs/plans/LOAD_CONTRACT.md "Swarm world design" item 1), so a bot applies the updates in
++// its own packets and no arbitration between clients is needed.
+ 
+ use std::sync::Arc;
+ 
+ use azalea_core::entity_id::MinecraftEntityId;
+-use azalea_entity::LoadedBy;
+ use azalea_entity::LocalEntity;
+ use azalea_world::PartialWorld;
+ use bevy_ecs::prelude::*;
+ use derive_more::{Deref, DerefMut};
+ use parking_lot::RwLock;
+-use tracing::{debug, warn};
++use tracing::debug;
+ 
+ use crate::packet::as_system;
+ 
+@@ -59,32 +52,15 @@ impl RelativeEntityUpdate {
+ #[derive(Component, Debug, Deref, DerefMut)]
+ pub struct UpdatesReceived(u32);
+ 
+-/// The client whose packets currently drive this entity's relative updates.
+-///
+-/// Null fork: replaces the per-client update counters, which froze an entity
+-/// for every client once the client that was ahead stopped receiving updates
+-/// for it (it died, respawned, disconnected or moved out of range). Another
+-/// client takes over as soon as the updater no longer has it in `LoadedBy`.
+-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+-pub struct UpdatedBy(pub Entity);
+-
+-pub type EntityUpdateQuery<'world, 'state, 'a> = Query<
+-    'world,
+-    'state,
+-    (
+-        &'a MinecraftEntityId,
+-        Option<&'a UpdatedBy>,
+-        Option<&'a LoadedBy>,
+-        Option<&'a LocalEntity>,
+-    ),
+->;
++pub type EntityUpdateQuery<'world, 'state, 'a> =
++    Query<'world, 'state, (&'a MinecraftEntityId, Option<&'a LocalEntity>)>;
+ 
+ /// See [`RelativeEntityUpdate`] for details.
++// Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 1
+ ///
+ /// Calling this function will have the same effect as using the Command, but
+ /// it's more performant than the Command.
+ pub fn should_apply_entity_update(
+-    commands: &mut Commands,
+     partial_world: &mut PartialWorld,
+     entity: Entity,
+     entity_update_query: EntityUpdateQuery,
+@@ -96,35 +72,16 @@ pub fn should_apply_entity_update(
+         return true;
+     };
+ 
+-    let Ok((_minecraft_entity_id, updated_by, loaded_by, local_entity)) =
+-        entity_update_query.get(entity)
+-    else {
++    let Ok((_minecraft_entity_id, local_entity)) = entity_update_query.get(entity) else {
+         // this can happen when the entity despawns in the same Update that we got a
+         // relative update for it
+         debug!("called should_apply_entity_update on an entity with missing components {entity:?}");
+         return false;
+     };
+ 
+-    if local_entity.is_some() {
+-        // a client tried to update another client, which isn't allowed
+-        return false;
+-    }
+-
+-    let Some(this_client) = partial_entity_infos.owner_entity else {
+-        // a world with no owner (tests): there is only one source of updates
+-        return true;
+-    };
+-
+-    let can_update = match updated_by {
+-        None => true,
+-        Some(UpdatedBy(c)) if *c == this_client => true,
+-        // the updater no longer tracks this entity, so its packets stopped
+-        Some(UpdatedBy(c)) => !loaded_by.is_some_and(|l| l.contains(c)),
+-    };
+-    if can_update && updated_by != Some(&UpdatedBy(this_client)) {
+-        commands.entity(entity).insert(UpdatedBy(this_client));
+-    }
+-    can_update
++    // A client never moves another client's entity. Every other entity is in this bot's own
++    // world, so this bot's packets are the only source of its updates.
++    local_entity.is_none()
+ }
+ 
+ impl EntityCommand for RelativeEntityUpdate {
+@@ -134,9 +91,8 @@ impl EntityCommand for RelativeEntityUpdate {
+         let entity = entity_mut.id();
+ 
+         entity_mut.world_scope(|ecs| {
+-            as_system::<(Commands, EntityUpdateQuery)>(ecs, |(mut commands, query)| {
++            as_system::<EntityUpdateQuery>(ecs, |query| {
+                 should_update = should_apply_entity_update(
+-                    &mut commands,
+                     &mut partial_world.write(),
+                     entity,
+                     query,
+@@ -149,13 +105,3 @@ impl EntityCommand for RelativeEntityUpdate {
+         }
+     }
+ }
+-
+-/// A system that logs a warning if an entity has both [`UpdatedBy`]
+-/// and [`LocalEntity`].
+-pub fn debug_detect_updates_received_on_local_entities(
+-    query: Query<Entity, (With<LocalEntity>, With<UpdatedBy>)>,
+-) {
+-    for entity in &query {
+-        warn!("Entity {entity:?} has both LocalEntity and UpdatedBy");
+-    }
+-}
+diff --git a/azalea-client/src/plugins/place_prediction.rs b/azalea-client/src/plugins/place_prediction.rs
+index 8b9092b..5e9331d 100644
+--- a/azalea-client/src/plugins/place_prediction.rs
++++ b/azalea-client/src/plugins/place_prediction.rs
+@@ -38,10 +38,9 @@ use azalea_core::{
+ use azalea_physics::collision::BlockShapeAt;
+ use azalea_registry::{builtin::BlockKind, tags};
+ use azalea_entity::{
+-    EntityKindComponent, EntityUuid, LocalEntity, Physics, Position,
++    EntityKindComponent, EntityUuid, Physics, Position,
+     dimensions::EntityDimensions,
+     indexing::EntityIdIndex,
+-    interpolation::PeerView,
+     metadata::{AbstractBoat, AbstractLiving, AbstractMinecart, ArmorStandMarker},
+     LoadedBy,
+ };
+@@ -479,7 +478,6 @@ pub struct ObstacleData {
+     living: Has<AbstractLiving>,
+     boat: Has<AbstractBoat>,
+     minecart: Has<AbstractMinecart>,
+-    local: Has<LocalEntity>,
+ }
+ 
+ /// What the bot knows that a place reads besides its world.
+@@ -489,7 +487,6 @@ pub struct PlaceBotData {
+     last_look: &'static LastSentLookDirection,
+     game_mode: &'static LocalGameMode,
+     ids: &'static EntityIdIndex,
+-    peers: Option<&'static PeerView>,
+     tab_list: Option<&'static TabList>,
+ }
+ 
+@@ -565,11 +562,7 @@ impl PlaceView<'_, '_> {
+                     continue;
+                 }
+                 let Ok(d) = self.entities.get(entity) else { continue };
+-                // another bot is read from this bot's own view below, never from its exact position
+-                if d.local
+-                    || !d.loaded_by.is_some_and(|l| l.contains(&bot))
+-                    || !data.ids.contains_ecs_entity(entity)
+-                {
++                if !d.loaded_by.is_some_and(|l| l.contains(&bot)) || !data.ids.contains_ecs_entity(entity) {
+                     continue;
+                 }
+                 let Some(certain) = blocks_building(&d) else { continue };
+@@ -580,14 +573,6 @@ impl PlaceView<'_, '_> {
+                 obstacles.push(Obstacle { aabb, certain });
+             }
+         }
+-        // the other bots this bot sees (patch 31): their smoothed boxes
+-        if let Some(view) = data.peers {
+-            for (peer, entry) in view.iter() {
+-                let Ok(d) = self.entities.get(peer) else { continue };
+-                let Some(certain) = blocks_building(&d) else { continue };
+-                obstacles.push(Obstacle { aabb: entry.bounding_box, certain });
+-            }
+-        }
+         Some(PlaceContext {
+             zone: movement_zone(&bot_box, data.physics.velocity),
+             game_mode: data.game_mode.current,
+diff --git a/azalea-client/src/plugins/pushes.rs b/azalea-client/src/plugins/pushes.rs
+index d437d3e..da3c9af 100644
+--- a/azalea-client/src/plugins/pushes.rs
++++ b/azalea-client/src/plugins/pushes.rs
+@@ -28,7 +28,7 @@ use azalea_entity::{
+     Position,
+     dimensions::EntityDimensions,
+     indexing::EntityIdIndex,
+-    interpolation::{EntityInterpolation, PeerView},
++    interpolation::EntityInterpolation,
+     metadata::{AbstractBoat, AbstractLiving, SleepingPos},
+     push::{
+         PushRecord, PusherClass, boat_height_rule, push_box, push_velocity, pusher_class,
+@@ -81,7 +81,6 @@ impl Plugin for PushesPlugin {
+                     .after(PhysicsSystems)
+                     .after(crate::movement::send_position)
+                     .after(update_last_bounding_box)
+-                    .after(azalea_entity::interpolation::update_peer_views)
+                     .in_set(PushSystems),
+             ),
+         );
+@@ -103,7 +102,6 @@ struct BotData {
+     sleeping: Option<&'static SleepingPos>,
+     riding: Option<&'static RidingVehicle>,
+     scoreboard: Option<&'static Scoreboard>,
+-    peers: Option<&'static PeerView>,
+     own_id: Option<&'static MinecraftEntityId>,
+     tab_list: Option<&'static TabList>,
+     profile: Option<&'static GameProfileComponent>,
+@@ -120,7 +118,6 @@ struct PusherData {
+     profile: Option<&'static GameProfileComponent>,
+     living: Has<AbstractLiving>,
+     boat: Has<AbstractBoat>,
+-    local: Has<LocalEntity>,
+     mcid: Option<&'static MinecraftEntityId>,
+ }
+ 
+@@ -211,17 +208,7 @@ fn push_pass<const AFTER: bool>(
+             }
+         };
+ 
+-        // The other bots this bot sees (patch 31): their smoothed positions, not their own. Read first, so the
+-        // view entry of a bot wins over any other entity with its id.
+-        if let Some(view) = bot.peers {
+-            for (peer, entry) in view.iter() {
+-                let Ok(data) = pushers.get(peer) else { continue };
+-                let pos = if AFTER { entry.position } else { entry.peek_position() };
+-                consider(peer, pos, &data);
+-            }
+-        }
+-
+-        // Entities every bot shares (mobs, boats, remote players).
++        // The entities of this bot's own world (mobs, boats, other players).
+         if let Some(world) = worlds.get(bot.world) {
+             let world = world.read();
+             let chunk = |v: f64| (v / 16.0).floor() as i32;
+@@ -240,11 +227,6 @@ fn push_pass<const AFTER: bool>(
+                         {
+                             continue;
+                         }
+-                        // Another bot is read from this bot's own view below, never from its own
+-                        // exact position.
+-                        if data.local {
+-                            continue;
+-                        }
+                         let pos: Vec3 = **data.position;
+                         let pos = match (AFTER, data.interpolation) {
+                             (false, Some(i)) => i.0.peek(pos),
+diff --git a/azalea-client/tests/simulation/bot_login_twin.rs b/azalea-client/tests/simulation/bot_login_twin.rs
+index 48c4159..97a29d5 100644
+--- a/azalea-client/tests/simulation/bot_login_twin.rs
++++ b/azalea-client/tests/simulation/bot_login_twin.rs
+@@ -1,18 +1,17 @@
+ use azalea_client::test_utils::prelude::*;
+ use azalea_core::{entity_id::MinecraftEntityId, position::ChunkPos};
+-use azalea_entity::{LocalEntity, indexing::EntityIdIndex, interpolation::PeerView};
++use azalea_entity::{LocalEntity, indexing::EntityIdIndex};
+ use azalea_protocol::packets::ConnectionProtocol;
+ use azalea_registry::builtin::EntityKind;
+-use bevy_ecs::prelude::*;
+ use uuid::Uuid;
+ 
+-// Spec: specs/F5-version-layer.md §4.6 (What Null computes: the bot-to-bot view)
++// Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 1
+ // Two bots of one swarm log in close together. The server announces the joiner (id 77) to the
+-// earlier bot before the joiner's own Login registers it, so the earlier bot spawns a plain
+-// player entity with that id (a twin). The joiner's Login must adopt the twin: one entity for
+-// the id, the earlier bot's index pointing at the joiner's local entity, and the view holding it.
++// earlier bot before the joiner's own Login. Each bot has its own world, as a vanilla client has
++// one level per connection: the earlier bot keeps its own plain player entity for id 77, the
++// joiner's Login does not touch it, and the joiner holds its own copy of the earlier bot.
+ #[test]
+-fn test_joiner_login_adopts_the_twin_another_bot_spawned_for_its_id() {
++fn test_joiner_login_leaves_the_copy_another_bot_spawned_for_its_id() {
+     let _lock = init();
+     let mut simulation = Simulation::new(ConnectionProtocol::Game);
+     simulation.receive_packet(default_login_packet());
+@@ -43,17 +42,14 @@ fn test_joiner_login_adopts_the_twin_another_bot_spawned_for_its_id() {
+     }
+ 
+     let world = simulation.app.world();
+-    let a_index = world.get::<EntityIdIndex>(a).unwrap();
+-    assert_eq!(a_index.get_by_minecraft_entity(MinecraftEntityId(77)), Some(b), "A's index holds the joiner's own entity");
+-    let mut twins = 0;
+-    let mut q = simulation.app.world_mut().query_filtered::<&MinecraftEntityId, Without<LocalEntity>>();
+-    for id in q.iter(simulation.app.world()) {
+-        if id.0 == 77 {
+-            twins += 1;
+-        }
+-    }
+-    assert_eq!(twins, 0, "a non-local entity still carries the joiner's id");
+-    let world = simulation.app.world();
+-    assert!(world.get::<PeerView>(a).unwrap().contains(b), "A's view holds B");
+-    assert!(world.get::<PeerView>(b).unwrap().contains(a), "B's view holds A");
++    let a_copy = world
++        .get::<EntityIdIndex>(a)
++        .unwrap()
++        .get_by_minecraft_entity(MinecraftEntityId(77))
++        .expect("A holds an entity for id 77");
++    assert_ne!(a_copy, b, "A's entity for id 77 is its own copy, not B's local entity");
++    assert!(world.get::<LocalEntity>(a_copy).is_none(), "A's copy is a plain entity");
++    assert!(world.get::<LocalEntity>(b).is_some());
++    let b_copy = world.get::<EntityIdIndex>(b).unwrap().get_by_minecraft_entity(a_id);
++    assert!(b_copy.is_some_and(|e| e != a), "B holds its own copy of A");
+ }
+diff --git a/azalea-client/tests/simulation/entity_interpolation.rs b/azalea-client/tests/simulation/entity_interpolation.rs
+index 1242ac7..a027c02 100644
+--- a/azalea-client/tests/simulation/entity_interpolation.rs
++++ b/azalea-client/tests/simulation/entity_interpolation.rs
+@@ -5,9 +5,8 @@ use azalea_core::{
+     position::{ChunkPos, Vec3},
+ };
+ use azalea_entity::{
+-    LocalEntity, Position,
++    Position,
+     indexing::EntityIdIndex,
+-    interpolation::{PEER_CAP, PeerView},
+ };
+ use azalea_physics::collision::entity_collisions::LastBoundingBox;
+ use azalea_protocol::{
+@@ -163,128 +162,3 @@ fn test_snaps_over_64_blocks_on_add_and_by_kind() {
+         assert!((x - want).abs() < 1e-9, "{kind:?}: x {x}, wanted {want}");
+     }
+ }
+-
+-// Add players and mark them as bots (local entities). A bot falls under its own physics in this
+-// empty world, so tests add them in one tick and keep the ticks after that few.
+-fn make_bots(simulation: &mut Simulation, bots: &[(i32, Vec3)]) -> Vec<Entity> {
+-    let origin = *simulation.component::<Position>();
+-    for (id, offset) in bots {
+-        let mut p = make_basic_add_entity(EntityKind::Player, *id, origin + *offset);
+-        p.uuid = Uuid::from_u128(10_000 + *id as u128);
+-        simulation.receive_packet(p);
+-    }
+-    simulation.tick();
+-    let found: Vec<Entity> = bots.iter().map(|(id, _)| entity_of(simulation, *id)).collect();
+-    for e in &found {
+-        simulation.app.world_mut().entity_mut(*e).insert(LocalEntity);
+-    }
+-    found
+-}
+-
+-fn view_len(simulation: &Simulation) -> usize {
+-    let mut n = 0;
+-    simulation.with_component::<PeerView>(|v| n = v.len());
+-    n
+-}
+-
+-// Spec: specs/F5-version-layer.md §4.6 (What Null computes: the bot-to-bot view)
+-#[test]
+-fn test_bot_to_bot_view_is_built_from_packets_and_does_not_touch_the_other_bot() {
+-    let _lock = init();
+-    let mut simulation = setup();
+-    let bot = make_bots(&mut simulation, &[(300, Vec3::new(2., 0., 0.))])[0];
+-    simulation.tick();
+-    let truth = *simulation.app.world().get::<Position>(bot).unwrap();
+-
+-    simulation.with_component::<PeerView>(|v| {
+-        assert_eq!(v.len(), 1);
+-        // Seeded from the other bot's simulated position, rounded as the server's packets round.
+-        assert!((v.get(bot).unwrap().position.x - truth.x).abs() < 1e-3);
+-    });
+-
+-    // The server moves it 3 blocks: this bot's view moves in steps, the other bot's own position
+-    // (written by its own client) is not touched by the packet.
+-    let start = simulation.with_peer(bot);
+-    teleport(&mut simulation, 300, start + Vec3::new(3., 0., 0.));
+-    for want in [1.0, 2.0, 3.0] {
+-        simulation.tick();
+-        let x = simulation.with_peer(bot).x;
+-        assert!((x - (start.x + want)).abs() < 1e-3, "view x {x}, wanted {}", start.x + want);
+-    }
+-}
+-
+-trait WithPeer {
+-    fn with_peer(&self, bot: Entity) -> Vec3;
+-}
+-impl WithPeer for Simulation {
+-    fn with_peer(&self, bot: Entity) -> Vec3 {
+-        let mut p = Vec3::ZERO;
+-        self.with_component::<PeerView>(|v| p = v.get(bot).expect("in the view").position);
+-        p
+-    }
+-}
+-
+-// Spec: specs/F5-version-layer.md §4.6 (What Null computes: the bot-to-bot view)
+-#[test]
+-fn test_bot_view_radius_cap_aim_target_and_counter() {
+-    let _lock = init();
+-    let mut simulation = setup();
+-
+-    // A bot 20 blocks away is not kept.
+-    let far = make_bots(&mut simulation, &[(400, Vec3::new(20., 0., 0.))])[0];
+-    simulation.tick();
+-    assert_eq!(view_len(&simulation), 0);
+-
+-    // It comes within 16 blocks and is kept; going out drops it.
+-    let here = *simulation.component::<Position>();
+-    let far_now = *simulation.app.world().get::<Position>(far).unwrap();
+-    simulation.app.world_mut().entity_mut(far).insert(Position::new(Vec3::new(here.x + 10., far_now.y, far_now.z)));
+-    simulation.tick();
+-    assert_eq!(view_len(&simulation), 1);
+-    simulation.app.world_mut().entity_mut(far).insert(Position::new(Vec3::new(here.x + 17., far_now.y, far_now.z)));
+-    simulation.tick();
+-    assert_eq!(view_len(&simulation), 0);
+-
+-    // 40 bots within 15 blocks: the view holds the 32 nearest and the aim target.
+-    let specs: Vec<(i32, Vec3)> =
+-        (0..40).map(|i| (500 + i, Vec3::new(1.0 + i as f64 * 0.35, 0., 0.))).collect();
+-    let bots = make_bots(&mut simulation, &specs);
+-    let farthest = *bots.last().unwrap();
+-    simulation.with_component_mut::<PeerView>(|v| v.set_aim_target(farthest));
+-    simulation.tick();
+-    simulation.with_component::<PeerView>(|v| {
+-        assert_eq!(v.len(), PEER_CAP);
+-        assert_eq!(v.peak(), PEER_CAP);
+-        assert_eq!(v.cap_hits(), 1, "the cap is logged once per episode");
+-        assert!(v.contains(farthest), "the aim target is kept");
+-        assert!(v.contains(bots[0]), "the nearest is kept");
+-        assert!(!v.contains(bots[38]), "a far one is out");
+-    });
+-}
+-
+-// Spec: specs/F5-version-layer.md §4.6 (What Null computes: the crosshair ray reads the observer's view)
+-#[test]
+-fn test_ray_hits_a_bot_where_this_bot_sees_it() {
+-    use azalea_client::interact::pick::HitResultComponent;
+-    use azalea_core::hit_result::HitResult;
+-
+-    let _lock = init();
+-    let mut simulation = setup();
+-    let bot = make_bots(&mut simulation, &[(600, Vec3::new(0., 0., 3.))])[0];
+-    simulation.tick();
+-    let hit = |s: &Simulation| s.component::<HitResultComponent>();
+-    assert!(matches!(*hit(&simulation), HitResult::Entity(ref r) if r.entity == bot), "straight ahead");
+-
+-    // The server moves the bot 5 blocks sideways; its own position (and box) stay, but this bot
+-    // sees it 1/3 of the way there, which is off the ray.
+-    let at = simulation.with_peer(bot);
+-    teleport(&mut simulation, 600, at + Vec3::new(5., 0., 0.));
+-    simulation.tick();
+-    simulation.tick();
+-    let truth = simulation.app.world().get::<Position>(bot).unwrap().x;
+-    assert!((truth - (*simulation.component::<Position>()).x).abs() < 1e-6, "the bot itself did not move");
+-    assert!(
+-        !matches!(*hit(&simulation), HitResult::Entity(ref r) if r.entity == bot),
+-        "the ray must not hit the bot at its own position"
+-    );
+-}
+diff --git a/azalea-client/tests/simulation/entity_pushes.rs b/azalea-client/tests/simulation/entity_pushes.rs
+index 27bfcb4..0379820 100644
+--- a/azalea-client/tests/simulation/entity_pushes.rs
++++ b/azalea-client/tests/simulation/entity_pushes.rs
+@@ -5,7 +5,7 @@ use azalea_auth::game_profile::GameProfile;
+ use azalea_chat::FormattedText;
+ use azalea_client::{
+     local_player::{LocalGameMode, TabList},
+-    player::{GameProfileComponent, PlayerInfo},
++    player::PlayerInfo,
+     test_utils::prelude::*,
+ };
+ use azalea_core::{
+@@ -15,9 +15,8 @@ use azalea_core::{
+     position::{BlockPos, ChunkPos, Vec3},
+ };
+ use azalea_entity::{
+-    Dead, LocalEntity, LookDirection, Physics, Position,
++    Dead, LookDirection, Physics, Position,
+     indexing::EntityIdIndex,
+-    interpolation::PeerView,
+     metadata::{Health, SleepingPos},
+     push::PushRecord,
+     teams::{CollisionRule, Scoreboard},
+@@ -471,30 +470,6 @@ fn test_a_pusher_before_the_bot_is_taken_after_its_own_interpolation_step() {
+     assert!(bot_pos(&simulation).x < x0 - 0.02, "moved {}", bot_pos(&simulation).x - x0);
+ }
+ 
+-// Spec: specs/B1-movement.md §4.2 (Pushes from entities: the bot-to-bot case)
+-#[test]
+-fn test_another_bot_pushes_from_this_bots_view_of_it() {
+-    let _lock = init();
+-    let mut simulation = setup();
+-    let mut p = make_basic_add_entity(EntityKind::Player, 180, (BX + 0.3, 64., BZ));
+-    p.uuid = Uuid::from_u128(20_180);
+-    simulation.receive_packet(p);
+-    simulation.update();
+-    let peer = entity_of(&simulation, 180);
+-    simulation.app.world_mut().entity_mut(peer).insert(LocalEntity);
+-    simulation.tick();
+-    let mut seen = Vec3::ZERO;
+-    simulation.with_component::<PeerView>(|v| seen = v.get(peer).expect("in the view").position);
+-    // The other bot's own position moves away; the push reads this bot's view of it.
+-    simulation.app.world_mut().entity_mut(peer).insert(Position::new(Vec3::new(BX + 9., 64., BZ)));
+-    let before = record(&simulation).total;
+-    simulation.tick();
+-    assert!(record(&simulation).total > before, "pushed by the view of the other bot");
+-    let (want, _) = azalea_entity::push::push_velocity(seen.x - bot_pos(&simulation).x, seen.z - bot_pos(&simulation).z).unwrap();
+-    assert!(want < -0.02);
+-    assert!((record(&simulation).tick_delta.0 - want).abs() < 1e-12, "{} vs {want}", record(&simulation).tick_delta.0);
+-}
+-
+ // Spec: specs/F5-version-layer.md §4.6 (What Null computes: one push per server id, never the own id)
+ // A shared swarm `World` can hold a second entity that carries a server id (another bot's view of
+ // it). Vanilla holds one entity per id and `LivingEntity#pushEntities` takes its candidates from
+@@ -514,43 +489,3 @@ fn test_no_push_from_an_entity_with_the_bots_own_id() {
+     simulation.tick();
+     assert_eq!(record(&simulation).total, before, "the bot was pushed by an entity with its own id");
+ }
+-
+-// Spec: specs/F5-version-layer.md §4.6 (What Null computes: one push per server id, never the own id)
+-#[test]
+-fn test_one_push_per_server_id_when_a_view_and_a_second_entity_share_it() {
+-    let _lock = init();
+-    let mut simulation = setup();
+-    // Another bot (id 191): its local entity is read through this bot's view of it ...
+-    let peer = add_at(&mut simulation, EntityKind::Player, 191, (BX + 0.3, 64., BZ));
+-    simulation.app.world_mut().entity_mut(peer).insert(LocalEntity);
+-    simulation.tick();
+-    simulation.tick();
+-    assert_eq!(record(&simulation).max_in_tick, 1, "control: one entity, one push");
+-    // ... and a second, non-local entity carries the same id at the same place.
+-    let twin = add_at(&mut simulation, EntityKind::Player, 192, (BX + 0.3, 64., BZ));
+-    simulation.app.world_mut().entity_mut(twin).insert(MinecraftEntityId(191));
+-    simulation.tick();
+-    assert_eq!(record(&simulation).max_in_tick, 1, "the same id pushed twice in one tick");
+-}
+-
+-// Spec: specs/F5-version-layer.md §4.6 (What Null computes: one push per server id, never the own id)
+-// This bot's view of another bot is its client's only copy of that id (patch 31). A second entity with
+-// the id is another bot's view, at a place this client never has, so it must not push even when the
+-// view copy is out of reach.
+-#[test]
+-fn test_the_view_copy_decides_even_when_out_of_reach() {
+-    let _lock = init();
+-    let mut simulation = setup();
+-    let peer = add_at(&mut simulation, EntityKind::Player, 191, (BX + 1.2, 64., BZ));
+-    simulation.app.world_mut().entity_mut(peer).insert(LocalEntity);
+-    simulation.tick();
+-    simulation.tick();
+-    let before = record(&simulation).total;
+-    let twin = add_at(&mut simulation, EntityKind::Player, 192, (BX + 0.3, 64., BZ));
+-    simulation.tick();
+-    assert!(record(&simulation).total > before, "control: the twin pushes under its own id");
+-    simulation.app.world_mut().entity_mut(twin).insert(MinecraftEntityId(191));
+-    let before = record(&simulation).total;
+-    simulation.tick();
+-    assert_eq!(record(&simulation).total, before, "an entity sharing the view copy's id pushed");
+-}
+diff --git a/azalea-client/tests/simulation/l4_contract.rs b/azalea-client/tests/simulation/l4_contract.rs
+new file mode 100644
+index 0000000..8085b98
+--- /dev/null
++++ b/azalea-client/tests/simulation/l4_contract.rs
+@@ -0,0 +1,222 @@
++use azalea_client::test_utils::prelude::*;
++use azalea_core::{
++    entity_id::MinecraftEntityId,
++    position::{BlockPos, ChunkPos, Vec3},
++};
++use azalea_entity::{LookDirection, Position};
++use azalea_protocol::{
++    common::movements::{PositionMoveRotation, RelativeMovements},
++    packets::{
++        ConnectionProtocol,
++        game::{ClientboundBlockUpdate, ClientboundPlayerPosition},
++    },
++};
++use azalea_registry::builtin::{BlockKind, EntityKind};
++use azalea_protocol::packets::game::{ClientboundRemoveEntities, ClientboundTeleportEntity};
++use azalea_block::BlockState;
++use uuid::Uuid;
++
++// Spec: specs/plans/LOAD_CONTRACT.md (L4, step 1 of the swarm world build order)
++// Bot A's packets must not depend on what bot B received. Each test runs one fixed timeline for A
++// twice, and only B's inbound packets differ. With one World per bot they pass. On a shared World
++// they failed (the negative control, run when the patch was written).
++
++const HEIGHT: usize = (384 + 64) / 16;
++
++fn teleport(x: f64, z: f64) -> ClientboundPlayerPosition {
++    ClientboundPlayerPosition {
++        id: 1,
++        change: PositionMoveRotation { pos: Vec3::new(x, 64., z), delta: Vec3::ZERO, look_direction: LookDirection::default() },
++        relative: RelativeMovements::all_absolute(),
++    }
++}
++
++/// A's sent packets in order, and its final height.
++fn outcome(s: &mut Simulation, sent: &SentPackets, ticks: usize) -> (Vec<String>, f64) {
++    sent.clear();
++    for _ in 0..ticks {
++        s.tick();
++    }
++    let packets = sent.list.lock().iter().map(|p| format!("{p:?}")).collect();
++    (packets, s.app.world().get::<Position>(s.entity).unwrap().y)
++}
++
++fn block_update_timeline(b_told_first: bool) -> (Vec<String>, f64) {
++    const FLOOR: BlockPos = BlockPos::new(8, 63, 8);
++    let mut s = Simulation::new(ConnectionProtocol::Game);
++    let sent = SentPackets::new(&mut s);
++    s.receive_packet(default_login_packet());
++    s.receive_packet(make_basic_empty_chunk(ChunkPos::new(0, 0), HEIGHT));
++    s.receive_packet(ClientboundBlockUpdate { pos: FLOOR, block_state: BlockKind::Stone.into() });
++    s.receive_packet(teleport(8.5, 8.5));
++    let b = s.add_client(Uuid::from_u128(5678), "b");
++    let mut login = default_login_packet();
++    login.player_id = MinecraftEntityId(77);
++    s.receive_packet_for(b, login);
++    s.receive_packet_for(b, make_basic_empty_chunk(ChunkPos::new(0, 0), HEIGHT));
++    s.receive_packet_for(b, ClientboundBlockUpdate { pos: FLOOR, block_state: BlockKind::Stone.into() });
++    s.receive_packet_for(b, teleport(3.5, 3.5));
++    for _ in 0..6 {
++        s.tick();
++    }
++    if b_told_first {
++        s.receive_packet_for(b, ClientboundBlockUpdate { pos: FLOOR, block_state: BlockState::AIR });
++    }
++    // A's own update has not arrived in this window.
++    outcome(&mut s, &sent, 10)
++}
++
++fn chunk_timeline(b_got_chunk: bool) -> (Vec<String>, f64) {
++    let mut s = Simulation::new(ConnectionProtocol::Game);
++    let sent = SentPackets::new(&mut s);
++    s.receive_packet(default_login_packet());
++    s.receive_packet(make_basic_empty_chunk(ChunkPos::new(0, 0), HEIGHT));
++    s.receive_packet(teleport(3.5, 3.5));
++    let b = s.add_client(Uuid::from_u128(5678), "b");
++    let mut login = default_login_packet();
++    login.player_id = MinecraftEntityId(77);
++    s.receive_packet_for(b, login);
++    s.receive_packet_for(b, make_basic_empty_chunk(ChunkPos::new(0, 0), HEIGHT));
++    s.receive_packet_for(b, teleport(3.5, 3.5));
++    for _ in 0..6 {
++        s.tick();
++    }
++    // A walks into the air over chunk (1, 1), which A has not received.
++    s.receive_packet(teleport(24.5, 24.5));
++    if b_got_chunk {
++        s.receive_packet_for(b, make_basic_empty_chunk(ChunkPos::new(1, 1), HEIGHT));
++        s.receive_packet_for(b, ClientboundBlockUpdate { pos: BlockPos::new(24, 63, 24), block_state: BlockKind::Stone.into() });
++    }
++    outcome(&mut s, &sent, 10)
++}
++
++#[test]
++fn a_ignores_a_block_update_only_b_received() {
++    let _lock = init();
++    assert_eq!(block_update_timeline(true), block_update_timeline(false));
++}
++
++#[test]
++fn a_ignores_a_chunk_only_b_received() {
++    let _lock = init();
++    assert_eq!(chunk_timeline(true), chunk_timeline(false));
++}
++
++// Mobs and the entity index. Both bots stand on a stone floor at the same spot; the mob (id 50)
++// overlaps them. Only B's inbound packets differ between the two runs. On a shared World, B's
++// packet moves, adds or removes the one shared entity and A is pushed differently.
++
++/// A's sent packets and final position.
++fn pos_outcome(s: &mut Simulation, sent: &SentPackets, ticks: usize) -> (Vec<String>, [u64; 3]) {
++    sent.clear();
++    for _ in 0..ticks {
++        s.tick();
++    }
++    let packets = sent.list.lock().iter().map(|p| format!("{p:?}")).collect();
++    let p = s.app.world().get::<Position>(s.entity).unwrap();
++    (packets, [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()])
++}
++
++/// What differs between the two runs of a mob timeline. Both bots always hear about the mob (id
++/// 50) first; B is told first, so on a shared World B drives the mob's updates and A's are dropped.
++#[derive(Clone, Copy, PartialEq)]
++enum Differ {
++    /// Neither bot hears anything else (the reference run).
++    Nothing,
++    /// A is told the mob moved away. B is not told. (Mob updates.)
++    AMobMoved,
++    /// Only B is told the mob moved to another chunk. (Mob updates and the entity index.)
++    BMobMovedChunk,
++    /// Only B is told the mob is gone. (Entity index.)
++    BMobRemoved,
++}
++
++fn mob_timeline(differ: Differ) -> (Vec<String>, [u64; 3]) {
++    mob_timeline_with(differ, true)
++}
++
++/// `b_hears_mob`: B is told about the mob (first) or never.
++fn mob_timeline_with(differ: Differ, b_hears_mob: bool) -> (Vec<String>, [u64; 3]) {
++    let mut s = Simulation::new(ConnectionProtocol::Game);
++    let sent = SentPackets::new(&mut s);
++    let floor = |s: &mut Simulation, who: Option<bevy_ecs::entity::Entity>| {
++        for x in 2..=14 {
++            for z in 2..=14 {
++                let p = ClientboundBlockUpdate { pos: BlockPos::new(x, 63, z), block_state: BlockKind::Stone.into() };
++                match who {
++                    Some(b) => s.receive_packet_for(b, p),
++                    None => s.receive_packet(p),
++                }
++            }
++        }
++    };
++    s.receive_packet(default_login_packet());
++    s.receive_packet(make_basic_empty_chunk(ChunkPos::new(0, 0), HEIGHT));
++    s.receive_packet(make_basic_empty_chunk(ChunkPos::new(1, 0), HEIGHT));
++    floor(&mut s, None);
++    s.receive_packet(teleport(8.5, 8.5));
++    let b = s.add_client(Uuid::from_u128(5678), "b");
++    let mut login = default_login_packet();
++    login.player_id = MinecraftEntityId(77);
++    s.receive_packet_for(b, login);
++    s.receive_packet_for(b, make_basic_empty_chunk(ChunkPos::new(0, 0), HEIGHT));
++    s.receive_packet_for(b, make_basic_empty_chunk(ChunkPos::new(1, 0), HEIGHT));
++    floor(&mut s, Some(b));
++    s.receive_packet_for(b, teleport(3.5, 3.5));
++    for _ in 0..3 {
++        s.tick();
++    }
++    // The mob overlaps A. B hears first, then A.
++    let mut add = make_basic_add_entity(EntityKind::Pig, 50, (8.8, 64., 8.5));
++    add.uuid = Uuid::from_u128(20_050);
++    let moved = |x: f64| ClientboundTeleportEntity {
++        id: MinecraftEntityId(50),
++        change: PositionMoveRotation { pos: Vec3::new(x, 64., 8.5), delta: Vec3::ZERO, look_direction: LookDirection::default() },
++        relative: RelativeMovements::all_absolute(),
++        on_ground: true,
++    };
++    if b_hears_mob {
++        s.receive_packet_for(b, add.clone());
++        s.tick();
++        // B's first update of the mob (to where it already is) makes B its driver on a shared
++        // World, so A's own add and updates about it are then dropped.
++        s.receive_packet_for(b, moved(8.8));
++    }
++    s.tick();
++    s.receive_packet(add);
++    for _ in 0..4 {
++        s.tick();
++    }
++    match differ {
++        _ if !b_hears_mob && differ != Differ::AMobMoved => {}
++        Differ::Nothing => {}
++        Differ::AMobMoved => s.receive_packet(moved(13.5)),
++        Differ::BMobMovedChunk => s.receive_packet_for(b, moved(20.5)),
++        Differ::BMobRemoved => s.receive_packet_for(b, ClientboundRemoveEntities { entity_ids: vec![MinecraftEntityId(50)] }),
++    }
++    pos_outcome(&mut s, &sent, 10)
++}
++
++// Mobs: on a shared World B drives the mob (B's add and first update came first), so A's own
++// update about it is dropped. With B never hearing of the mob, A's update applies. They must agree.
++#[test]
++fn a_mob_moves_for_a_when_a_is_told_even_if_b_heard_it_first() {
++    let _lock = init();
++    assert_ne!(mob_timeline(Differ::AMobMoved), mob_timeline(Differ::Nothing), "the move changes A's pushes");
++    // The same timeline with B never hearing of the mob gives A the same answer.
++    assert_eq!(mob_timeline(Differ::AMobMoved), mob_timeline_with(Differ::AMobMoved, false));
++}
++
++#[test]
++fn a_ignores_a_mob_move_only_b_received() {
++    let _lock = init();
++    assert_eq!(mob_timeline(Differ::BMobMovedChunk), mob_timeline(Differ::Nothing));
++}
++
++// Not a negative control: a removal told to B only drops B from the mob's `LoadedBy`, and the
++// shared mob stays for A, so this holds in both modes. It guards the removal path in own mode.
++#[test]
++fn a_ignores_a_removal_only_b_received() {
++    let _lock = init();
++    assert_eq!(mob_timeline(Differ::BMobRemoved), mob_timeline(Differ::Nothing));
++}
+diff --git a/azalea-client/tests/simulation/mod.rs b/azalea-client/tests/simulation/mod.rs
+index f671a5f..bff2a57 100644
+--- a/azalea-client/tests/simulation/mod.rs
++++ b/azalea-client/tests/simulation/mod.rs
+@@ -19,6 +19,7 @@ mod entity_pushes;
+ mod fast_login;
+ mod input_log;
+ mod item_use_hold_and_release;
++mod l4_contract;
+ mod login_to_dimension_with_same_name;
+ mod mine_block_rollback;
+ mod mine_block_timing_hand;
+diff --git a/azalea-client/tests/simulation/shared_world_prediction.rs b/azalea-client/tests/simulation/shared_world_prediction.rs
+index 8a4f85c..e9fd524 100644
+--- a/azalea-client/tests/simulation/shared_world_prediction.rs
++++ b/azalea-client/tests/simulation/shared_world_prediction.rs
+@@ -45,6 +45,8 @@ fn setup() -> (Simulation, Entity) {
+     login.player_id = MinecraftEntityId(77);
+     s.receive_packet_for(b, login);
+     s.receive_packet_for(b, make_basic_empty_chunk(ChunkPos::new(0, 0), (384 + 64) / 16));
++    // The server tells B too: with one World per bot, B reads only what B's own packets said.
++    s.receive_packet_for(b, ClientboundBlockUpdate { pos: CELL, block_state: BlockKind::Tnt.into() });
+     s.receive_packet_for(
+         b,
+         ClientboundPlayerPosition {
+@@ -195,6 +197,8 @@ fn test_a_server_update_for_a_pending_cell_writes_the_shared_world() {
+     s.write_message(StartMiningBlockEvent { entity: a, position: CELL, force: true });
+     s.tick();
+     s.receive_packet(ClientboundBlockUpdate { pos: CELL, block_state: BlockState::AIR });
++    // The server tells B as well; with one World per bot B reads only its own packets.
++    s.receive_packet_for(b, ClientboundBlockUpdate { pos: CELL, block_state: BlockState::AIR });
+     s.tick();
+     assert_eq!(s.get_block_state(CELL), Some(BlockState::AIR), "the update wrote the shared world");
+     s.receive_packet(ClientboundBlockChangedAck { seq: 1 });
+diff --git a/azalea-entity/src/interpolation.rs b/azalea-entity/src/interpolation.rs
+index ef70b33..d74732d 100644
+--- a/azalea-entity/src/interpolation.rs
++++ b/azalea-entity/src/interpolation.rs
+@@ -1,4 +1,4 @@
+-//! The client's interpolation of other entities' positions, and the bot-to-bot view.
++//! The client's interpolation of other entities' positions.
+ //!
+ //! Null fork, patch 31. A vanilla client does not put another entity at the position the server
+ //! sent. It moves the entity toward that position over a few ticks. Pushes, the crosshair ray and
+@@ -16,21 +16,15 @@
+ //!
+ //! Spec: specs/F5-version-layer.md §4.6 (What Null computes), specs/B1-movement.md §4.2
+ 
+-use std::collections::HashMap;
+-
+-use azalea_core::{aabb::Aabb, delta::PositionDelta8, position::{ChunkPos, Vec3}};
+-use azalea_world::{WorldName, Worlds};
++use azalea_core::position::Vec3;
+ use bevy_ecs::prelude::*;
+-use tracing::info;
+ 
+ use crate::{
+     LocalEntity, LookDirection, Physics, Position,
+     dimensions::EntityDimensions,
+-    indexing::EntityIdIndex,
+     metadata::{
+         AbstractBoat, AbstractLiving, AbstractMinecart, ExperienceOrb, FishingBobber, Shulker,
+     },
+-    vec_delta_codec::{VecDeltaCodec, quantise},
+ };
+ 
+ /// `InterpolationHandler.DEFAULT_INTERPOLATION_STEPS`.
+@@ -38,12 +32,6 @@ pub const DEFAULT_INTERPOLATION_STEPS: u32 = 3;
+ /// A jump farther than 64 blocks (squared) snaps (`handleEntityPositionSync`,
+ /// `setValuesFromPositionPacket`).
+ pub const SNAP_DISTANCE_SQ: f64 = 4096.0;
+-/// How far from a bot another bot is kept in its view: reach plus three ticks of movement, with
+-/// margin (Allen, 2026-10-20).
+-pub const PEER_RADIUS: f64 = 16.0;
+-/// The most other bots one bot keeps in its view.
+-pub const PEER_CAP: usize = 32;
+-
+ /// What `interpolate_to` did.
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ pub enum Interpolate {
+@@ -239,248 +227,6 @@ pub fn interpolate_entities(
+     }
+ }
+ 
+-/// One other bot as this bot sees it: the server's packets for it, smoothed.
+-// Spec: specs/F5-version-layer.md §4.6 (What Null computes)
+-#[derive(Clone, Debug)]
+-pub struct PeerEntry {
+-    codec: VecDeltaCodec,
+-    state: InterpolationState,
+-    /// The smoothed position this bot sees.
+-    pub position: Vec3,
+-    /// The box at that position.
+-    pub bounding_box: Aabb,
+-}
+-
+-impl PeerEntry {
+-    /// Start a view of a bot with no packet seen yet: the server's position for it is the
+-    /// position it last sent, which is its own simulated position, rounded as the server's
+-    /// packets round. Error: up to one tick of its movement, until the next absolute packet.
+-    pub fn seed(true_position: Vec3, rot: (f32, f32), dimensions: &EntityDimensions) -> Self {
+-        let position = quantise(true_position);
+-        Self {
+-            codec: VecDeltaCodec::new(position),
+-            state: InterpolationState::new(rot),
+-            position,
+-            bounding_box: dimensions.make_bounding_box(position),
+-        }
+-    }
+-
+-    /// `handleMoveEntity` (position and/or rotation delta; `delta` None is a rotation-only packet).
+-    pub fn on_move(&mut self, delta: Option<&PositionDelta8>, rot: Option<(f32, f32)>) {
+-        let pos = delta.map(|d| {
+-            let p = self.codec.decode(d);
+-            self.codec.set_base(p);
+-            p
+-        });
+-        self.state.interpolate_to(DEFAULT_INTERPOLATION_STEPS, pos, rot, self.position);
+-    }
+-
+-    /// `handleEntityPositionSync`: sets the codec base; smooths unless the jump is over 64 blocks.
+-    pub fn on_position_sync(&mut self, pos: Vec3, rot: (f32, f32)) {
+-        self.codec.set_base(pos);
+-        self.on_teleport(pos, rot);
+-    }
+-
+-    /// `handleTeleportEntity`: smooths unless the jump is over 64 blocks (the codec base is not
+-    /// touched, as in vanilla). `pos` is absolute.
+-    pub fn on_teleport(&mut self, pos: Vec3, rot: (f32, f32)) {
+-        if self.position.distance_squared_to(pos) > SNAP_DISTANCE_SQ {
+-            self.snap(pos, rot);
+-        } else {
+-            self.state.interpolate_to(DEFAULT_INTERPOLATION_STEPS, Some(pos), Some(rot), self.position);
+-        }
+-    }
+-
+-    /// `handleAddEntity` (`recreateFromPacket`): the codec base and the position are set at once.
+-    pub fn on_add(&mut self, pos: Vec3, rot: (f32, f32)) {
+-        self.codec.set_base(pos);
+-        self.snap(pos, rot);
+-    }
+-
+-    fn snap(&mut self, pos: Vec3, rot: (f32, f32)) {
+-        self.position = pos;
+-        self.state.cancel();
+-        self.state.set_rot(rot);
+-    }
+-
+-    /// The rotation last received (position-only smoothing: it is set at once).
+-    pub fn rot(&self) -> (f32, f32) {
+-        self.state.rot()
+-    }
+-
+-    /// Steps left in the run; for tests and the load counters.
+-    pub fn steps_left(&self) -> u32 {
+-        self.state.steps_left()
+-    }
+-
+-    /// The position this entry takes in the next [`tick`](Self::tick), without taking it.
+-    pub fn peek_position(&self) -> Vec3 {
+-        self.state.peek(self.position)
+-    }
+-
+-    /// One tick: an interpolation step, then the box at the new position.
+-    pub fn tick(&mut self, dimensions: &EntityDimensions) {
+-        if let Some(next) = self.state.step(self.position) {
+-            self.position = next;
+-        }
+-        self.bounding_box = dimensions.make_bounding_box(self.position);
+-    }
+-}
+-
+-/// One bot's view of the other bots near it (Allen, 2026-10-20). The swarm shares one world and a
+-/// bot writes its own exact position, but a vanilla client sees another player where the server
+-/// said, smoothed. So each bot keeps its own smoothed copy of the bots within [`PEER_RADIUS`],
+-/// the nearest [`PEER_CAP`] of them, always including its aim target. Outside the radius nothing
+-/// is kept. Readers use the entry for a bot target and the shared entity for everything else.
+-// Spec: specs/F5-version-layer.md §4.6 (What Null computes)
+-#[derive(Component, Debug, Default)]
+-pub struct PeerView {
+-    entries: HashMap<Entity, PeerEntry>,
+-    aim_target: Option<Entity>,
+-    peak: usize,
+-    cap_hits: u32,
+-    cap_logged: bool,
+-}
+-
+-impl PeerView {
+-    pub fn get(&self, peer: Entity) -> Option<&PeerEntry> {
+-        self.entries.get(&peer)
+-    }
+-    pub fn get_mut(&mut self, peer: Entity) -> Option<&mut PeerEntry> {
+-        self.entries.get_mut(&peer)
+-    }
+-    pub fn contains(&self, peer: Entity) -> bool {
+-        self.entries.contains_key(&peer)
+-    }
+-    pub fn iter(&self) -> impl Iterator<Item = (Entity, &PeerEntry)> {
+-        self.entries.iter().map(|(e, p)| (*e, p))
+-    }
+-    /// Entries now.
+-    pub fn len(&self) -> usize {
+-        self.entries.len()
+-    }
+-    pub fn is_empty(&self) -> bool {
+-        self.entries.is_empty()
+-    }
+-    /// The most entries this view has held.
+-    pub fn peak(&self) -> usize {
+-        self.peak
+-    }
+-    /// How many times the cap forced a bot out or kept one out (once per episode).
+-    pub fn cap_hits(&self) -> u32 {
+-        self.cap_hits
+-    }
+-    /// Keep this bot in the view whatever the cap (the bot being aimed at or clicked).
+-    pub fn set_aim_target(&mut self, peer: Entity) {
+-        self.aim_target = Some(peer);
+-    }
+-    pub fn aim_target(&self) -> Option<Entity> {
+-        self.aim_target
+-    }
+-
+-    /// Make room for `peer` at `distance_sq` from the observer. Returns false when the cap keeps
+-    /// it out. The farthest entry that is not the aim target goes first.
+-    fn admit(&mut self, observer: Entity, peer: Entity, distance_sq: f64, observer_pos: Vec3) -> bool {
+-        if self.entries.len() < PEER_CAP {
+-            return true;
+-        }
+-        if !self.cap_logged {
+-            self.cap_logged = true;
+-            self.cap_hits += 1;
+-            info!("bot {observer:?}: bot view at its cap of {PEER_CAP}; keeping the nearest");
+-        }
+-        let farthest = self
+-            .entries
+-            .iter()
+-            .filter(|(e, _)| Some(**e) != self.aim_target)
+-            .map(|(e, p)| (*e, p.position.distance_squared_to(observer_pos)))
+-            .max_by(|a, b| a.1.total_cmp(&b.1));
+-        match farthest {
+-            Some((out, d)) if Some(peer) == self.aim_target || distance_sq < d => {
+-                self.entries.remove(&out);
+-                true
+-            }
+-            _ => false,
+-        }
+-    }
+-
+-    fn insert(&mut self, peer: Entity, entry: PeerEntry) {
+-        self.entries.insert(peer, entry);
+-        self.peak = self.peak.max(self.entries.len());
+-    }
+-}
+-
+-/// Keep each bot's [`PeerView`]: give every bot one, drop bots that left the radius or the world,
+-/// admit the bots that came within it (nearest first, aim target first, at most [`PEER_CAP`]),
+-/// then step every entry and refresh its box. Packets update entries in `Update`; this runs at
+-/// the end of the `GameTick`, with the other entities' interpolation.
+-// Spec: specs/F5-version-layer.md §4.6 (What Null computes)
+-#[allow(clippy::type_complexity)]
+-pub fn update_peer_views(
+-    mut commands: Commands,
+-    mut observers: Query<
+-        (Entity, &Position, &WorldName, &EntityIdIndex, Option<&mut PeerView>),
+-        With<LocalEntity>,
+-    >,
+-    peers: Query<(&Position, &EntityDimensions, &LookDirection, &WorldName), With<LocalEntity>>,
+-    worlds: Res<Worlds>,
+-) {
+-    let radius_sq = PEER_RADIUS * PEER_RADIUS;
+-    for (observer, position, world_name, ids, view) in &mut observers {
+-        let Some(mut view) = view else {
+-            commands.entity(observer).insert(PeerView::default());
+-            continue;
+-        };
+-        let origin: Vec3 = **position;
+-
+-        view.entries.retain(|&peer, _| {
+-            peers.get(peer).is_ok_and(|(p, _, _, w)| {
+-                w == world_name && (**p).distance_squared_to(origin) <= radius_sq && ids.contains_ecs_entity(peer)
+-            })
+-        });
+-
+-        let mut candidates: Vec<(bool, f64, Entity)> = Vec::new();
+-        if let Some(world) = worlds.get(world_name) {
+-            let world = world.read();
+-            let chunk = |v: f64| (v / 16.0).floor() as i32;
+-            for cx in chunk(origin.x - PEER_RADIUS)..=chunk(origin.x + PEER_RADIUS) {
+-                for cz in chunk(origin.z - PEER_RADIUS)..=chunk(origin.z + PEER_RADIUS) {
+-                    let Some(in_chunk) = world.entities_by_chunk.get(&ChunkPos::new(cx, cz)) else {
+-                        continue;
+-                    };
+-                    for &peer in in_chunk {
+-                        if peer == observer || view.entries.contains_key(&peer) {
+-                            continue;
+-                        }
+-                        let Ok((p, _, _, w)) = peers.get(peer) else { continue };
+-                        let d = (**p).distance_squared_to(origin);
+-                        if w == world_name && d <= radius_sq && ids.contains_ecs_entity(peer) {
+-                            candidates.push((Some(peer) != view.aim_target, d, peer));
+-                        }
+-                    }
+-                }
+-            }
+-        }
+-        candidates.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+-        for (_, d, peer) in candidates {
+-            if !view.admit(observer, peer, d, origin) {
+-                break;
+-            }
+-            let (p, dims, look, _) = peers.get(peer).expect("checked above");
+-            view.insert(peer, PeerEntry::seed(**p, (look.y_rot(), look.x_rot()), dims));
+-        }
+-        if view.entries.len() < PEER_CAP {
+-            view.cap_logged = false;
+-        }
+-
+-        for (peer, entry) in &mut view.entries {
+-            if let Ok((_, dims, _, _)) = peers.get(*peer) {
+-                entry.tick(dims);
+-            }
+-        }
+-    }
+-}
+-
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -518,11 +264,6 @@ mod tests {
+         let next = s.step(at).unwrap();
+         assert_eq!(next, v(3., 0., 0.));
+         assert_eq!(s.peek(next), v(6., 0., 0.));
+-        let d = dims();
+-        let mut e = PeerEntry::seed(v(0., 64., 0.), (0., 0.), &d);
+-        e.on_move(Some(&PositionDelta8 { xa: 12288, ya: 0, za: 0 }), None);
+-        assert!((e.peek_position().x - 1.0).abs() < 1e-9);
+-        assert!(e.position.x.abs() < 1e-9);
+     }
+ 
+     #[test]
+@@ -552,70 +293,4 @@ mod tests {
+         assert!(!s.is_active());
+         assert_eq!(s.rot(), (1., 2.));
+     }
+-
+-    #[test]
+-    fn a_peer_is_added_snapped_and_moves_over_three_ticks() {
+-        let d = dims();
+-        let mut e = PeerEntry::seed(v(0., 64., 0.), (0., 0.), &d);
+-        e.on_add(v(0., 64., 0.), (0., 0.));
+-        // A delta of 12288 units (3 blocks) on x.
+-        e.on_move(Some(&PositionDelta8 { xa: 12288, ya: 0, za: 0 }), None);
+-        e.tick(&d);
+-        assert!((e.position.x - 1.0).abs() < 1e-9);
+-        assert!((e.bounding_box.min.x - (1.0 - 0.3)).abs() < 1e-6, "box refreshed in the same tick");
+-        e.tick(&d);
+-        assert!((e.position.x - 2.0).abs() < 1e-9);
+-        e.tick(&d);
+-        assert!((e.position.x - 3.0).abs() < 1e-9);
+-        // The next delta is relative to the decoded target, not to the smoothed position.
+-        e.on_move(Some(&PositionDelta8 { xa: 4096, ya: 0, za: 0 }), None);
+-        e.tick(&d);
+-        assert!((e.position.x - (3.0 + 1.0 / 3.0)).abs() < 1e-9);
+-    }
+-
+-    #[test]
+-    fn a_jump_over_64_blocks_snaps() {
+-        let d = dims();
+-        let mut e = PeerEntry::seed(v(0., 64., 0.), (0., 0.), &d);
+-        e.on_teleport(v(100., 64., 0.), (0., 0.));
+-        assert_eq!(e.position.x, 100.0);
+-        assert_eq!(e.steps_left(), 0);
+-        e.on_position_sync(v(110., 64., 0.), (0., 0.));
+-        assert_eq!(e.steps_left(), 3);
+-        assert_eq!(e.position.x, 100.0);
+-    }
+-
+-    #[test]
+-    fn the_cap_keeps_the_nearest_and_the_aim_target() {
+-        let d = dims();
+-        let observer = Entity::from_raw_u32(1).unwrap();
+-        let mut view = PeerView::default();
+-        let o = v(0., 0., 0.);
+-        // Fill to the cap with bots at distance 1..=32 blocks (positions are the sort keys).
+-        for i in 0..PEER_CAP {
+-            view.insert(
+-                Entity::from_raw_u32(100 + i as u32).unwrap(),
+-                PeerEntry::seed(v(1.0 + i as f64 * 0.4, 0., 0.), (0., 0.), &d),
+-            );
+-        }
+-        assert_eq!(view.len(), PEER_CAP);
+-        let far = Entity::from_raw_u32(500).unwrap();
+-        // A farther bot is kept out; the cap is logged once.
+-        assert!(!view.admit(observer, far, 14.0 * 14.0, o));
+-        assert!(!view.admit(observer, far, 14.0 * 14.0, o));
+-        assert_eq!(view.cap_hits(), 1);
+-        // A nearer bot pushes the farthest out.
+-        let near = Entity::from_raw_u32(501).unwrap();
+-        assert!(view.admit(observer, near, 0.25, o));
+-        assert_eq!(view.len(), PEER_CAP - 1);
+-        view.insert(near, PeerEntry::seed(v(0.5, 0., 0.), (0., 0.), &d));
+-        // The aim target gets in whatever its distance, and is never the one pushed out.
+-        view.set_aim_target(far);
+-        assert!(view.admit(observer, far, 15.0 * 15.0, o));
+-        view.insert(far, PeerEntry::seed(v(15., 0., 0.), (0., 0.), &d));
+-        assert_eq!(view.len(), PEER_CAP);
+-        assert!(view.admit(observer, Entity::from_raw_u32(502).unwrap(), 0.01, o));
+-        assert!(view.contains(far));
+-        assert_eq!(view.peak(), PEER_CAP);
+-    }
+ }
+diff --git a/azalea-entity/src/plugin/indexing.rs b/azalea-entity/src/plugin/indexing.rs
+index 0e983e5..3da807e 100644
+--- a/azalea-entity/src/plugin/indexing.rs
++++ b/azalea-entity/src/plugin/indexing.rs
+@@ -137,22 +137,6 @@ impl EntityIdIndex {
+         trace!("Inserted {id} -> {entity:?} into a client's EntityIdIndex");
+     }
+ 
+-    /// Point `id` at `new` instead of `old`, keeping the tick-order number (patch 44). Returns
+-    /// false when `id` did not map to `old`.
+-    // Spec: specs/F5-version-layer.md §4.6 (What Null computes)
+-    pub fn replace_entity(&mut self, id: MinecraftEntityId, old: Entity, new: Entity) -> bool {
+-        if self.entity_by_id.get(&id) != Some(&old) {
+-            return false;
+-        }
+-        self.entity_by_id.insert(id, new);
+-        self.id_by_entity.remove(&old);
+-        self.id_by_entity.insert(new, id);
+-        if let Some(n) = self.tick_order.seq.remove(&old) {
+-            self.tick_order.seq.insert(new, n);
+-        }
+-        true
+-    }
+-
+     pub fn remove_by_minecraft_entity(&mut self, id: MinecraftEntityId) -> Option<Entity> {
+         if let Some(entity) = self.entity_by_id.remove(&id) {
+             trace!(
+@@ -278,10 +262,9 @@ pub fn remove_despawned_entities_from_indexes(
+         let Some(world_lock) = worlds.get(world_name) else {
+             // the world isn't even loaded by us, so we can safely delete the entity
+             debug!("Despawned entity {entity:?} because it's in a world that isn't loaded anymore");
+-            if entity_uuid_index.entity_by_uuid.remove(uuid).is_none() {
+-                warn!(
+-                    "Tried to remove entity {entity:?} from the uuid index but it was not there."
+-                );
++            // Each bot holds its own copy of an entity, so the index may point at another bot's copy.
++            if entity_uuid_index.get(uuid) == Some(entity) {
++                entity_uuid_index.remove(uuid);
+             }
+             // and now remove the entity from the ecs
+             commands.entity(entity).despawn();
+@@ -343,8 +326,8 @@ pub fn remove_despawned_entities_from_indexes(
+             }
+         }
+         // remove it from the uuid index
+-        if entity_uuid_index.entity_by_uuid.remove(uuid).is_none() {
+-            warn!("Tried to remove entity {entity:?} from the uuid index but it was not there.");
++        if entity_uuid_index.get(uuid) == Some(entity) {
++            entity_uuid_index.remove(uuid);
+         }
+         if world.entity_by_id.remove(minecraft_id).is_none() {
+             debug!(
+@@ -379,6 +362,9 @@ pub fn add_entity_to_indexes(
+ 
+     if let Some(uuid) = entity_uuid {
+         // per-world uuid index
+-        entity_uuid_index.insert(uuid, ecs_entity);
++        // Every bot holds a copy of one uuid; never overwrite an earlier entry.
++        if !entity_uuid_index.contains_key(&uuid) {
++            entity_uuid_index.insert(uuid, ecs_entity);
++        }
+     }
+ }
+diff --git a/azalea-world/src/container.rs b/azalea-world/src/container.rs
+index 9b9aeed..876b403 100644
+--- a/azalea-world/src/container.rs
++++ b/azalea-world/src/container.rs
+@@ -95,13 +95,26 @@ impl Worlds {
+ /// in the same world.
+ #[derive(Clone, Component, Debug, Deref, DerefMut, Eq, Hash, PartialEq)]
+ #[doc(alias("dimension"))]
+-pub struct WorldName(pub Identifier);
++pub struct WorldName(#[deref] #[deref_mut] pub Identifier, Option<bevy_ecs::entity::Entity>);
+ impl WorldName {
+     /// Create a new `WorldName` with the given name.
+     pub fn new(name: &str) -> Self {
+-        Self(Identifier::new(name))
++        Self(Identifier::new(name), None)
+     }
+ }
++impl WorldName {
++    /// The name a bot gets for the dimension the server sent.
++    ///
++    /// The name also holds the bot's entity as a hidden key part, so `Worlds` keeps one `World` per
++    /// bot and dimension, as a vanilla client has one level per connection. Every lookup by
++    /// `WorldName` then finds the bot's own world.
++    // Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 1
++    pub fn for_bot(dimension: Identifier, bot: bevy_ecs::entity::Entity) -> Self {
++        // The name stays vanilla's (`Deref` gives the dimension identifier); only the key differs.
++        Self(dimension, Some(bot))
++    }
++}
++
+ impl Display for WorldName {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         self.0.fmt(f)
+@@ -109,6 +122,6 @@ impl Display for WorldName {
+ }
+ impl From<Identifier> for WorldName {
+     fn from(ident: Identifier) -> Self {
+-        Self(ident)
++        Self(ident, None)
+     }
+ }
+-- 
+2.56.0
+

@@ -1,0 +1,129 @@
+From 0ad5e4955ee2a9c0243a0260c69aa4627c34b928 Mon Sep 17 00:00:00 2001
+From: bench <bench@local>
+Date: Tue, 10 Nov 2026 00:28:22 +0800
+Subject: [PATCH] null patch: 64-fluid-height-with-same-fluid-above
+
+---
+ azalea-entity/src/plugin/mod.rs |  3 ++-
+ azalea-physics/src/fluids.rs    |  4 +--
+ azalea-physics/tests/physics.rs | 44 +++++++++++++++++++++++++++++++++
+ azalea-world/src/prediction.rs  | 12 +++++++++
+ 4 files changed, 60 insertions(+), 3 deletions(-)
+
+diff --git a/azalea-entity/src/plugin/mod.rs b/azalea-entity/src/plugin/mod.rs
+index e39facb..8195cee 100644
+--- a/azalea-entity/src/plugin/mod.rs
++++ b/azalea-entity/src/plugin/mod.rs
+@@ -136,7 +136,8 @@ pub fn update_fluid_on_eyes(
+                 None => BotWorld::truth(&world),
+             };
+             let fluid_at_eye = world.get_fluid_state(eye_block_pos).unwrap_or_default();
+-            let fluid_cutoff_y = (eye_block_pos.y as f32 + fluid_at_eye.height()) as f64;
++            let fluid_cutoff_y =
++                (eye_block_pos.y as f32 + world.fluid_height_at(eye_block_pos, &fluid_at_eye)) as f64;
+             if fluid_cutoff_y > adjusted_eye_y {
+                 **fluid_on_eyes = fluid_at_eye.kind;
+             } else {
+diff --git a/azalea-physics/src/fluids.rs b/azalea-physics/src/fluids.rs
+index 86bb9b7..16229a2 100644
+--- a/azalea-physics/src/fluids.rs
++++ b/azalea-physics/src/fluids.rs
+@@ -8,7 +8,7 @@ use azalea_core::{
+ };
+ use azalea_entity::{HasClientLoaded, LocalEntity, Physics, Position};
+ use azalea_registry::builtin::BlockKind;
+-use azalea_world::{BlockStatePredictionHandler, BotWorld, WorldName, Worlds};
++use azalea_world::{BlockStatePredictionHandler, BlockView, BotWorld, WorldName, Worlds};
+ use bevy_ecs::prelude::*;
+ 
+ use crate::collision::{BlockWithShape, legacy_blocks_motion};
+@@ -122,7 +122,7 @@ fn update_fluid_height_and_do_fluid_pushing(
+                 if fluid_at_cur_pos.kind != checking_fluid {
+                     continue;
+                 }
+-                let fluid_max_y = (cur_y as f32 + fluid_at_cur_pos.height()) as f64;
++                let fluid_max_y = (cur_y as f32 + world.fluid_height_at(cur_pos, &fluid_at_cur_pos)) as f64;
+                 if fluid_max_y < checking_liquids_aabb.min.y {
+                     continue;
+                 }
+diff --git a/azalea-physics/tests/physics.rs b/azalea-physics/tests/physics.rs
+index e183ee8..ad339c3 100644
+--- a/azalea-physics/tests/physics.rs
++++ b/azalea-physics/tests/physics.rs
+@@ -480,6 +480,50 @@ fn test_falling_water_pushes_a_neighbour_away() {
+     assert!(x > 8.5 + 0.005, "the falling neighbour should push the bot east, x is {x}");
+ }
+ 
++// A fluid cell with the same fluid above is a full block high (`FlowingFluid#getHeight`,
++// `hasSameAbove`), so the bot's fluid height counts to the top of the cell, not the surface it would
++// have alone. Spec: specs/B1-movement.md §4.6 (patch 61)
++#[test]
++fn test_fluid_height_counts_a_full_cell_when_the_same_fluid_is_above() {
++    let mut app = make_test_app();
++    let world_lock = insert_overworld(&mut app);
++    let mut partial_world = PartialWorld::default();
++    partial_world.chunks.set(
++        &ChunkPos { x: 0, z: 0 },
++        Some(Chunk::default()),
++        &mut world_lock.write().chunks,
++    );
++    let setblock = |y: i32, b: BlockState| {
++        world_lock.write().chunks.set_block_state(BlockPos { x: 8, y, z: 8 }, b);
++    };
++    let water_level = |level: BlockStateIntegerRepr| {
++        BlockState::from(azalea_block::blocks::Water { level: WaterLevel::from(level) })
++    };
++    setblock(63, azalea_block::blocks::Stone.into());
++    // a column: flowing level 1 (8/9 high alone), flowing level 6 (2/9 alone), a source on top
++    setblock(64, water_level(1));
++    setblock(65, water_level(6));
++    setblock(66, water_level(0));
++    let entity = app
++        .world_mut()
++        .spawn((
++            EntityBundle::new(
++                Uuid::nil(),
++                Vec3 { x: 8.5, y: 64., z: 8.5 },
++                EntityKind::Player,
++                WorldName::new("minecraft:overworld"),
++            ),
++            MinecraftEntityId(0),
++            LocalEntity,
++            HasClientLoaded,
++        ))
++        .id();
++    app.world_mut().run_schedule(GameTick);
++    app.update();
++    let h = app.world_mut().get::<azalea_entity::Physics>(entity).unwrap().water_fluid_height;
++    assert!(h > 1.9, "water above both cells: the column reaches the top of cell 65, height {h}");
++}
++
+ // Falling water beside a solid wall flows mostly down (`FlowingFluid#getFlow`: the horizontal part
+ // is normalised, then 6 down is added, then the sum is normalised). Spec: specs/B1-movement.md §4.6
+ #[test]
+diff --git a/azalea-world/src/prediction.rs b/azalea-world/src/prediction.rs
+index 51f1dea..80c186d 100644
+--- a/azalea-world/src/prediction.rs
++++ b/azalea-world/src/prediction.rs
+@@ -20,6 +20,18 @@ pub trait BlockView {
+     fn get_fluid_state(&self, pos: BlockPos) -> Option<FluidState> {
+         self.get_block_state(pos).map(FluidState::from)
+     }
++
++    /// `FluidState#getHeight(BlockGetter, BlockPos)` for the fluid at `pos`: a full block when the
++    /// cell above holds the same fluid (`FlowingFluid#getHeight`, `hasSameAbove`), else its own
++    /// height. The flow code (`FlowingFluid#getFlow`) uses the own height instead.
++    // Spec: specs/B1-movement.md §4.6 (patch 61: fluid height with the fluid above)
++    fn fluid_height_at(&self, pos: BlockPos, fluid: &FluidState) -> f32 {
++        let above = self.get_fluid_state(pos.up(1));
++        match above {
++            Some(a) if fluid.amount > 0 && a.amount > 0 && a.kind == fluid.kind => 1.0,
++            _ => fluid.height(),
++        }
++    }
+ }
+ 
+ impl BlockView for ChunkStorage {
+-- 
+2.56.0
+

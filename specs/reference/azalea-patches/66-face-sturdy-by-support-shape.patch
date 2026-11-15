@@ -1,0 +1,94 @@
+From a742e4c1c908010437e881cc282375376c146c6f Mon Sep 17 00:00:00 2001
+From: bench <bench@local>
+Date: Tue, 10 Nov 2026 00:32:28 +0800
+Subject: [PATCH] null patch: 66-face-sturdy-by-support-shape
+
+---
+ azalea-physics/src/fluids.rs    | 11 ++++++---
+ azalea-physics/tests/physics.rs | 44 +++++++++++++++++++++++++++++++++
+ 2 files changed, 51 insertions(+), 4 deletions(-)
+
+diff --git a/azalea-physics/src/fluids.rs b/azalea-physics/src/fluids.rs
+index 16229a2..789893e 100644
+--- a/azalea-physics/src/fluids.rs
++++ b/azalea-physics/src/fluids.rs
+@@ -269,14 +269,17 @@ fn is_solid_face(
+     is_face_sturdy(block_state, world, adjacent_pos, direction)
+ }
+ 
+-// `BlockBehaviour#isFaceSturdy`, for blocks whose collision shape is the full cube. A partial
+-// shape (stairs, slabs, fences) counts as not sturdy here, where vanilla checks the face.
++// `BlockBehaviour#isFaceSturdy` (FULL support type), patch 63: the face of the block's support
++// shape covers the whole square (`collision::is_face_sturdy`), so a stair's back or a mud block
++// counts and leaves do not. A block whose support shape the fork does not model keeps the old
++// full-cube answer.
+ // Spec: specs/B1-movement.md §4.6 (Falls, swimming, climbing)
+ fn is_face_sturdy(
+     block_state: BlockState,
+     _world: &BotWorld,
+     _pos: BlockPos,
+-    _direction: Direction,
++    direction: Direction,
+ ) -> bool {
+-    block_state.is_collision_shape_full()
++    crate::collision::is_face_sturdy(block_state, direction)
++        .unwrap_or_else(|| block_state.is_collision_shape_full())
+ }
+diff --git a/azalea-physics/tests/physics.rs b/azalea-physics/tests/physics.rs
+index 55be429..cd03cb8 100644
+--- a/azalea-physics/tests/physics.rs
++++ b/azalea-physics/tests/physics.rs
+@@ -568,6 +568,50 @@ fn test_falling_water_beside_a_wall_flows_down() {
+     assert!(walled.y < -0.95 && walled.x > -0.25, "wall: mostly down, got {walled:?}");
+ }
+ 
++// Patch 63: the wall's face decides (`isFaceSturdy`), not whether the block is a full cube. The
++// flow tested is at the falling water's east side, where `isSolidFace` reads the east face.
++// A stair that ascends east has a full east face; one that ascends west has a stepped face; leaves are a
++// full cube with an empty support shape. Spec: specs/B1-movement.md §4.6
++#[test]
++fn test_falling_water_wall_face_decides_not_the_full_cube() {
++    let mut app = make_test_app();
++    let world_lock = insert_overworld(&mut app);
++    let mut partial_world = PartialWorld::default();
++    partial_world.chunks.set(
++        &ChunkPos { x: 0, z: 0 },
++        Some(Chunk::default()),
++        &mut world_lock.write().chunks,
++    );
++    let setblock = |x: i32, y: i32, z: i32, b: BlockState| {
++        world_lock.write().chunks.set_block_state(BlockPos { x, y, z }, b);
++    };
++    let water_level = |level: BlockStateIntegerRepr| {
++        BlockState::from(azalea_block::blocks::Water { level: WaterLevel::from(level) })
++    };
++    let pos = BlockPos::new(8, 64, 8);
++    setblock(8, 64, 8, water_level(8));
++    setblock(7, 64, 8, water_level(1));
++    let flow_at = || {
++        let world = world_lock.read();
++        let fluid = world.get_fluid_state(pos).unwrap();
++        azalea_physics::fluids::get_fluid_flow(&fluid, &azalea_world::BotWorld::truth(&world), pos)
++    };
++    let stairs = |facing: &str| {
++        let mut b: Box<dyn azalea_block::BlockTrait> = azalea_registry::builtin::BlockKind::StoneStairs.into();
++        b.set_property("facing", facing).unwrap();
++        b.as_block_state()
++    };
++    setblock(9, 64, 8, stairs("east"));
++    let back = flow_at();
++    assert!(back.y < -0.95, "stair back to the east is a full face: flows down, got {back:?}");
++    setblock(9, 64, 8, stairs("west"));
++    let step = flow_at();
++    assert!(step.y == 0., "stepped east face is not sturdy: no downward flow, got {step:?}");
++    setblock(9, 64, 8, azalea_block::blocks::OakLeaves::default().into());
++    let leaves = flow_at();
++    assert!(leaves.y == 0., "leaves have no support face: no downward flow, got {leaves:?}");
++}
++
+ #[test]
+ fn test_afk_pool() {
+     let mut app = make_test_app();
+-- 
+2.56.0
+

@@ -1,4 +1,4 @@
-//! A18: interpolation of other entities and the bot-to-bot view (fork patch 31; P30.1). Plan:
+//! A18: interpolation of other entities and the bot-to-bot copy (fork patches 31 and 59; P30.1). Plan:
 //! specs/plans/PATCH_30_TIER1.md §2.3, specs/F5-version-layer.md §4.6. A vanilla client moves
 //! another entity toward each new server position over three ticks (`InterpolationHandler`), and
 //! the crosshair ray and reach read the moved box. Rows:
@@ -7,10 +7,11 @@
 //!   `GameTick`; the expected steps come from the vanilla formula, not from the fork);
 //! - the crosshair ray reads the box of that tick: the ray hits the villager while the moving box
 //!   still covers it and misses once it has moved off, step by step;
-//! - two bots near each other each hold the other in their `PeerView` (built from the server's
-//!   packets), a server move of one shows in the other's view in three steps while its own
-//!   position has already jumped, a bot beyond 16 blocks is not kept, and the counter shows the
-//!   entries (current and peak).
+//! - two bots near each other each hold the other as a plain remote-player entity in their own
+//!   world (built from the server's packets, patch 59), a server move of one shows in the other's
+//!   copy in three steps while its own position has already jumped, a bot 18 blocks away is still
+//!   held (the old 16-block `PeerView` cut no longer exists), and the counter shows the entries
+//!   (current and peak).
 //!
 //! The second bot is the A8 attacker account (`<account>2`, no skill), which `main` starts for
 //! A18 too. Server truth is the RCON `tp`; the server log is scanned for warnings and Grim alerts
@@ -31,12 +32,13 @@ use azalea::{
     core::{aabb::Aabb, hit_result::HitResult, tick::GameTick},
     ecs::prelude::*,
     entity::{
-        EntityKindComponent, LocalEntity, LookDirection, Position, dimensions::EntityDimensions, interpolation::PeerView,
+        EntityKindComponent, EntityUuid, LocalEntity, LookDirection, Position, dimensions::EntityDimensions,
         view_vector,
     },
     interact::pick::{HitResultComponent, update_hit_result_component},
     physics::{PhysicsSystems, collision::entity_collisions::LastBoundingBox},
     registry::builtin::EntityKind,
+    world::WorldName,
 };
 
 use crate::scenarios::{Acts, Ctx, Outcome};
@@ -79,9 +81,8 @@ pub static MOB_TRACE: Mutex<Vec<MobTick>> = Mutex::new(Vec::new());
 pub static BOT_TRACE: Mutex<Vec<BotTick>> = Mutex::new(Vec::new());
 /// The bots of the swarm and the main bot's view entries as of the last traced tick (evidence for the rows).
 static WHO: Mutex<String> = Mutex::new(String::new());
-/// The most entries any bot's view held while a row watched, and the cap hits seen.
+/// The most other-bot copies any bot's own world held while a row watched.
 static PEAK: AtomicUsize = AtomicUsize::new(0);
-static CAP_HITS: AtomicUsize = AtomicUsize::new(0);
 
 // Spec: specs/F5-version-layer.md §4.6 (What Null computes: interpolation of other entities)
 /// Adds the probes to the bot's app. `main` is the runner's account; the second bot is `<main>2`.
@@ -97,7 +98,8 @@ impl Plugin for InterpolationProbe {
             GameTick,
             (move |me: Query<(&Account, &Position, &EntityDimensions, &LookDirection, Option<&HitResultComponent>), With<LocalEntity>>,
                    mobs: Query<(&EntityKindComponent, &Position, &LastBoundingBox), Without<LocalEntity>>,
-                   bots: Query<(Entity, &Account, &Position, Option<&PeerView>), With<LocalEntity>>,
+                   bots: Query<(Entity, &Account, &Position, &WorldName, &EntityUuid), With<LocalEntity>>,
+                   remote: Query<(Entity, &EntityKindComponent, &EntityUuid, &Position, &WorldName), Without<LocalEntity>>,
                    players: Query<(Entity, &EntityKindComponent, &Position, Option<&azalea::core::entity_id::MinecraftEntityId>, Has<LocalEntity>)>| {
                 if MOB_ON.load(Ordering::Relaxed)
                     && let Some((_, p, d, look, hit)) = me.iter().find(|(a, ..)| a.username() == main)
@@ -119,22 +121,23 @@ impl Plugin for InterpolationProbe {
                 }
                 if BOT_ON.load(Ordering::Relaxed) {
                     let find = |name: &str| bots.iter().find(|(_, a, ..)| a.username() == name);
-                    if let (Some((_, _, _, main_view)), Some((other_e, _, other_pos, other_view))) = (find(&main), find(&other)) {
-                        // Companion mode (`<main>c`) puts a third bot in range: the rows are about the second bot's entries, so the
+                    if let (Some((_, _, _, main_world, _)), Some((_, _, other_pos, other_world, other_uuid))) = (find(&main), find(&other)) {
+                        // Companion mode (`<main>c`) puts a third bot in range: the rows are about the second bot's copies, so the
                         // companion's are left out of the counts. Spec: specs/plans/COMPANION_BRIEF.md (checks)
-                        let companion = find(&format!("{main}c")).map(|b| b.0);
-                        let count = |v: Option<&PeerView>| v.map_or(0, |v| v.iter().filter(|(e, _)| Some(*e) != companion).count());
-                        let (ml, ol) = (count(main_view), count(other_view));
-                        for v in [main_view, other_view].into_iter().flatten() {
-                            PEAK.fetch_max(v.peak(), Ordering::Relaxed);
-                            CAP_HITS.fetch_max(v.cap_hits() as usize, Ordering::Relaxed);
-                        }
-                        let all: Vec<String> = bots.iter().map(|(e, a, p, _)| format!("{}={e:?}@({:.1},{:.1},{:.1})", a.username(), p.x, p.y, p.z)).collect();
-                        let seen: Vec<String> = main_view.into_iter().flat_map(|v| v.iter().map(|(e, pe)| format!("{e:?}@{:.1}", pe.position.x))).collect();
+                        let companion = find(&format!("{main}c")).map(|b| **b.4);
+                        // What a bot holds of the others: the remote-player entities in its own world (each bot has
+                        // its own world, patch 59; `WorldName` carries the owner), not counting the companion.
+                        let held = |world: &WorldName| remote.iter().filter(|(_, k, u, _, w)| k.0 == EntityKind::Player && *w == world && Some(***u) != companion).collect::<Vec<_>>();
+                        let (ml, ol) = (held(main_world).len(), held(other_world).len());
+                        PEAK.fetch_max(ml.max(ol), Ordering::Relaxed);
+                        // The main bot's copy of the second bot: the entity with its uuid in the main bot's world.
+                        let main_copy = held(main_world).into_iter().find(|(_, _, u, ..)| ***u == **other_uuid);
+                        let all: Vec<String> = bots.iter().map(|(e, a, p, ..)| format!("{}={e:?}@({:.1},{:.1},{:.1})", a.username(), p.x, p.y, p.z)).collect();
+                        let seen: Vec<String> = held(main_world).into_iter().map(|(e, _, _, p, _)| format!("{e:?}@{:.1}", p.x)).collect();
                         let pl: Vec<String> = players.iter().filter(|(_, k, ..)| k.0 == EntityKind::Player).map(|(e, _, p, id, l)| format!("{e:?} id {:?} local {l} x{:.1}", id.map(|i| i.0), p.x)).collect();
-                        *WHO.lock().unwrap() = format!("swarm [{}]; main's view [{}]; every player entity [{}]", all.join(", "), seen.join(", "), pl.join("; "));
+                        *WHO.lock().unwrap() = format!("swarm [{}]; main's world holds [{}]; every player entity [{}]", all.join(", "), seen.join(", "), pl.join("; "));
                         BOT_TRACE.lock().unwrap().push(BotTick {
-                            view_x: main_view.and_then(|v| v.get(other_e)).map(|e| e.position.x),
+                            view_x: main_copy.map(|(_, _, _, p, _)| p.x),
                             own_x: other_pos.x,
                             main_len: ml,
                             other_len: ol,
@@ -325,8 +328,7 @@ pub fn a18(cx: &mut Ctx) -> Vec<Outcome> {
         (
             ml == 1 && ol == 1 && peak >= 1 && view_close,
             format!(
-                "second bot 6 blocks away: entries now {ml} in the main bot's view and {ol} in the second bot's (want 1 each); peak entries seen {peak}; cap hits {}; the main bot's view of it is within 0.05 of its true x: {view_close}; {}",
-                CAP_HITS.load(Ordering::Relaxed),
+                "second bot 6 blocks away: copies now {ml} in the main bot's world and {ol} in the second bot's (want 1 each); peak copies seen {peak}; the main bot's copy of it is within 0.05 of its true x: {view_close}; {}",
                 WHO.lock().unwrap()
             ),
         )
@@ -364,7 +366,7 @@ pub fn a18(cx: &mut Ctx) -> Vec<Outcome> {
         sleep(Duration::from_millis(1500));
         let far = BOT_TRACE.lock().unwrap().last().cloned();
         let (fm, fo) = far.as_ref().map_or((9, 9), |b| (b.main_len, b.other_len));
-        let none_view = far.as_ref().is_some_and(|b| b.view_x.is_none());
+        let held_far = far.as_ref().is_some_and(|b| b.view_x.is_some_and(|v| (v - FAR.0).abs() < 0.05));
         cx.mark_act("other_near");
         cx.r(&format!("tp {other} {} {} {} 0 0", NEAR.0, NEAR.1, NEAR.2));
         sleep(Duration::from_millis(1500));
@@ -372,9 +374,11 @@ pub fn a18(cx: &mut Ctx) -> Vec<Outcome> {
         let (bm, bo) = back.as_ref().map_or((9, 9), |b| (b.main_len, b.other_len));
         let peak = PEAK.load(Ordering::Relaxed);
         (
-            fm == 0 && fo == 0 && none_view && bm == 1 && bo == 1 && peak >= 1,
+            // Changed with patch 59: the 16-block cut belonged to the bot-to-bot `PeerView`. Now the other bot is an
+            // ordinary entity the server tracks (far beyond 18 blocks), so it stays held, at its true place.
+            fm == 1 && fo == 1 && held_far && bm == 1 && bo == 1 && peak >= 1,
             format!(
-                "second bot 18 blocks away: entries {fm} and {fo} (want 0, nothing kept); back at 6 blocks: {bm} and {bo} (want 1); peak entries any bot held (counter): {peak} (want at least 1); {}",
+                "second bot 18 blocks away: copies {fm} and {fo} (want 1, still held: the server tracks it, no 16-block cut now); the main bot's copy at the far x: {held_far}; back at 6 blocks: {bm} and {bo} (want 1); peak copies any bot held (counter): {peak} (want at least 1); {}",
                 WHO.lock().unwrap()
             ),
         )

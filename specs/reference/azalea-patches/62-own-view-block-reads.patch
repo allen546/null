@@ -1,0 +1,112 @@
+From 61db2f7e511fdb7bf7ac75aa0a02891833f7d101 Mon Sep 17 00:00:00 2001
+From: bench <bench@local>
+Date: Tue, 10 Nov 2026 00:23:22 +0800
+Subject: [PATCH] null patch: 62-own-view-block-reads
+
+---
+ azalea/src/auto_tool.rs       |  7 ++----
+ azalea/src/client_impl/mod.rs | 47 +++++++++++++++++++++++++++++++++++
+ azalea/src/container.rs       |  7 ++----
+ 3 files changed, 51 insertions(+), 10 deletions(-)
+
+diff --git a/azalea/src/auto_tool.rs b/azalea/src/auto_tool.rs
+index 9802923..4424b46 100644
+--- a/azalea/src/auto_tool.rs
++++ b/azalea/src/auto_tool.rs
+@@ -36,11 +36,8 @@ impl Client {
+     }
+ 
+     pub async fn mine_with_auto_tool(&self, block_pos: BlockPos) -> AzaleaResult<()> {
+-        let block_state = self
+-            .world()?
+-            .read()
+-            .get_block_state(block_pos)
+-            .unwrap_or_default();
++        // the bot's own view: a block it just broke or placed reads as it predicted
++        let block_state = self.own_block_state(block_pos)?.unwrap_or_default();
+         let best_tool_result = self.best_tool_in_hotbar_for_block(block_state)?;
+         self.set_selected_hotbar_slot(best_tool_result.index as u8);
+         self.mine(block_pos).await;
+diff --git a/azalea/src/client_impl/mod.rs b/azalea/src/client_impl/mod.rs
+index ba78fee..baf6f18 100644
+--- a/azalea/src/client_impl/mod.rs
++++ b/azalea/src/client_impl/mod.rs
+@@ -350,6 +350,18 @@ impl Client {
+         Ok(world_holder.shared.clone())
+     }
+ 
++    /// The block at `pos` as this bot sees it: the shared world with this bot's own pending
++    /// predictions on top (`BotWorld`). Use this, not `world().read().get_block_state`, when the
++    /// bot decides something from a block it may just have placed or broken. `None` when the
++    /// chunk is not loaded.
++    // Spec: specs/F5-version-layer.md §4.6 (each bot reads its own view, not shared truth)
++    pub fn own_block_state(&self, pos: azalea_core::position::BlockPos) -> AzaleaResult<Option<azalea_block::BlockState>> {
++        let world = self.world()?;
++        let world = world.read();
++        let pending = self.component::<azalea_world::BlockStatePredictionHandler>().ok();
++        Ok(azalea_world::BotWorld::of(&world, pending.as_deref()).get_block_state(pos))
++    }
++
+     /// Get an `RwLock` with a reference to the world that this client has
+     /// loaded.
+     ///
+@@ -571,3 +583,38 @@ impl Client {
+         self.component::<TicksConnected>().map(|c| c.0).unwrap_or(0)
+     }
+ }
++
++#[cfg(test)]
++mod own_view_tests {
++    use azalea_block::BlockState;
++    use azalea_core::position::{BlockPos, ChunkPos};
++    use azalea_registry::builtin::BlockKind;
++    use azalea_world::{BlockStatePredictionHandler, Chunk};
++
++    use super::*;
++
++    // Spec: specs/F5-version-layer.md §4.6 (each bot reads its own view, not shared truth)
++    #[test]
++    fn own_block_state_shows_the_bots_prediction_and_the_world_does_not() {
++        let mut ecs = bevy_ecs::world::World::new();
++        let shared = Arc::new(RwLock::new(World::default()));
++        let partial = Arc::new(RwLock::new(PartialWorld::default()));
++        let pos = BlockPos::new(1, 64, 1);
++        {
++            let mut w = shared.write();
++            let mut p = partial.write();
++            p.chunks.set(&ChunkPos::new(0, 0), Some(Chunk::default()), &mut w.chunks);
++            w.chunks.set_block_state(pos, BlockState::from(BlockKind::Stone));
++        }
++        let mut handler = BlockStatePredictionHandler::default();
++        handler.start_predicting();
++        handler.retain_known_server_state(pos, BlockState::from(BlockKind::Stone), azalea_core::position::Vec3::ZERO);
++        handler.set_predicted(pos, BlockState::AIR);
++        let entity = ecs
++            .spawn((azalea_client::local_player::WorldHolder { partial, shared: shared.clone() }, handler))
++            .id();
++        let client = Client::new(entity, Arc::new(RwLock::new(ecs)));
++        assert_eq!(client.own_block_state(pos).unwrap(), Some(BlockState::AIR), "own prediction");
++        assert_eq!(shared.read().get_block_state(pos), Some(BlockState::from(BlockKind::Stone)), "shared truth");
++    }
++}
+diff --git a/azalea/src/container.rs b/azalea/src/container.rs
+index 20c787d..9d70283 100644
+--- a/azalea/src/container.rs
++++ b/azalea/src/container.rs
+@@ -74,11 +74,8 @@ impl Client {
+         let mut ticks = self.get_tick_broadcaster();
+         // wait until it's not air (up to 10 ticks)
+         for _ in 0..10 {
+-            let block = self
+-                .world()?
+-                .read()
+-                .get_block_state(pos)
+-                .unwrap_or_default();
++            // the bot's own view, not shared truth (patch 59)
++            let block = self.own_block_state(pos)?.unwrap_or_default();
+             if !block.is_collision_shape_empty() {
+                 break;
+             }
+-- 
+2.56.0
+

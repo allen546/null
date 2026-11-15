@@ -1,0 +1,3819 @@
+From 3bbc06628791fb6438801a74b86838d79118bba7 Mon Sep 17 00:00:00 2001
+From: bench <bench@local>
+Date: Tue, 10 Nov 2026 00:46:45 +0800
+Subject: [PATCH] null patch: 71-place-families-attached
+
+---
+ azalea-block/src/lib.rs                       |   33 +-
+ azalea-block/src/place_families.rs            | 2345 ++++++++++++++++-
+ azalea-client/src/plugins/block_actions.rs    |    3 +
+ azalea-client/src/plugins/mod.rs              |    1 +
+ azalea-client/src/plugins/place_prediction.rs |  254 +-
+ azalea-client/src/plugins/place_rules.rs      |  581 ++++
+ azalea-physics/src/collision/mod.rs           |    2 +-
+ azalea-physics/src/collision/sturdy.rs        |  168 +-
+ codegen/gen_place_families.py                 |   79 +-
+ 9 files changed, 3430 insertions(+), 36 deletions(-)
+ create mode 100644 azalea-client/src/plugins/place_rules.rs
+
+diff --git a/azalea-block/src/lib.rs b/azalea-block/src/lib.rs
+index c1e0365..185efd8 100644
+--- a/azalea-block/src/lib.rs
++++ b/azalea-block/src/lib.rs
+@@ -15,7 +15,8 @@ use azalea_registry::builtin::BlockKind;
+ pub use behavior::BlockBehavior;
+ pub use click_use::block_uses_click;
+ pub use place_families::{
+-    PlaceFamily, indirect_shape_block, place_family, plain_replace_rule, shape_inert,
++    PlaceFamily, gives_no_direct_signal, gives_no_signal, indirect_shape_block, place_family,
++    plain_replace_rule, shape_inert, torch_wall_block,
+ };
+ // re-exported for convenience
+ pub use block_state::BlockState;
+@@ -265,6 +266,25 @@ mod place_families_tests {
+                 PlaceFamily::HugeMushroom => {
+                     assert_eq!(k, ["down", "east", "north", "south", "up", "west"], "{kind:?}");
+                 }
++                PlaceFamily::Torch => assert!(k.is_empty() || k == ["lit"], "{kind:?}"),
++                PlaceFamily::Ladder => assert_eq!(k, ["facing", "waterlogged"], "{kind:?}"),
++                PlaceFamily::Fence | PlaceFamily::Pane => {
++                    assert_eq!(k, ["east", "north", "south", "waterlogged", "west"], "{kind:?}");
++                }
++                PlaceFamily::Wall => {
++                    assert_eq!(k, ["east", "north", "south", "up", "waterlogged", "west"], "{kind:?}");
++                }
++                PlaceFamily::FenceGate => {
++                    assert_eq!(k, ["facing", "in_wall", "open", "powered"], "{kind:?}");
++                }
++                PlaceFamily::Trapdoor => {
++                    assert_eq!(k, ["facing", "half", "open", "powered", "waterlogged"], "{kind:?}");
++                }
++                PlaceFamily::Leaves => {
++                    assert_eq!(k, ["distance", "persistent", "waterlogged"], "{kind:?}");
++                }
++                PlaceFamily::Chest => assert_eq!(k, ["facing", "type", "waterlogged"], "{kind:?}"),
++                PlaceFamily::Rail => assert_eq!(k, ["shape", "waterlogged"], "{kind:?}"),
+                 PlaceFamily::Unknown => seen[5] += 1,
+             }
+         }
+@@ -278,8 +298,8 @@ mod place_families_tests {
+         assert_eq!(place_family(BlockKind::OakLog), PlaceFamily::Axis);
+         assert_eq!(place_family(BlockKind::OakSlab), PlaceFamily::Slab);
+         assert_eq!(place_family(BlockKind::Barrier), PlaceFamily::Waterloggable);
+-        // placement rules beyond stage 1
+-        for k in [BlockKind::OakFence, BlockKind::Torch, BlockKind::Chest, BlockKind::OakDoor, BlockKind::OakLeaves, BlockKind::Wheat, BlockKind::RedstoneLamp] {
++        // placement rules still not modelled (doors and beds place two blocks, crops need light)
++        for k in [BlockKind::OakDoor, BlockKind::Wheat, BlockKind::RedstoneLamp, BlockKind::PoweredRail, BlockKind::WhiteBed] {
+             assert_eq!(place_family(k), PlaceFamily::Unknown, "{k:?}");
+         }
+         for k in [BlockKind::OakFence, BlockKind::OakStairs, BlockKind::RedstoneWire, BlockKind::OakLeaves, BlockKind::Vine, BlockKind::IronBars] {
+@@ -288,6 +308,13 @@ mod place_families_tests {
+         for k in [BlockKind::Stone, BlockKind::Dirt, BlockKind::Air, BlockKind::OakSlab] {
+             assert!(shape_inert(k), "{k:?}");
+         }
++        assert_eq!(place_family(BlockKind::OakFence), PlaceFamily::Fence);
++        assert_eq!(place_family(BlockKind::Torch), PlaceFamily::Torch);
++        assert_eq!(place_family(BlockKind::Chest), PlaceFamily::Chest);
++        assert_eq!(place_family(BlockKind::Rail), PlaceFamily::Rail);
++        assert_eq!(torch_wall_block(BlockKind::SoulTorch), Some(BlockKind::SoulWallTorch));
++        assert!(gives_no_signal(BlockKind::Stone) && !gives_no_signal(BlockKind::RedstoneBlock));
++        assert!(gives_no_direct_signal(BlockKind::Stone) && !gives_no_direct_signal(BlockKind::Lever));
+         assert!(indirect_shape_block(BlockKind::RedstoneWire));
+         assert!(!plain_replace_rule(BlockKind::Snow));
+         assert!(!plain_replace_rule(BlockKind::OakSlab));
+diff --git a/azalea-block/src/place_families.rs b/azalea-block/src/place_families.rs
+index 5ce11f4..4349f85 100644
+--- a/azalea-block/src/place_families.rs
++++ b/azalea-block/src/place_families.rs
+@@ -1,7 +1,7 @@
+ // Generated by codegen/gen_place_families.py from the Minecraft 1.21.11 sources. Do not edit.
+ // Regenerate: uv run --no-project codegen/gen_place_families.py <vanilla-src-dir> 1.21.11 > azalea-block/src/place_families.rs
+ // How a block item computes the state it places (BlockItem#place -> Block#getStateForPlacement),
+-// for the stage 1 families of null patch 33. Counts of 1142 parsed blocks: Axis 57, AxisWaterlogged 1, ClickedFaceWaterlogged 8, FacingClockwise 3, HorizontalFacing 28, HugeMushroom 3, LookingOpposite 5, LookingSame 1, Plain 282, Slab 62, SnowyTop 3, Stairs 58, Unknown 592, Vegetation 27, Waterloggable 12; shape inert 595; plain replace rule 1047.
++// for the stage 1 families of null patch 33. Counts of 1142 parsed blocks: Axis 57, AxisWaterlogged 1, Chest 2, ClickedFaceWaterlogged 8, FacingClockwise 3, Fence 13, FenceGate 12, HorizontalFacing 28, HugeMushroom 3, Ladder 1, Leaves 11, LookingOpposite 5, LookingSame 1, Pane 18, Plain 282, Rail 1, Slab 62, SnowyTop 3, Stairs 58, Torch 4, Trapdoor 21, Unknown 483, Vegetation 27, Wall 26, Waterloggable 12; shape inert 595; plain replace rule 1047.
+ 
+ use azalea_registry::builtin::BlockKind;
+ 
+@@ -39,6 +39,26 @@ pub enum PlaceFamily {
+     SnowyTop,
+     /// `HugeMushroomBlock`: a face is shown unless the neighbour is the same block.
+     HugeMushroom,
++    /// `StandingAndWallBlockItem`: a standing or wall torch (the wall block is [`torch_wall_block`]).
++    Torch,
++    /// `LadderBlock`: faces away from the nearest looking horizontal direction that has support.
++    Ladder,
++    /// `FenceBlock`: four sides from the neighbours, plus water.
++    Fence,
++    /// `IronBarsBlock` (glass panes, iron and copper bars): four sides from the neighbours, plus water.
++    Pane,
++    /// `WallBlock`: sides, post and heights from the neighbours and the block above, plus water.
++    Wall,
++    /// `FenceGateBlock`: facing, powered and open from the signal, in_wall from the walls beside.
++    FenceGate,
++    /// `TrapDoorBlock`: facing and half from the click, open and powered from the signal, plus water.
++    Trapdoor,
++    /// `LeavesBlock`: persistent, distance from the neighbours, plus water.
++    Leaves,
++    /// `ChestBlock`: facing, single or double from the neighbours and sneaking, plus water.
++    Chest,
++    /// `RailBlock` (the plain rail): straight along the look, plus water, needs a rigid support below.
++    Rail,
+     Unknown,
+ }
+ 
+@@ -595,6 +615,115 @@ pub fn place_family(kind: BlockKind) -> PlaceFamily {
+         BlockKind::BrownMushroomBlock |
+         BlockKind::MushroomStem |
+         BlockKind::RedMushroomBlock => PlaceFamily::HugeMushroom,
++        BlockKind::CopperTorch |
++        BlockKind::RedstoneTorch |
++        BlockKind::SoulTorch |
++        BlockKind::Torch => PlaceFamily::Torch,
++        BlockKind::Ladder => PlaceFamily::Ladder,
++        BlockKind::AcaciaFence |
++        BlockKind::BambooFence |
++        BlockKind::BirchFence |
++        BlockKind::CherryFence |
++        BlockKind::CrimsonFence |
++        BlockKind::DarkOakFence |
++        BlockKind::JungleFence |
++        BlockKind::MangroveFence |
++        BlockKind::NetherBrickFence |
++        BlockKind::OakFence |
++        BlockKind::PaleOakFence |
++        BlockKind::SpruceFence |
++        BlockKind::WarpedFence => PlaceFamily::Fence,
++        BlockKind::BlackStainedGlassPane |
++        BlockKind::BlueStainedGlassPane |
++        BlockKind::BrownStainedGlassPane |
++        BlockKind::CyanStainedGlassPane |
++        BlockKind::GlassPane |
++        BlockKind::GrayStainedGlassPane |
++        BlockKind::GreenStainedGlassPane |
++        BlockKind::IronBars |
++        BlockKind::LightBlueStainedGlassPane |
++        BlockKind::LightGrayStainedGlassPane |
++        BlockKind::LimeStainedGlassPane |
++        BlockKind::MagentaStainedGlassPane |
++        BlockKind::OrangeStainedGlassPane |
++        BlockKind::PinkStainedGlassPane |
++        BlockKind::PurpleStainedGlassPane |
++        BlockKind::RedStainedGlassPane |
++        BlockKind::WhiteStainedGlassPane |
++        BlockKind::YellowStainedGlassPane => PlaceFamily::Pane,
++        BlockKind::AndesiteWall |
++        BlockKind::BlackstoneWall |
++        BlockKind::BrickWall |
++        BlockKind::CobbledDeepslateWall |
++        BlockKind::CobblestoneWall |
++        BlockKind::DeepslateBrickWall |
++        BlockKind::DeepslateTileWall |
++        BlockKind::DioriteWall |
++        BlockKind::EndStoneBrickWall |
++        BlockKind::GraniteWall |
++        BlockKind::MossyCobblestoneWall |
++        BlockKind::MossyStoneBrickWall |
++        BlockKind::MudBrickWall |
++        BlockKind::NetherBrickWall |
++        BlockKind::PolishedBlackstoneBrickWall |
++        BlockKind::PolishedBlackstoneWall |
++        BlockKind::PolishedDeepslateWall |
++        BlockKind::PolishedTuffWall |
++        BlockKind::PrismarineWall |
++        BlockKind::RedNetherBrickWall |
++        BlockKind::RedSandstoneWall |
++        BlockKind::ResinBrickWall |
++        BlockKind::SandstoneWall |
++        BlockKind::StoneBrickWall |
++        BlockKind::TuffBrickWall |
++        BlockKind::TuffWall => PlaceFamily::Wall,
++        BlockKind::AcaciaFenceGate |
++        BlockKind::BambooFenceGate |
++        BlockKind::BirchFenceGate |
++        BlockKind::CherryFenceGate |
++        BlockKind::CrimsonFenceGate |
++        BlockKind::DarkOakFenceGate |
++        BlockKind::JungleFenceGate |
++        BlockKind::MangroveFenceGate |
++        BlockKind::OakFenceGate |
++        BlockKind::PaleOakFenceGate |
++        BlockKind::SpruceFenceGate |
++        BlockKind::WarpedFenceGate => PlaceFamily::FenceGate,
++        BlockKind::AcaciaTrapdoor |
++        BlockKind::BambooTrapdoor |
++        BlockKind::BirchTrapdoor |
++        BlockKind::CherryTrapdoor |
++        BlockKind::CopperTrapdoor |
++        BlockKind::CrimsonTrapdoor |
++        BlockKind::DarkOakTrapdoor |
++        BlockKind::ExposedCopperTrapdoor |
++        BlockKind::IronTrapdoor |
++        BlockKind::JungleTrapdoor |
++        BlockKind::MangroveTrapdoor |
++        BlockKind::OakTrapdoor |
++        BlockKind::OxidizedCopperTrapdoor |
++        BlockKind::PaleOakTrapdoor |
++        BlockKind::SpruceTrapdoor |
++        BlockKind::WarpedTrapdoor |
++        BlockKind::WaxedCopperTrapdoor |
++        BlockKind::WaxedExposedCopperTrapdoor |
++        BlockKind::WaxedOxidizedCopperTrapdoor |
++        BlockKind::WaxedWeatheredCopperTrapdoor |
++        BlockKind::WeatheredCopperTrapdoor => PlaceFamily::Trapdoor,
++        BlockKind::AcaciaLeaves |
++        BlockKind::AzaleaLeaves |
++        BlockKind::BirchLeaves |
++        BlockKind::CherryLeaves |
++        BlockKind::DarkOakLeaves |
++        BlockKind::FloweringAzaleaLeaves |
++        BlockKind::JungleLeaves |
++        BlockKind::MangroveLeaves |
++        BlockKind::OakLeaves |
++        BlockKind::PaleOakLeaves |
++        BlockKind::SpruceLeaves => PlaceFamily::Leaves,
++        BlockKind::Chest |
++        BlockKind::TrappedChest => PlaceFamily::Chest,
++        BlockKind::Rail => PlaceFamily::Rail,
+         _ => PlaceFamily::Unknown,
+     }
+ }
+@@ -2257,6 +2386,2220 @@ pub fn plain_replace_rule(kind: BlockKind) -> bool {
+     )
+ }
+ 
++/// The wall block a torch item places on a side face (`StandingAndWallBlockItem`).
++pub fn torch_wall_block(kind: BlockKind) -> Option<BlockKind> {
++    match kind {
++        BlockKind::BrainCoralFan => Some(BlockKind::BrainCoralWallFan),
++        BlockKind::CopperTorch => Some(BlockKind::CopperWallTorch),
++        BlockKind::CreeperHead => Some(BlockKind::CreeperWallHead),
++        BlockKind::DragonHead => Some(BlockKind::DragonWallHead),
++        BlockKind::FireCoralFan => Some(BlockKind::FireCoralWallFan),
++        BlockKind::HornCoralFan => Some(BlockKind::HornCoralWallFan),
++        BlockKind::PiglinHead => Some(BlockKind::PiglinWallHead),
++        BlockKind::RedstoneTorch => Some(BlockKind::RedstoneWallTorch),
++        BlockKind::SkeletonSkull => Some(BlockKind::SkeletonWallSkull),
++        BlockKind::SoulTorch => Some(BlockKind::SoulWallTorch),
++        BlockKind::Torch => Some(BlockKind::WallTorch),
++        BlockKind::TubeCoralFan => Some(BlockKind::TubeCoralWallFan),
++        BlockKind::WitherSkeletonSkull => Some(BlockKind::WitherSkeletonWallSkull),
++        BlockKind::ZombieHead => Some(BlockKind::ZombieWallHead),
++        _ => None,
++    }
++}
++
++/// No class in the chain overrides `getSignal` or `isSignalSource`: the block never outputs
++/// redstone power (`SignalGetter#getSignal`).
++pub fn gives_no_signal(kind: BlockKind) -> bool {
++    matches!(
++        kind,
++        BlockKind::AcaciaDoor |
++        BlockKind::AcaciaFence |
++        BlockKind::AcaciaFenceGate |
++        BlockKind::AcaciaHangingSign |
++        BlockKind::AcaciaLeaves |
++        BlockKind::AcaciaLog |
++        BlockKind::AcaciaPlanks |
++        BlockKind::AcaciaSapling |
++        BlockKind::AcaciaShelf |
++        BlockKind::AcaciaSign |
++        BlockKind::AcaciaSlab |
++        BlockKind::AcaciaStairs |
++        BlockKind::AcaciaTrapdoor |
++        BlockKind::AcaciaWallHangingSign |
++        BlockKind::AcaciaWallSign |
++        BlockKind::AcaciaWood |
++        BlockKind::ActivatorRail |
++        BlockKind::Air |
++        BlockKind::Allium |
++        BlockKind::AmethystBlock |
++        BlockKind::AmethystCluster |
++        BlockKind::AncientDebris |
++        BlockKind::Andesite |
++        BlockKind::AndesiteSlab |
++        BlockKind::AndesiteStairs |
++        BlockKind::AndesiteWall |
++        BlockKind::Anvil |
++        BlockKind::AttachedMelonStem |
++        BlockKind::AttachedPumpkinStem |
++        BlockKind::Azalea |
++        BlockKind::AzaleaLeaves |
++        BlockKind::AzureBluet |
++        BlockKind::Bamboo |
++        BlockKind::BambooBlock |
++        BlockKind::BambooDoor |
++        BlockKind::BambooFence |
++        BlockKind::BambooFenceGate |
++        BlockKind::BambooHangingSign |
++        BlockKind::BambooMosaic |
++        BlockKind::BambooMosaicSlab |
++        BlockKind::BambooMosaicStairs |
++        BlockKind::BambooPlanks |
++        BlockKind::BambooSapling |
++        BlockKind::BambooShelf |
++        BlockKind::BambooSign |
++        BlockKind::BambooSlab |
++        BlockKind::BambooStairs |
++        BlockKind::BambooTrapdoor |
++        BlockKind::BambooWallHangingSign |
++        BlockKind::BambooWallSign |
++        BlockKind::Barrel |
++        BlockKind::Barrier |
++        BlockKind::Basalt |
++        BlockKind::Beacon |
++        BlockKind::Bedrock |
++        BlockKind::BeeNest |
++        BlockKind::Beehive |
++        BlockKind::Beetroots |
++        BlockKind::Bell |
++        BlockKind::BigDripleaf |
++        BlockKind::BigDripleafStem |
++        BlockKind::BirchDoor |
++        BlockKind::BirchFence |
++        BlockKind::BirchFenceGate |
++        BlockKind::BirchHangingSign |
++        BlockKind::BirchLeaves |
++        BlockKind::BirchLog |
++        BlockKind::BirchPlanks |
++        BlockKind::BirchSapling |
++        BlockKind::BirchShelf |
++        BlockKind::BirchSign |
++        BlockKind::BirchSlab |
++        BlockKind::BirchStairs |
++        BlockKind::BirchTrapdoor |
++        BlockKind::BirchWallHangingSign |
++        BlockKind::BirchWallSign |
++        BlockKind::BirchWood |
++        BlockKind::BlackBanner |
++        BlockKind::BlackBed |
++        BlockKind::BlackCandle |
++        BlockKind::BlackCandleCake |
++        BlockKind::BlackCarpet |
++        BlockKind::BlackConcrete |
++        BlockKind::BlackConcretePowder |
++        BlockKind::BlackGlazedTerracotta |
++        BlockKind::BlackShulkerBox |
++        BlockKind::BlackStainedGlass |
++        BlockKind::BlackStainedGlassPane |
++        BlockKind::BlackTerracotta |
++        BlockKind::BlackWallBanner |
++        BlockKind::BlackWool |
++        BlockKind::Blackstone |
++        BlockKind::BlackstoneSlab |
++        BlockKind::BlackstoneStairs |
++        BlockKind::BlackstoneWall |
++        BlockKind::BlastFurnace |
++        BlockKind::BlueBanner |
++        BlockKind::BlueBed |
++        BlockKind::BlueCandle |
++        BlockKind::BlueCandleCake |
++        BlockKind::BlueCarpet |
++        BlockKind::BlueConcrete |
++        BlockKind::BlueConcretePowder |
++        BlockKind::BlueGlazedTerracotta |
++        BlockKind::BlueIce |
++        BlockKind::BlueOrchid |
++        BlockKind::BlueShulkerBox |
++        BlockKind::BlueStainedGlass |
++        BlockKind::BlueStainedGlassPane |
++        BlockKind::BlueTerracotta |
++        BlockKind::BlueWallBanner |
++        BlockKind::BlueWool |
++        BlockKind::BoneBlock |
++        BlockKind::Bookshelf |
++        BlockKind::BrainCoral |
++        BlockKind::BrainCoralBlock |
++        BlockKind::BrainCoralFan |
++        BlockKind::BrainCoralWallFan |
++        BlockKind::BrewingStand |
++        BlockKind::BrickSlab |
++        BlockKind::BrickStairs |
++        BlockKind::BrickWall |
++        BlockKind::Bricks |
++        BlockKind::BrownBanner |
++        BlockKind::BrownBed |
++        BlockKind::BrownCandle |
++        BlockKind::BrownCandleCake |
++        BlockKind::BrownCarpet |
++        BlockKind::BrownConcrete |
++        BlockKind::BrownConcretePowder |
++        BlockKind::BrownGlazedTerracotta |
++        BlockKind::BrownMushroom |
++        BlockKind::BrownMushroomBlock |
++        BlockKind::BrownShulkerBox |
++        BlockKind::BrownStainedGlass |
++        BlockKind::BrownStainedGlassPane |
++        BlockKind::BrownTerracotta |
++        BlockKind::BrownWallBanner |
++        BlockKind::BrownWool |
++        BlockKind::BubbleColumn |
++        BlockKind::BubbleCoral |
++        BlockKind::BubbleCoralBlock |
++        BlockKind::BubbleCoralFan |
++        BlockKind::BubbleCoralWallFan |
++        BlockKind::BuddingAmethyst |
++        BlockKind::Bush |
++        BlockKind::Cactus |
++        BlockKind::CactusFlower |
++        BlockKind::Cake |
++        BlockKind::Calcite |
++        BlockKind::Campfire |
++        BlockKind::Candle |
++        BlockKind::CandleCake |
++        BlockKind::Carrots |
++        BlockKind::CartographyTable |
++        BlockKind::CarvedPumpkin |
++        BlockKind::Cauldron |
++        BlockKind::CaveAir |
++        BlockKind::CaveVines |
++        BlockKind::CaveVinesPlant |
++        BlockKind::ChainCommandBlock |
++        BlockKind::CherryDoor |
++        BlockKind::CherryFence |
++        BlockKind::CherryFenceGate |
++        BlockKind::CherryHangingSign |
++        BlockKind::CherryLeaves |
++        BlockKind::CherryLog |
++        BlockKind::CherryPlanks |
++        BlockKind::CherrySapling |
++        BlockKind::CherryShelf |
++        BlockKind::CherrySign |
++        BlockKind::CherrySlab |
++        BlockKind::CherryStairs |
++        BlockKind::CherryTrapdoor |
++        BlockKind::CherryWallHangingSign |
++        BlockKind::CherryWallSign |
++        BlockKind::CherryWood |
++        BlockKind::Chest |
++        BlockKind::ChippedAnvil |
++        BlockKind::ChiseledBookshelf |
++        BlockKind::ChiseledCopper |
++        BlockKind::ChiseledDeepslate |
++        BlockKind::ChiseledNetherBricks |
++        BlockKind::ChiseledPolishedBlackstone |
++        BlockKind::ChiseledQuartzBlock |
++        BlockKind::ChiseledRedSandstone |
++        BlockKind::ChiseledResinBricks |
++        BlockKind::ChiseledSandstone |
++        BlockKind::ChiseledStoneBricks |
++        BlockKind::ChiseledTuff |
++        BlockKind::ChiseledTuffBricks |
++        BlockKind::ChorusFlower |
++        BlockKind::ChorusPlant |
++        BlockKind::Clay |
++        BlockKind::ClosedEyeblossom |
++        BlockKind::CoalBlock |
++        BlockKind::CoalOre |
++        BlockKind::CoarseDirt |
++        BlockKind::CobbledDeepslate |
++        BlockKind::CobbledDeepslateSlab |
++        BlockKind::CobbledDeepslateStairs |
++        BlockKind::CobbledDeepslateWall |
++        BlockKind::Cobblestone |
++        BlockKind::CobblestoneSlab |
++        BlockKind::CobblestoneStairs |
++        BlockKind::CobblestoneWall |
++        BlockKind::Cobweb |
++        BlockKind::Cocoa |
++        BlockKind::CommandBlock |
++        BlockKind::Composter |
++        BlockKind::Conduit |
++        BlockKind::CopperBlock |
++        BlockKind::CopperBulb |
++        BlockKind::CopperChest |
++        BlockKind::CopperDoor |
++        BlockKind::CopperGolemStatue |
++        BlockKind::CopperGrate |
++        BlockKind::CopperOre |
++        BlockKind::CopperTorch |
++        BlockKind::CopperTrapdoor |
++        BlockKind::CopperWallTorch |
++        BlockKind::Cornflower |
++        BlockKind::CrackedDeepslateBricks |
++        BlockKind::CrackedDeepslateTiles |
++        BlockKind::CrackedNetherBricks |
++        BlockKind::CrackedPolishedBlackstoneBricks |
++        BlockKind::CrackedStoneBricks |
++        BlockKind::Crafter |
++        BlockKind::CraftingTable |
++        BlockKind::CreakingHeart |
++        BlockKind::CreeperHead |
++        BlockKind::CreeperWallHead |
++        BlockKind::CrimsonDoor |
++        BlockKind::CrimsonFence |
++        BlockKind::CrimsonFenceGate |
++        BlockKind::CrimsonFungus |
++        BlockKind::CrimsonHangingSign |
++        BlockKind::CrimsonHyphae |
++        BlockKind::CrimsonNylium |
++        BlockKind::CrimsonPlanks |
++        BlockKind::CrimsonRoots |
++        BlockKind::CrimsonShelf |
++        BlockKind::CrimsonSign |
++        BlockKind::CrimsonSlab |
++        BlockKind::CrimsonStairs |
++        BlockKind::CrimsonStem |
++        BlockKind::CrimsonTrapdoor |
++        BlockKind::CrimsonWallHangingSign |
++        BlockKind::CrimsonWallSign |
++        BlockKind::CryingObsidian |
++        BlockKind::CutCopper |
++        BlockKind::CutCopperSlab |
++        BlockKind::CutCopperStairs |
++        BlockKind::CutRedSandstone |
++        BlockKind::CutRedSandstoneSlab |
++        BlockKind::CutSandstone |
++        BlockKind::CutSandstoneSlab |
++        BlockKind::CyanBanner |
++        BlockKind::CyanBed |
++        BlockKind::CyanCandle |
++        BlockKind::CyanCandleCake |
++        BlockKind::CyanCarpet |
++        BlockKind::CyanConcrete |
++        BlockKind::CyanConcretePowder |
++        BlockKind::CyanGlazedTerracotta |
++        BlockKind::CyanShulkerBox |
++        BlockKind::CyanStainedGlass |
++        BlockKind::CyanStainedGlassPane |
++        BlockKind::CyanTerracotta |
++        BlockKind::CyanWallBanner |
++        BlockKind::CyanWool |
++        BlockKind::DamagedAnvil |
++        BlockKind::Dandelion |
++        BlockKind::DarkOakDoor |
++        BlockKind::DarkOakFence |
++        BlockKind::DarkOakFenceGate |
++        BlockKind::DarkOakHangingSign |
++        BlockKind::DarkOakLeaves |
++        BlockKind::DarkOakLog |
++        BlockKind::DarkOakPlanks |
++        BlockKind::DarkOakSapling |
++        BlockKind::DarkOakShelf |
++        BlockKind::DarkOakSign |
++        BlockKind::DarkOakSlab |
++        BlockKind::DarkOakStairs |
++        BlockKind::DarkOakTrapdoor |
++        BlockKind::DarkOakWallHangingSign |
++        BlockKind::DarkOakWallSign |
++        BlockKind::DarkOakWood |
++        BlockKind::DarkPrismarine |
++        BlockKind::DarkPrismarineSlab |
++        BlockKind::DarkPrismarineStairs |
++        BlockKind::DeadBrainCoral |
++        BlockKind::DeadBrainCoralBlock |
++        BlockKind::DeadBrainCoralFan |
++        BlockKind::DeadBrainCoralWallFan |
++        BlockKind::DeadBubbleCoral |
++        BlockKind::DeadBubbleCoralBlock |
++        BlockKind::DeadBubbleCoralFan |
++        BlockKind::DeadBubbleCoralWallFan |
++        BlockKind::DeadBush |
++        BlockKind::DeadFireCoral |
++        BlockKind::DeadFireCoralBlock |
++        BlockKind::DeadFireCoralFan |
++        BlockKind::DeadFireCoralWallFan |
++        BlockKind::DeadHornCoral |
++        BlockKind::DeadHornCoralBlock |
++        BlockKind::DeadHornCoralFan |
++        BlockKind::DeadHornCoralWallFan |
++        BlockKind::DeadTubeCoral |
++        BlockKind::DeadTubeCoralBlock |
++        BlockKind::DeadTubeCoralFan |
++        BlockKind::DeadTubeCoralWallFan |
++        BlockKind::DecoratedPot |
++        BlockKind::Deepslate |
++        BlockKind::DeepslateBrickSlab |
++        BlockKind::DeepslateBrickStairs |
++        BlockKind::DeepslateBrickWall |
++        BlockKind::DeepslateBricks |
++        BlockKind::DeepslateCoalOre |
++        BlockKind::DeepslateCopperOre |
++        BlockKind::DeepslateDiamondOre |
++        BlockKind::DeepslateEmeraldOre |
++        BlockKind::DeepslateGoldOre |
++        BlockKind::DeepslateIronOre |
++        BlockKind::DeepslateLapisOre |
++        BlockKind::DeepslateRedstoneOre |
++        BlockKind::DeepslateTileSlab |
++        BlockKind::DeepslateTileStairs |
++        BlockKind::DeepslateTileWall |
++        BlockKind::DeepslateTiles |
++        BlockKind::DiamondBlock |
++        BlockKind::DiamondOre |
++        BlockKind::Diorite |
++        BlockKind::DioriteSlab |
++        BlockKind::DioriteStairs |
++        BlockKind::DioriteWall |
++        BlockKind::Dirt |
++        BlockKind::DirtPath |
++        BlockKind::Dispenser |
++        BlockKind::DragonEgg |
++        BlockKind::DragonHead |
++        BlockKind::DragonWallHead |
++        BlockKind::DriedGhast |
++        BlockKind::DriedKelpBlock |
++        BlockKind::DripstoneBlock |
++        BlockKind::Dropper |
++        BlockKind::EmeraldBlock |
++        BlockKind::EmeraldOre |
++        BlockKind::EnchantingTable |
++        BlockKind::EndGateway |
++        BlockKind::EndPortal |
++        BlockKind::EndPortalFrame |
++        BlockKind::EndRod |
++        BlockKind::EndStone |
++        BlockKind::EndStoneBrickSlab |
++        BlockKind::EndStoneBrickStairs |
++        BlockKind::EndStoneBrickWall |
++        BlockKind::EndStoneBricks |
++        BlockKind::EnderChest |
++        BlockKind::ExposedChiseledCopper |
++        BlockKind::ExposedCopper |
++        BlockKind::ExposedCopperBulb |
++        BlockKind::ExposedCopperChest |
++        BlockKind::ExposedCopperDoor |
++        BlockKind::ExposedCopperGolemStatue |
++        BlockKind::ExposedCopperGrate |
++        BlockKind::ExposedCopperTrapdoor |
++        BlockKind::ExposedCutCopper |
++        BlockKind::ExposedCutCopperSlab |
++        BlockKind::ExposedCutCopperStairs |
++        BlockKind::Farmland |
++        BlockKind::Fern |
++        BlockKind::Fire |
++        BlockKind::FireCoral |
++        BlockKind::FireCoralBlock |
++        BlockKind::FireCoralFan |
++        BlockKind::FireCoralWallFan |
++        BlockKind::FireflyBush |
++        BlockKind::FletchingTable |
++        BlockKind::FlowerPot |
++        BlockKind::FloweringAzalea |
++        BlockKind::FloweringAzaleaLeaves |
++        BlockKind::Frogspawn |
++        BlockKind::FrostedIce |
++        BlockKind::Furnace |
++        BlockKind::GildedBlackstone |
++        BlockKind::Glass |
++        BlockKind::GlassPane |
++        BlockKind::GlowLichen |
++        BlockKind::Glowstone |
++        BlockKind::GoldBlock |
++        BlockKind::GoldOre |
++        BlockKind::Granite |
++        BlockKind::GraniteSlab |
++        BlockKind::GraniteStairs |
++        BlockKind::GraniteWall |
++        BlockKind::GrassBlock |
++        BlockKind::Gravel |
++        BlockKind::GrayBanner |
++        BlockKind::GrayBed |
++        BlockKind::GrayCandle |
++        BlockKind::GrayCandleCake |
++        BlockKind::GrayCarpet |
++        BlockKind::GrayConcrete |
++        BlockKind::GrayConcretePowder |
++        BlockKind::GrayGlazedTerracotta |
++        BlockKind::GrayShulkerBox |
++        BlockKind::GrayStainedGlass |
++        BlockKind::GrayStainedGlassPane |
++        BlockKind::GrayTerracotta |
++        BlockKind::GrayWallBanner |
++        BlockKind::GrayWool |
++        BlockKind::GreenBanner |
++        BlockKind::GreenBed |
++        BlockKind::GreenCandle |
++        BlockKind::GreenCandleCake |
++        BlockKind::GreenCarpet |
++        BlockKind::GreenConcrete |
++        BlockKind::GreenConcretePowder |
++        BlockKind::GreenGlazedTerracotta |
++        BlockKind::GreenShulkerBox |
++        BlockKind::GreenStainedGlass |
++        BlockKind::GreenStainedGlassPane |
++        BlockKind::GreenTerracotta |
++        BlockKind::GreenWallBanner |
++        BlockKind::GreenWool |
++        BlockKind::Grindstone |
++        BlockKind::HangingRoots |
++        BlockKind::HayBlock |
++        BlockKind::HeavyCore |
++        BlockKind::HoneyBlock |
++        BlockKind::HoneycombBlock |
++        BlockKind::Hopper |
++        BlockKind::HornCoral |
++        BlockKind::HornCoralBlock |
++        BlockKind::HornCoralFan |
++        BlockKind::HornCoralWallFan |
++        BlockKind::Ice |
++        BlockKind::InfestedChiseledStoneBricks |
++        BlockKind::InfestedCobblestone |
++        BlockKind::InfestedCrackedStoneBricks |
++        BlockKind::InfestedDeepslate |
++        BlockKind::InfestedMossyStoneBricks |
++        BlockKind::InfestedStone |
++        BlockKind::InfestedStoneBricks |
++        BlockKind::IronBars |
++        BlockKind::IronBlock |
++        BlockKind::IronChain |
++        BlockKind::IronDoor |
++        BlockKind::IronOre |
++        BlockKind::IronTrapdoor |
++        BlockKind::JackOLantern |
++        BlockKind::Jigsaw |
++        BlockKind::JungleDoor |
++        BlockKind::JungleFence |
++        BlockKind::JungleFenceGate |
++        BlockKind::JungleHangingSign |
++        BlockKind::JungleLeaves |
++        BlockKind::JungleLog |
++        BlockKind::JunglePlanks |
++        BlockKind::JungleSapling |
++        BlockKind::JungleShelf |
++        BlockKind::JungleSign |
++        BlockKind::JungleSlab |
++        BlockKind::JungleStairs |
++        BlockKind::JungleTrapdoor |
++        BlockKind::JungleWallHangingSign |
++        BlockKind::JungleWallSign |
++        BlockKind::JungleWood |
++        BlockKind::Kelp |
++        BlockKind::KelpPlant |
++        BlockKind::Ladder |
++        BlockKind::Lantern |
++        BlockKind::LapisBlock |
++        BlockKind::LapisOre |
++        BlockKind::LargeAmethystBud |
++        BlockKind::LargeFern |
++        BlockKind::Lava |
++        BlockKind::LavaCauldron |
++        BlockKind::LeafLitter |
++        BlockKind::Light |
++        BlockKind::LightBlueBanner |
++        BlockKind::LightBlueBed |
++        BlockKind::LightBlueCandle |
++        BlockKind::LightBlueCandleCake |
++        BlockKind::LightBlueCarpet |
++        BlockKind::LightBlueConcrete |
++        BlockKind::LightBlueConcretePowder |
++        BlockKind::LightBlueGlazedTerracotta |
++        BlockKind::LightBlueShulkerBox |
++        BlockKind::LightBlueStainedGlass |
++        BlockKind::LightBlueStainedGlassPane |
++        BlockKind::LightBlueTerracotta |
++        BlockKind::LightBlueWallBanner |
++        BlockKind::LightBlueWool |
++        BlockKind::LightGrayBanner |
++        BlockKind::LightGrayBed |
++        BlockKind::LightGrayCandle |
++        BlockKind::LightGrayCandleCake |
++        BlockKind::LightGrayCarpet |
++        BlockKind::LightGrayConcrete |
++        BlockKind::LightGrayConcretePowder |
++        BlockKind::LightGrayGlazedTerracotta |
++        BlockKind::LightGrayShulkerBox |
++        BlockKind::LightGrayStainedGlass |
++        BlockKind::LightGrayStainedGlassPane |
++        BlockKind::LightGrayTerracotta |
++        BlockKind::LightGrayWallBanner |
++        BlockKind::LightGrayWool |
++        BlockKind::Lilac |
++        BlockKind::LilyOfTheValley |
++        BlockKind::LilyPad |
++        BlockKind::LimeBanner |
++        BlockKind::LimeBed |
++        BlockKind::LimeCandle |
++        BlockKind::LimeCandleCake |
++        BlockKind::LimeCarpet |
++        BlockKind::LimeConcrete |
++        BlockKind::LimeConcretePowder |
++        BlockKind::LimeGlazedTerracotta |
++        BlockKind::LimeShulkerBox |
++        BlockKind::LimeStainedGlass |
++        BlockKind::LimeStainedGlassPane |
++        BlockKind::LimeTerracotta |
++        BlockKind::LimeWallBanner |
++        BlockKind::LimeWool |
++        BlockKind::Lodestone |
++        BlockKind::Loom |
++        BlockKind::MagentaBanner |
++        BlockKind::MagentaBed |
++        BlockKind::MagentaCandle |
++        BlockKind::MagentaCandleCake |
++        BlockKind::MagentaCarpet |
++        BlockKind::MagentaConcrete |
++        BlockKind::MagentaConcretePowder |
++        BlockKind::MagentaGlazedTerracotta |
++        BlockKind::MagentaShulkerBox |
++        BlockKind::MagentaStainedGlass |
++        BlockKind::MagentaStainedGlassPane |
++        BlockKind::MagentaTerracotta |
++        BlockKind::MagentaWallBanner |
++        BlockKind::MagentaWool |
++        BlockKind::MagmaBlock |
++        BlockKind::MangroveDoor |
++        BlockKind::MangroveFence |
++        BlockKind::MangroveFenceGate |
++        BlockKind::MangroveHangingSign |
++        BlockKind::MangroveLeaves |
++        BlockKind::MangroveLog |
++        BlockKind::MangrovePlanks |
++        BlockKind::MangrovePropagule |
++        BlockKind::MangroveRoots |
++        BlockKind::MangroveShelf |
++        BlockKind::MangroveSign |
++        BlockKind::MangroveSlab |
++        BlockKind::MangroveStairs |
++        BlockKind::MangroveTrapdoor |
++        BlockKind::MangroveWallHangingSign |
++        BlockKind::MangroveWallSign |
++        BlockKind::MangroveWood |
++        BlockKind::MediumAmethystBud |
++        BlockKind::Melon |
++        BlockKind::MelonStem |
++        BlockKind::MossBlock |
++        BlockKind::MossCarpet |
++        BlockKind::MossyCobblestone |
++        BlockKind::MossyCobblestoneSlab |
++        BlockKind::MossyCobblestoneStairs |
++        BlockKind::MossyCobblestoneWall |
++        BlockKind::MossyStoneBrickSlab |
++        BlockKind::MossyStoneBrickStairs |
++        BlockKind::MossyStoneBrickWall |
++        BlockKind::MossyStoneBricks |
++        BlockKind::MovingPiston |
++        BlockKind::Mud |
++        BlockKind::MudBrickSlab |
++        BlockKind::MudBrickStairs |
++        BlockKind::MudBrickWall |
++        BlockKind::MudBricks |
++        BlockKind::MuddyMangroveRoots |
++        BlockKind::MushroomStem |
++        BlockKind::Mycelium |
++        BlockKind::NetherBrickFence |
++        BlockKind::NetherBrickSlab |
++        BlockKind::NetherBrickStairs |
++        BlockKind::NetherBrickWall |
++        BlockKind::NetherBricks |
++        BlockKind::NetherGoldOre |
++        BlockKind::NetherPortal |
++        BlockKind::NetherQuartzOre |
++        BlockKind::NetherSprouts |
++        BlockKind::NetherWart |
++        BlockKind::NetherWartBlock |
++        BlockKind::NetheriteBlock |
++        BlockKind::Netherrack |
++        BlockKind::NoteBlock |
++        BlockKind::OakDoor |
++        BlockKind::OakFence |
++        BlockKind::OakFenceGate |
++        BlockKind::OakHangingSign |
++        BlockKind::OakLeaves |
++        BlockKind::OakLog |
++        BlockKind::OakPlanks |
++        BlockKind::OakSapling |
++        BlockKind::OakShelf |
++        BlockKind::OakSign |
++        BlockKind::OakSlab |
++        BlockKind::OakStairs |
++        BlockKind::OakTrapdoor |
++        BlockKind::OakWallHangingSign |
++        BlockKind::OakWallSign |
++        BlockKind::OakWood |
++        BlockKind::Obsidian |
++        BlockKind::OchreFroglight |
++        BlockKind::OpenEyeblossom |
++        BlockKind::OrangeBanner |
++        BlockKind::OrangeBed |
++        BlockKind::OrangeCandle |
++        BlockKind::OrangeCandleCake |
++        BlockKind::OrangeCarpet |
++        BlockKind::OrangeConcrete |
++        BlockKind::OrangeConcretePowder |
++        BlockKind::OrangeGlazedTerracotta |
++        BlockKind::OrangeShulkerBox |
++        BlockKind::OrangeStainedGlass |
++        BlockKind::OrangeStainedGlassPane |
++        BlockKind::OrangeTerracotta |
++        BlockKind::OrangeTulip |
++        BlockKind::OrangeWallBanner |
++        BlockKind::OrangeWool |
++        BlockKind::OxeyeDaisy |
++        BlockKind::OxidizedChiseledCopper |
++        BlockKind::OxidizedCopper |
++        BlockKind::OxidizedCopperBulb |
++        BlockKind::OxidizedCopperChest |
++        BlockKind::OxidizedCopperDoor |
++        BlockKind::OxidizedCopperGolemStatue |
++        BlockKind::OxidizedCopperGrate |
++        BlockKind::OxidizedCopperTrapdoor |
++        BlockKind::OxidizedCutCopper |
++        BlockKind::OxidizedCutCopperSlab |
++        BlockKind::OxidizedCutCopperStairs |
++        BlockKind::PackedIce |
++        BlockKind::PackedMud |
++        BlockKind::PaleHangingMoss |
++        BlockKind::PaleMossBlock |
++        BlockKind::PaleMossCarpet |
++        BlockKind::PaleOakDoor |
++        BlockKind::PaleOakFence |
++        BlockKind::PaleOakFenceGate |
++        BlockKind::PaleOakHangingSign |
++        BlockKind::PaleOakLeaves |
++        BlockKind::PaleOakLog |
++        BlockKind::PaleOakPlanks |
++        BlockKind::PaleOakSapling |
++        BlockKind::PaleOakShelf |
++        BlockKind::PaleOakSign |
++        BlockKind::PaleOakSlab |
++        BlockKind::PaleOakStairs |
++        BlockKind::PaleOakTrapdoor |
++        BlockKind::PaleOakWallHangingSign |
++        BlockKind::PaleOakWallSign |
++        BlockKind::PaleOakWood |
++        BlockKind::PearlescentFroglight |
++        BlockKind::Peony |
++        BlockKind::PetrifiedOakSlab |
++        BlockKind::PiglinHead |
++        BlockKind::PiglinWallHead |
++        BlockKind::PinkBanner |
++        BlockKind::PinkBed |
++        BlockKind::PinkCandle |
++        BlockKind::PinkCandleCake |
++        BlockKind::PinkCarpet |
++        BlockKind::PinkConcrete |
++        BlockKind::PinkConcretePowder |
++        BlockKind::PinkGlazedTerracotta |
++        BlockKind::PinkPetals |
++        BlockKind::PinkShulkerBox |
++        BlockKind::PinkStainedGlass |
++        BlockKind::PinkStainedGlassPane |
++        BlockKind::PinkTerracotta |
++        BlockKind::PinkTulip |
++        BlockKind::PinkWallBanner |
++        BlockKind::PinkWool |
++        BlockKind::Piston |
++        BlockKind::PistonHead |
++        BlockKind::PitcherCrop |
++        BlockKind::PitcherPlant |
++        BlockKind::PlayerHead |
++        BlockKind::PlayerWallHead |
++        BlockKind::Podzol |
++        BlockKind::PointedDripstone |
++        BlockKind::PolishedAndesite |
++        BlockKind::PolishedAndesiteSlab |
++        BlockKind::PolishedAndesiteStairs |
++        BlockKind::PolishedBasalt |
++        BlockKind::PolishedBlackstone |
++        BlockKind::PolishedBlackstoneBrickSlab |
++        BlockKind::PolishedBlackstoneBrickStairs |
++        BlockKind::PolishedBlackstoneBrickWall |
++        BlockKind::PolishedBlackstoneBricks |
++        BlockKind::PolishedBlackstoneSlab |
++        BlockKind::PolishedBlackstoneStairs |
++        BlockKind::PolishedBlackstoneWall |
++        BlockKind::PolishedDeepslate |
++        BlockKind::PolishedDeepslateSlab |
++        BlockKind::PolishedDeepslateStairs |
++        BlockKind::PolishedDeepslateWall |
++        BlockKind::PolishedDiorite |
++        BlockKind::PolishedDioriteSlab |
++        BlockKind::PolishedDioriteStairs |
++        BlockKind::PolishedGranite |
++        BlockKind::PolishedGraniteSlab |
++        BlockKind::PolishedGraniteStairs |
++        BlockKind::PolishedTuff |
++        BlockKind::PolishedTuffSlab |
++        BlockKind::PolishedTuffStairs |
++        BlockKind::PolishedTuffWall |
++        BlockKind::Poppy |
++        BlockKind::Potatoes |
++        BlockKind::PottedAcaciaSapling |
++        BlockKind::PottedAllium |
++        BlockKind::PottedAzaleaBush |
++        BlockKind::PottedAzureBluet |
++        BlockKind::PottedBamboo |
++        BlockKind::PottedBirchSapling |
++        BlockKind::PottedBlueOrchid |
++        BlockKind::PottedBrownMushroom |
++        BlockKind::PottedCactus |
++        BlockKind::PottedCherrySapling |
++        BlockKind::PottedClosedEyeblossom |
++        BlockKind::PottedCornflower |
++        BlockKind::PottedCrimsonFungus |
++        BlockKind::PottedCrimsonRoots |
++        BlockKind::PottedDandelion |
++        BlockKind::PottedDarkOakSapling |
++        BlockKind::PottedDeadBush |
++        BlockKind::PottedFern |
++        BlockKind::PottedFloweringAzaleaBush |
++        BlockKind::PottedJungleSapling |
++        BlockKind::PottedLilyOfTheValley |
++        BlockKind::PottedMangrovePropagule |
++        BlockKind::PottedOakSapling |
++        BlockKind::PottedOpenEyeblossom |
++        BlockKind::PottedOrangeTulip |
++        BlockKind::PottedOxeyeDaisy |
++        BlockKind::PottedPaleOakSapling |
++        BlockKind::PottedPinkTulip |
++        BlockKind::PottedPoppy |
++        BlockKind::PottedRedMushroom |
++        BlockKind::PottedRedTulip |
++        BlockKind::PottedSpruceSapling |
++        BlockKind::PottedTorchflower |
++        BlockKind::PottedWarpedFungus |
++        BlockKind::PottedWarpedRoots |
++        BlockKind::PottedWhiteTulip |
++        BlockKind::PottedWitherRose |
++        BlockKind::PowderSnow |
++        BlockKind::PowderSnowCauldron |
++        BlockKind::PoweredRail |
++        BlockKind::Prismarine |
++        BlockKind::PrismarineBrickSlab |
++        BlockKind::PrismarineBrickStairs |
++        BlockKind::PrismarineBricks |
++        BlockKind::PrismarineSlab |
++        BlockKind::PrismarineStairs |
++        BlockKind::PrismarineWall |
++        BlockKind::Pumpkin |
++        BlockKind::PumpkinStem |
++        BlockKind::PurpleBanner |
++        BlockKind::PurpleBed |
++        BlockKind::PurpleCandle |
++        BlockKind::PurpleCandleCake |
++        BlockKind::PurpleCarpet |
++        BlockKind::PurpleConcrete |
++        BlockKind::PurpleConcretePowder |
++        BlockKind::PurpleGlazedTerracotta |
++        BlockKind::PurpleShulkerBox |
++        BlockKind::PurpleStainedGlass |
++        BlockKind::PurpleStainedGlassPane |
++        BlockKind::PurpleTerracotta |
++        BlockKind::PurpleWallBanner |
++        BlockKind::PurpleWool |
++        BlockKind::PurpurBlock |
++        BlockKind::PurpurPillar |
++        BlockKind::PurpurSlab |
++        BlockKind::PurpurStairs |
++        BlockKind::QuartzBlock |
++        BlockKind::QuartzBricks |
++        BlockKind::QuartzPillar |
++        BlockKind::QuartzSlab |
++        BlockKind::QuartzStairs |
++        BlockKind::Rail |
++        BlockKind::RawCopperBlock |
++        BlockKind::RawGoldBlock |
++        BlockKind::RawIronBlock |
++        BlockKind::RedBanner |
++        BlockKind::RedBed |
++        BlockKind::RedCandle |
++        BlockKind::RedCandleCake |
++        BlockKind::RedCarpet |
++        BlockKind::RedConcrete |
++        BlockKind::RedConcretePowder |
++        BlockKind::RedGlazedTerracotta |
++        BlockKind::RedMushroom |
++        BlockKind::RedMushroomBlock |
++        BlockKind::RedNetherBrickSlab |
++        BlockKind::RedNetherBrickStairs |
++        BlockKind::RedNetherBrickWall |
++        BlockKind::RedNetherBricks |
++        BlockKind::RedSand |
++        BlockKind::RedSandstone |
++        BlockKind::RedSandstoneSlab |
++        BlockKind::RedSandstoneStairs |
++        BlockKind::RedSandstoneWall |
++        BlockKind::RedShulkerBox |
++        BlockKind::RedStainedGlass |
++        BlockKind::RedStainedGlassPane |
++        BlockKind::RedTerracotta |
++        BlockKind::RedTulip |
++        BlockKind::RedWallBanner |
++        BlockKind::RedWool |
++        BlockKind::RedstoneLamp |
++        BlockKind::RedstoneOre |
++        BlockKind::ReinforcedDeepslate |
++        BlockKind::RepeatingCommandBlock |
++        BlockKind::ResinBlock |
++        BlockKind::ResinBrickSlab |
++        BlockKind::ResinBrickStairs |
++        BlockKind::ResinBrickWall |
++        BlockKind::ResinBricks |
++        BlockKind::ResinClump |
++        BlockKind::RespawnAnchor |
++        BlockKind::RootedDirt |
++        BlockKind::RoseBush |
++        BlockKind::Sand |
++        BlockKind::Sandstone |
++        BlockKind::SandstoneSlab |
++        BlockKind::SandstoneStairs |
++        BlockKind::SandstoneWall |
++        BlockKind::Scaffolding |
++        BlockKind::Sculk |
++        BlockKind::SculkCatalyst |
++        BlockKind::SculkShrieker |
++        BlockKind::SculkVein |
++        BlockKind::SeaLantern |
++        BlockKind::SeaPickle |
++        BlockKind::Seagrass |
++        BlockKind::ShortDryGrass |
++        BlockKind::ShortGrass |
++        BlockKind::Shroomlight |
++        BlockKind::ShulkerBox |
++        BlockKind::SkeletonSkull |
++        BlockKind::SkeletonWallSkull |
++        BlockKind::SlimeBlock |
++        BlockKind::SmallAmethystBud |
++        BlockKind::SmallDripleaf |
++        BlockKind::SmithingTable |
++        BlockKind::Smoker |
++        BlockKind::SmoothBasalt |
++        BlockKind::SmoothQuartz |
++        BlockKind::SmoothQuartzSlab |
++        BlockKind::SmoothQuartzStairs |
++        BlockKind::SmoothRedSandstone |
++        BlockKind::SmoothRedSandstoneSlab |
++        BlockKind::SmoothRedSandstoneStairs |
++        BlockKind::SmoothSandstone |
++        BlockKind::SmoothSandstoneSlab |
++        BlockKind::SmoothSandstoneStairs |
++        BlockKind::SmoothStone |
++        BlockKind::SmoothStoneSlab |
++        BlockKind::SnifferEgg |
++        BlockKind::Snow |
++        BlockKind::SnowBlock |
++        BlockKind::SoulCampfire |
++        BlockKind::SoulFire |
++        BlockKind::SoulLantern |
++        BlockKind::SoulSand |
++        BlockKind::SoulSoil |
++        BlockKind::SoulTorch |
++        BlockKind::SoulWallTorch |
++        BlockKind::Spawner |
++        BlockKind::Sponge |
++        BlockKind::SporeBlossom |
++        BlockKind::SpruceDoor |
++        BlockKind::SpruceFence |
++        BlockKind::SpruceFenceGate |
++        BlockKind::SpruceHangingSign |
++        BlockKind::SpruceLeaves |
++        BlockKind::SpruceLog |
++        BlockKind::SprucePlanks |
++        BlockKind::SpruceSapling |
++        BlockKind::SpruceShelf |
++        BlockKind::SpruceSign |
++        BlockKind::SpruceSlab |
++        BlockKind::SpruceStairs |
++        BlockKind::SpruceTrapdoor |
++        BlockKind::SpruceWallHangingSign |
++        BlockKind::SpruceWallSign |
++        BlockKind::SpruceWood |
++        BlockKind::StickyPiston |
++        BlockKind::Stone |
++        BlockKind::StoneBrickSlab |
++        BlockKind::StoneBrickStairs |
++        BlockKind::StoneBrickWall |
++        BlockKind::StoneBricks |
++        BlockKind::StoneSlab |
++        BlockKind::StoneStairs |
++        BlockKind::Stonecutter |
++        BlockKind::StrippedAcaciaLog |
++        BlockKind::StrippedAcaciaWood |
++        BlockKind::StrippedBambooBlock |
++        BlockKind::StrippedBirchLog |
++        BlockKind::StrippedBirchWood |
++        BlockKind::StrippedCherryLog |
++        BlockKind::StrippedCherryWood |
++        BlockKind::StrippedCrimsonHyphae |
++        BlockKind::StrippedCrimsonStem |
++        BlockKind::StrippedDarkOakLog |
++        BlockKind::StrippedDarkOakWood |
++        BlockKind::StrippedJungleLog |
++        BlockKind::StrippedJungleWood |
++        BlockKind::StrippedMangroveLog |
++        BlockKind::StrippedMangroveWood |
++        BlockKind::StrippedOakLog |
++        BlockKind::StrippedOakWood |
++        BlockKind::StrippedPaleOakLog |
++        BlockKind::StrippedPaleOakWood |
++        BlockKind::StrippedSpruceLog |
++        BlockKind::StrippedSpruceWood |
++        BlockKind::StrippedWarpedHyphae |
++        BlockKind::StrippedWarpedStem |
++        BlockKind::StructureBlock |
++        BlockKind::StructureVoid |
++        BlockKind::SugarCane |
++        BlockKind::Sunflower |
++        BlockKind::SuspiciousGravel |
++        BlockKind::SuspiciousSand |
++        BlockKind::SweetBerryBush |
++        BlockKind::TallDryGrass |
++        BlockKind::TallGrass |
++        BlockKind::TallSeagrass |
++        BlockKind::Terracotta |
++        BlockKind::TestInstanceBlock |
++        BlockKind::TintedGlass |
++        BlockKind::Tnt |
++        BlockKind::Torch |
++        BlockKind::Torchflower |
++        BlockKind::TorchflowerCrop |
++        BlockKind::TrialSpawner |
++        BlockKind::Tripwire |
++        BlockKind::TubeCoral |
++        BlockKind::TubeCoralBlock |
++        BlockKind::TubeCoralFan |
++        BlockKind::TubeCoralWallFan |
++        BlockKind::Tuff |
++        BlockKind::TuffBrickSlab |
++        BlockKind::TuffBrickStairs |
++        BlockKind::TuffBrickWall |
++        BlockKind::TuffBricks |
++        BlockKind::TuffSlab |
++        BlockKind::TuffStairs |
++        BlockKind::TuffWall |
++        BlockKind::TurtleEgg |
++        BlockKind::TwistingVines |
++        BlockKind::TwistingVinesPlant |
++        BlockKind::Vault |
++        BlockKind::VerdantFroglight |
++        BlockKind::Vine |
++        BlockKind::VoidAir |
++        BlockKind::WallTorch |
++        BlockKind::WarpedDoor |
++        BlockKind::WarpedFence |
++        BlockKind::WarpedFenceGate |
++        BlockKind::WarpedFungus |
++        BlockKind::WarpedHangingSign |
++        BlockKind::WarpedHyphae |
++        BlockKind::WarpedNylium |
++        BlockKind::WarpedPlanks |
++        BlockKind::WarpedRoots |
++        BlockKind::WarpedShelf |
++        BlockKind::WarpedSign |
++        BlockKind::WarpedSlab |
++        BlockKind::WarpedStairs |
++        BlockKind::WarpedStem |
++        BlockKind::WarpedTrapdoor |
++        BlockKind::WarpedWallHangingSign |
++        BlockKind::WarpedWallSign |
++        BlockKind::WarpedWartBlock |
++        BlockKind::Water |
++        BlockKind::WaterCauldron |
++        BlockKind::WaxedChiseledCopper |
++        BlockKind::WaxedCopperBlock |
++        BlockKind::WaxedCopperBulb |
++        BlockKind::WaxedCopperChest |
++        BlockKind::WaxedCopperDoor |
++        BlockKind::WaxedCopperGolemStatue |
++        BlockKind::WaxedCopperGrate |
++        BlockKind::WaxedCopperTrapdoor |
++        BlockKind::WaxedCutCopper |
++        BlockKind::WaxedCutCopperSlab |
++        BlockKind::WaxedCutCopperStairs |
++        BlockKind::WaxedExposedChiseledCopper |
++        BlockKind::WaxedExposedCopper |
++        BlockKind::WaxedExposedCopperBulb |
++        BlockKind::WaxedExposedCopperChest |
++        BlockKind::WaxedExposedCopperDoor |
++        BlockKind::WaxedExposedCopperGolemStatue |
++        BlockKind::WaxedExposedCopperGrate |
++        BlockKind::WaxedExposedCopperTrapdoor |
++        BlockKind::WaxedExposedCutCopper |
++        BlockKind::WaxedExposedCutCopperSlab |
++        BlockKind::WaxedExposedCutCopperStairs |
++        BlockKind::WaxedOxidizedChiseledCopper |
++        BlockKind::WaxedOxidizedCopper |
++        BlockKind::WaxedOxidizedCopperBulb |
++        BlockKind::WaxedOxidizedCopperChest |
++        BlockKind::WaxedOxidizedCopperDoor |
++        BlockKind::WaxedOxidizedCopperGolemStatue |
++        BlockKind::WaxedOxidizedCopperGrate |
++        BlockKind::WaxedOxidizedCopperTrapdoor |
++        BlockKind::WaxedOxidizedCutCopper |
++        BlockKind::WaxedOxidizedCutCopperSlab |
++        BlockKind::WaxedOxidizedCutCopperStairs |
++        BlockKind::WaxedWeatheredChiseledCopper |
++        BlockKind::WaxedWeatheredCopper |
++        BlockKind::WaxedWeatheredCopperBulb |
++        BlockKind::WaxedWeatheredCopperChest |
++        BlockKind::WaxedWeatheredCopperDoor |
++        BlockKind::WaxedWeatheredCopperGolemStatue |
++        BlockKind::WaxedWeatheredCopperGrate |
++        BlockKind::WaxedWeatheredCopperTrapdoor |
++        BlockKind::WaxedWeatheredCutCopper |
++        BlockKind::WaxedWeatheredCutCopperSlab |
++        BlockKind::WaxedWeatheredCutCopperStairs |
++        BlockKind::WeatheredChiseledCopper |
++        BlockKind::WeatheredCopper |
++        BlockKind::WeatheredCopperBulb |
++        BlockKind::WeatheredCopperChest |
++        BlockKind::WeatheredCopperDoor |
++        BlockKind::WeatheredCopperGolemStatue |
++        BlockKind::WeatheredCopperGrate |
++        BlockKind::WeatheredCopperTrapdoor |
++        BlockKind::WeatheredCutCopper |
++        BlockKind::WeatheredCutCopperSlab |
++        BlockKind::WeatheredCutCopperStairs |
++        BlockKind::WeepingVines |
++        BlockKind::WeepingVinesPlant |
++        BlockKind::WetSponge |
++        BlockKind::Wheat |
++        BlockKind::WhiteBanner |
++        BlockKind::WhiteBed |
++        BlockKind::WhiteCandle |
++        BlockKind::WhiteCandleCake |
++        BlockKind::WhiteCarpet |
++        BlockKind::WhiteConcrete |
++        BlockKind::WhiteConcretePowder |
++        BlockKind::WhiteGlazedTerracotta |
++        BlockKind::WhiteShulkerBox |
++        BlockKind::WhiteStainedGlass |
++        BlockKind::WhiteStainedGlassPane |
++        BlockKind::WhiteTerracotta |
++        BlockKind::WhiteTulip |
++        BlockKind::WhiteWallBanner |
++        BlockKind::WhiteWool |
++        BlockKind::Wildflowers |
++        BlockKind::WitherRose |
++        BlockKind::WitherSkeletonSkull |
++        BlockKind::WitherSkeletonWallSkull |
++        BlockKind::YellowBanner |
++        BlockKind::YellowBed |
++        BlockKind::YellowCandle |
++        BlockKind::YellowCandleCake |
++        BlockKind::YellowCarpet |
++        BlockKind::YellowConcrete |
++        BlockKind::YellowConcretePowder |
++        BlockKind::YellowGlazedTerracotta |
++        BlockKind::YellowShulkerBox |
++        BlockKind::YellowStainedGlass |
++        BlockKind::YellowStainedGlassPane |
++        BlockKind::YellowTerracotta |
++        BlockKind::YellowWallBanner |
++        BlockKind::YellowWool |
++        BlockKind::ZombieHead |
++        BlockKind::ZombieWallHead
++    )
++}
++
++/// No class in the chain overrides `getDirectSignal`: the block never powers a block it touches
++/// directly (`SignalGetter#getDirectSignalTo`).
++pub fn gives_no_direct_signal(kind: BlockKind) -> bool {
++    matches!(
++        kind,
++        BlockKind::AcaciaDoor |
++        BlockKind::AcaciaFence |
++        BlockKind::AcaciaFenceGate |
++        BlockKind::AcaciaHangingSign |
++        BlockKind::AcaciaLeaves |
++        BlockKind::AcaciaLog |
++        BlockKind::AcaciaPlanks |
++        BlockKind::AcaciaSapling |
++        BlockKind::AcaciaShelf |
++        BlockKind::AcaciaSign |
++        BlockKind::AcaciaSlab |
++        BlockKind::AcaciaStairs |
++        BlockKind::AcaciaTrapdoor |
++        BlockKind::AcaciaWallHangingSign |
++        BlockKind::AcaciaWallSign |
++        BlockKind::AcaciaWood |
++        BlockKind::ActivatorRail |
++        BlockKind::Air |
++        BlockKind::Allium |
++        BlockKind::AmethystBlock |
++        BlockKind::AmethystCluster |
++        BlockKind::AncientDebris |
++        BlockKind::Andesite |
++        BlockKind::AndesiteSlab |
++        BlockKind::AndesiteStairs |
++        BlockKind::AndesiteWall |
++        BlockKind::Anvil |
++        BlockKind::AttachedMelonStem |
++        BlockKind::AttachedPumpkinStem |
++        BlockKind::Azalea |
++        BlockKind::AzaleaLeaves |
++        BlockKind::AzureBluet |
++        BlockKind::Bamboo |
++        BlockKind::BambooBlock |
++        BlockKind::BambooDoor |
++        BlockKind::BambooFence |
++        BlockKind::BambooFenceGate |
++        BlockKind::BambooHangingSign |
++        BlockKind::BambooMosaic |
++        BlockKind::BambooMosaicSlab |
++        BlockKind::BambooMosaicStairs |
++        BlockKind::BambooPlanks |
++        BlockKind::BambooSapling |
++        BlockKind::BambooShelf |
++        BlockKind::BambooSign |
++        BlockKind::BambooSlab |
++        BlockKind::BambooStairs |
++        BlockKind::BambooTrapdoor |
++        BlockKind::BambooWallHangingSign |
++        BlockKind::BambooWallSign |
++        BlockKind::Barrel |
++        BlockKind::Barrier |
++        BlockKind::Basalt |
++        BlockKind::Beacon |
++        BlockKind::Bedrock |
++        BlockKind::BeeNest |
++        BlockKind::Beehive |
++        BlockKind::Beetroots |
++        BlockKind::Bell |
++        BlockKind::BigDripleaf |
++        BlockKind::BigDripleafStem |
++        BlockKind::BirchDoor |
++        BlockKind::BirchFence |
++        BlockKind::BirchFenceGate |
++        BlockKind::BirchHangingSign |
++        BlockKind::BirchLeaves |
++        BlockKind::BirchLog |
++        BlockKind::BirchPlanks |
++        BlockKind::BirchSapling |
++        BlockKind::BirchShelf |
++        BlockKind::BirchSign |
++        BlockKind::BirchSlab |
++        BlockKind::BirchStairs |
++        BlockKind::BirchTrapdoor |
++        BlockKind::BirchWallHangingSign |
++        BlockKind::BirchWallSign |
++        BlockKind::BirchWood |
++        BlockKind::BlackBanner |
++        BlockKind::BlackBed |
++        BlockKind::BlackCandle |
++        BlockKind::BlackCandleCake |
++        BlockKind::BlackCarpet |
++        BlockKind::BlackConcrete |
++        BlockKind::BlackConcretePowder |
++        BlockKind::BlackGlazedTerracotta |
++        BlockKind::BlackShulkerBox |
++        BlockKind::BlackStainedGlass |
++        BlockKind::BlackStainedGlassPane |
++        BlockKind::BlackTerracotta |
++        BlockKind::BlackWallBanner |
++        BlockKind::BlackWool |
++        BlockKind::Blackstone |
++        BlockKind::BlackstoneSlab |
++        BlockKind::BlackstoneStairs |
++        BlockKind::BlackstoneWall |
++        BlockKind::BlastFurnace |
++        BlockKind::BlueBanner |
++        BlockKind::BlueBed |
++        BlockKind::BlueCandle |
++        BlockKind::BlueCandleCake |
++        BlockKind::BlueCarpet |
++        BlockKind::BlueConcrete |
++        BlockKind::BlueConcretePowder |
++        BlockKind::BlueGlazedTerracotta |
++        BlockKind::BlueIce |
++        BlockKind::BlueOrchid |
++        BlockKind::BlueShulkerBox |
++        BlockKind::BlueStainedGlass |
++        BlockKind::BlueStainedGlassPane |
++        BlockKind::BlueTerracotta |
++        BlockKind::BlueWallBanner |
++        BlockKind::BlueWool |
++        BlockKind::BoneBlock |
++        BlockKind::Bookshelf |
++        BlockKind::BrainCoral |
++        BlockKind::BrainCoralBlock |
++        BlockKind::BrainCoralFan |
++        BlockKind::BrainCoralWallFan |
++        BlockKind::BrewingStand |
++        BlockKind::BrickSlab |
++        BlockKind::BrickStairs |
++        BlockKind::BrickWall |
++        BlockKind::Bricks |
++        BlockKind::BrownBanner |
++        BlockKind::BrownBed |
++        BlockKind::BrownCandle |
++        BlockKind::BrownCandleCake |
++        BlockKind::BrownCarpet |
++        BlockKind::BrownConcrete |
++        BlockKind::BrownConcretePowder |
++        BlockKind::BrownGlazedTerracotta |
++        BlockKind::BrownMushroom |
++        BlockKind::BrownMushroomBlock |
++        BlockKind::BrownShulkerBox |
++        BlockKind::BrownStainedGlass |
++        BlockKind::BrownStainedGlassPane |
++        BlockKind::BrownTerracotta |
++        BlockKind::BrownWallBanner |
++        BlockKind::BrownWool |
++        BlockKind::BubbleColumn |
++        BlockKind::BubbleCoral |
++        BlockKind::BubbleCoralBlock |
++        BlockKind::BubbleCoralFan |
++        BlockKind::BubbleCoralWallFan |
++        BlockKind::BuddingAmethyst |
++        BlockKind::Bush |
++        BlockKind::Cactus |
++        BlockKind::CactusFlower |
++        BlockKind::Cake |
++        BlockKind::Calcite |
++        BlockKind::Campfire |
++        BlockKind::Candle |
++        BlockKind::CandleCake |
++        BlockKind::Carrots |
++        BlockKind::CartographyTable |
++        BlockKind::CarvedPumpkin |
++        BlockKind::Cauldron |
++        BlockKind::CaveAir |
++        BlockKind::CaveVines |
++        BlockKind::CaveVinesPlant |
++        BlockKind::ChainCommandBlock |
++        BlockKind::CherryDoor |
++        BlockKind::CherryFence |
++        BlockKind::CherryFenceGate |
++        BlockKind::CherryHangingSign |
++        BlockKind::CherryLeaves |
++        BlockKind::CherryLog |
++        BlockKind::CherryPlanks |
++        BlockKind::CherrySapling |
++        BlockKind::CherryShelf |
++        BlockKind::CherrySign |
++        BlockKind::CherrySlab |
++        BlockKind::CherryStairs |
++        BlockKind::CherryTrapdoor |
++        BlockKind::CherryWallHangingSign |
++        BlockKind::CherryWallSign |
++        BlockKind::CherryWood |
++        BlockKind::Chest |
++        BlockKind::ChippedAnvil |
++        BlockKind::ChiseledBookshelf |
++        BlockKind::ChiseledCopper |
++        BlockKind::ChiseledDeepslate |
++        BlockKind::ChiseledNetherBricks |
++        BlockKind::ChiseledPolishedBlackstone |
++        BlockKind::ChiseledQuartzBlock |
++        BlockKind::ChiseledRedSandstone |
++        BlockKind::ChiseledResinBricks |
++        BlockKind::ChiseledSandstone |
++        BlockKind::ChiseledStoneBricks |
++        BlockKind::ChiseledTuff |
++        BlockKind::ChiseledTuffBricks |
++        BlockKind::ChorusFlower |
++        BlockKind::ChorusPlant |
++        BlockKind::Clay |
++        BlockKind::ClosedEyeblossom |
++        BlockKind::CoalBlock |
++        BlockKind::CoalOre |
++        BlockKind::CoarseDirt |
++        BlockKind::CobbledDeepslate |
++        BlockKind::CobbledDeepslateSlab |
++        BlockKind::CobbledDeepslateStairs |
++        BlockKind::CobbledDeepslateWall |
++        BlockKind::Cobblestone |
++        BlockKind::CobblestoneSlab |
++        BlockKind::CobblestoneStairs |
++        BlockKind::CobblestoneWall |
++        BlockKind::Cobweb |
++        BlockKind::Cocoa |
++        BlockKind::CommandBlock |
++        BlockKind::Composter |
++        BlockKind::Conduit |
++        BlockKind::CopperBlock |
++        BlockKind::CopperBulb |
++        BlockKind::CopperChest |
++        BlockKind::CopperDoor |
++        BlockKind::CopperGolemStatue |
++        BlockKind::CopperGrate |
++        BlockKind::CopperOre |
++        BlockKind::CopperTorch |
++        BlockKind::CopperTrapdoor |
++        BlockKind::CopperWallTorch |
++        BlockKind::Cornflower |
++        BlockKind::CrackedDeepslateBricks |
++        BlockKind::CrackedDeepslateTiles |
++        BlockKind::CrackedNetherBricks |
++        BlockKind::CrackedPolishedBlackstoneBricks |
++        BlockKind::CrackedStoneBricks |
++        BlockKind::Crafter |
++        BlockKind::CraftingTable |
++        BlockKind::CreakingHeart |
++        BlockKind::CreeperHead |
++        BlockKind::CreeperWallHead |
++        BlockKind::CrimsonDoor |
++        BlockKind::CrimsonFence |
++        BlockKind::CrimsonFenceGate |
++        BlockKind::CrimsonFungus |
++        BlockKind::CrimsonHangingSign |
++        BlockKind::CrimsonHyphae |
++        BlockKind::CrimsonNylium |
++        BlockKind::CrimsonPlanks |
++        BlockKind::CrimsonRoots |
++        BlockKind::CrimsonShelf |
++        BlockKind::CrimsonSign |
++        BlockKind::CrimsonSlab |
++        BlockKind::CrimsonStairs |
++        BlockKind::CrimsonStem |
++        BlockKind::CrimsonTrapdoor |
++        BlockKind::CrimsonWallHangingSign |
++        BlockKind::CrimsonWallSign |
++        BlockKind::CryingObsidian |
++        BlockKind::CutCopper |
++        BlockKind::CutCopperSlab |
++        BlockKind::CutCopperStairs |
++        BlockKind::CutRedSandstone |
++        BlockKind::CutRedSandstoneSlab |
++        BlockKind::CutSandstone |
++        BlockKind::CutSandstoneSlab |
++        BlockKind::CyanBanner |
++        BlockKind::CyanBed |
++        BlockKind::CyanCandle |
++        BlockKind::CyanCandleCake |
++        BlockKind::CyanCarpet |
++        BlockKind::CyanConcrete |
++        BlockKind::CyanConcretePowder |
++        BlockKind::CyanGlazedTerracotta |
++        BlockKind::CyanShulkerBox |
++        BlockKind::CyanStainedGlass |
++        BlockKind::CyanStainedGlassPane |
++        BlockKind::CyanTerracotta |
++        BlockKind::CyanWallBanner |
++        BlockKind::CyanWool |
++        BlockKind::DamagedAnvil |
++        BlockKind::Dandelion |
++        BlockKind::DarkOakDoor |
++        BlockKind::DarkOakFence |
++        BlockKind::DarkOakFenceGate |
++        BlockKind::DarkOakHangingSign |
++        BlockKind::DarkOakLeaves |
++        BlockKind::DarkOakLog |
++        BlockKind::DarkOakPlanks |
++        BlockKind::DarkOakSapling |
++        BlockKind::DarkOakShelf |
++        BlockKind::DarkOakSign |
++        BlockKind::DarkOakSlab |
++        BlockKind::DarkOakStairs |
++        BlockKind::DarkOakTrapdoor |
++        BlockKind::DarkOakWallHangingSign |
++        BlockKind::DarkOakWallSign |
++        BlockKind::DarkOakWood |
++        BlockKind::DarkPrismarine |
++        BlockKind::DarkPrismarineSlab |
++        BlockKind::DarkPrismarineStairs |
++        BlockKind::DaylightDetector |
++        BlockKind::DeadBrainCoral |
++        BlockKind::DeadBrainCoralBlock |
++        BlockKind::DeadBrainCoralFan |
++        BlockKind::DeadBrainCoralWallFan |
++        BlockKind::DeadBubbleCoral |
++        BlockKind::DeadBubbleCoralBlock |
++        BlockKind::DeadBubbleCoralFan |
++        BlockKind::DeadBubbleCoralWallFan |
++        BlockKind::DeadBush |
++        BlockKind::DeadFireCoral |
++        BlockKind::DeadFireCoralBlock |
++        BlockKind::DeadFireCoralFan |
++        BlockKind::DeadFireCoralWallFan |
++        BlockKind::DeadHornCoral |
++        BlockKind::DeadHornCoralBlock |
++        BlockKind::DeadHornCoralFan |
++        BlockKind::DeadHornCoralWallFan |
++        BlockKind::DeadTubeCoral |
++        BlockKind::DeadTubeCoralBlock |
++        BlockKind::DeadTubeCoralFan |
++        BlockKind::DeadTubeCoralWallFan |
++        BlockKind::DecoratedPot |
++        BlockKind::Deepslate |
++        BlockKind::DeepslateBrickSlab |
++        BlockKind::DeepslateBrickStairs |
++        BlockKind::DeepslateBrickWall |
++        BlockKind::DeepslateBricks |
++        BlockKind::DeepslateCoalOre |
++        BlockKind::DeepslateCopperOre |
++        BlockKind::DeepslateDiamondOre |
++        BlockKind::DeepslateEmeraldOre |
++        BlockKind::DeepslateGoldOre |
++        BlockKind::DeepslateIronOre |
++        BlockKind::DeepslateLapisOre |
++        BlockKind::DeepslateRedstoneOre |
++        BlockKind::DeepslateTileSlab |
++        BlockKind::DeepslateTileStairs |
++        BlockKind::DeepslateTileWall |
++        BlockKind::DeepslateTiles |
++        BlockKind::DiamondBlock |
++        BlockKind::DiamondOre |
++        BlockKind::Diorite |
++        BlockKind::DioriteSlab |
++        BlockKind::DioriteStairs |
++        BlockKind::DioriteWall |
++        BlockKind::Dirt |
++        BlockKind::DirtPath |
++        BlockKind::Dispenser |
++        BlockKind::DragonEgg |
++        BlockKind::DragonHead |
++        BlockKind::DragonWallHead |
++        BlockKind::DriedGhast |
++        BlockKind::DriedKelpBlock |
++        BlockKind::DripstoneBlock |
++        BlockKind::Dropper |
++        BlockKind::EmeraldBlock |
++        BlockKind::EmeraldOre |
++        BlockKind::EnchantingTable |
++        BlockKind::EndGateway |
++        BlockKind::EndPortal |
++        BlockKind::EndPortalFrame |
++        BlockKind::EndRod |
++        BlockKind::EndStone |
++        BlockKind::EndStoneBrickSlab |
++        BlockKind::EndStoneBrickStairs |
++        BlockKind::EndStoneBrickWall |
++        BlockKind::EndStoneBricks |
++        BlockKind::EnderChest |
++        BlockKind::ExposedChiseledCopper |
++        BlockKind::ExposedCopper |
++        BlockKind::ExposedCopperBulb |
++        BlockKind::ExposedCopperChest |
++        BlockKind::ExposedCopperDoor |
++        BlockKind::ExposedCopperGolemStatue |
++        BlockKind::ExposedCopperGrate |
++        BlockKind::ExposedCopperTrapdoor |
++        BlockKind::ExposedCutCopper |
++        BlockKind::ExposedCutCopperSlab |
++        BlockKind::ExposedCutCopperStairs |
++        BlockKind::Farmland |
++        BlockKind::Fern |
++        BlockKind::Fire |
++        BlockKind::FireCoral |
++        BlockKind::FireCoralBlock |
++        BlockKind::FireCoralFan |
++        BlockKind::FireCoralWallFan |
++        BlockKind::FireflyBush |
++        BlockKind::FletchingTable |
++        BlockKind::FlowerPot |
++        BlockKind::FloweringAzalea |
++        BlockKind::FloweringAzaleaLeaves |
++        BlockKind::Frogspawn |
++        BlockKind::FrostedIce |
++        BlockKind::Furnace |
++        BlockKind::GildedBlackstone |
++        BlockKind::Glass |
++        BlockKind::GlassPane |
++        BlockKind::GlowLichen |
++        BlockKind::Glowstone |
++        BlockKind::GoldBlock |
++        BlockKind::GoldOre |
++        BlockKind::Granite |
++        BlockKind::GraniteSlab |
++        BlockKind::GraniteStairs |
++        BlockKind::GraniteWall |
++        BlockKind::GrassBlock |
++        BlockKind::Gravel |
++        BlockKind::GrayBanner |
++        BlockKind::GrayBed |
++        BlockKind::GrayCandle |
++        BlockKind::GrayCandleCake |
++        BlockKind::GrayCarpet |
++        BlockKind::GrayConcrete |
++        BlockKind::GrayConcretePowder |
++        BlockKind::GrayGlazedTerracotta |
++        BlockKind::GrayShulkerBox |
++        BlockKind::GrayStainedGlass |
++        BlockKind::GrayStainedGlassPane |
++        BlockKind::GrayTerracotta |
++        BlockKind::GrayWallBanner |
++        BlockKind::GrayWool |
++        BlockKind::GreenBanner |
++        BlockKind::GreenBed |
++        BlockKind::GreenCandle |
++        BlockKind::GreenCandleCake |
++        BlockKind::GreenCarpet |
++        BlockKind::GreenConcrete |
++        BlockKind::GreenConcretePowder |
++        BlockKind::GreenGlazedTerracotta |
++        BlockKind::GreenShulkerBox |
++        BlockKind::GreenStainedGlass |
++        BlockKind::GreenStainedGlassPane |
++        BlockKind::GreenTerracotta |
++        BlockKind::GreenWallBanner |
++        BlockKind::GreenWool |
++        BlockKind::Grindstone |
++        BlockKind::HangingRoots |
++        BlockKind::HayBlock |
++        BlockKind::HeavyCore |
++        BlockKind::HoneyBlock |
++        BlockKind::HoneycombBlock |
++        BlockKind::Hopper |
++        BlockKind::HornCoral |
++        BlockKind::HornCoralBlock |
++        BlockKind::HornCoralFan |
++        BlockKind::HornCoralWallFan |
++        BlockKind::Ice |
++        BlockKind::InfestedChiseledStoneBricks |
++        BlockKind::InfestedCobblestone |
++        BlockKind::InfestedCrackedStoneBricks |
++        BlockKind::InfestedDeepslate |
++        BlockKind::InfestedMossyStoneBricks |
++        BlockKind::InfestedStone |
++        BlockKind::InfestedStoneBricks |
++        BlockKind::IronBars |
++        BlockKind::IronBlock |
++        BlockKind::IronChain |
++        BlockKind::IronDoor |
++        BlockKind::IronOre |
++        BlockKind::IronTrapdoor |
++        BlockKind::JackOLantern |
++        BlockKind::Jigsaw |
++        BlockKind::Jukebox |
++        BlockKind::JungleDoor |
++        BlockKind::JungleFence |
++        BlockKind::JungleFenceGate |
++        BlockKind::JungleHangingSign |
++        BlockKind::JungleLeaves |
++        BlockKind::JungleLog |
++        BlockKind::JunglePlanks |
++        BlockKind::JungleSapling |
++        BlockKind::JungleShelf |
++        BlockKind::JungleSign |
++        BlockKind::JungleSlab |
++        BlockKind::JungleStairs |
++        BlockKind::JungleTrapdoor |
++        BlockKind::JungleWallHangingSign |
++        BlockKind::JungleWallSign |
++        BlockKind::JungleWood |
++        BlockKind::Kelp |
++        BlockKind::KelpPlant |
++        BlockKind::Ladder |
++        BlockKind::Lantern |
++        BlockKind::LapisBlock |
++        BlockKind::LapisOre |
++        BlockKind::LargeAmethystBud |
++        BlockKind::LargeFern |
++        BlockKind::Lava |
++        BlockKind::LavaCauldron |
++        BlockKind::LeafLitter |
++        BlockKind::Light |
++        BlockKind::LightBlueBanner |
++        BlockKind::LightBlueBed |
++        BlockKind::LightBlueCandle |
++        BlockKind::LightBlueCandleCake |
++        BlockKind::LightBlueCarpet |
++        BlockKind::LightBlueConcrete |
++        BlockKind::LightBlueConcretePowder |
++        BlockKind::LightBlueGlazedTerracotta |
++        BlockKind::LightBlueShulkerBox |
++        BlockKind::LightBlueStainedGlass |
++        BlockKind::LightBlueStainedGlassPane |
++        BlockKind::LightBlueTerracotta |
++        BlockKind::LightBlueWallBanner |
++        BlockKind::LightBlueWool |
++        BlockKind::LightGrayBanner |
++        BlockKind::LightGrayBed |
++        BlockKind::LightGrayCandle |
++        BlockKind::LightGrayCandleCake |
++        BlockKind::LightGrayCarpet |
++        BlockKind::LightGrayConcrete |
++        BlockKind::LightGrayConcretePowder |
++        BlockKind::LightGrayGlazedTerracotta |
++        BlockKind::LightGrayShulkerBox |
++        BlockKind::LightGrayStainedGlass |
++        BlockKind::LightGrayStainedGlassPane |
++        BlockKind::LightGrayTerracotta |
++        BlockKind::LightGrayWallBanner |
++        BlockKind::LightGrayWool |
++        BlockKind::Lilac |
++        BlockKind::LilyOfTheValley |
++        BlockKind::LilyPad |
++        BlockKind::LimeBanner |
++        BlockKind::LimeBed |
++        BlockKind::LimeCandle |
++        BlockKind::LimeCandleCake |
++        BlockKind::LimeCarpet |
++        BlockKind::LimeConcrete |
++        BlockKind::LimeConcretePowder |
++        BlockKind::LimeGlazedTerracotta |
++        BlockKind::LimeShulkerBox |
++        BlockKind::LimeStainedGlass |
++        BlockKind::LimeStainedGlassPane |
++        BlockKind::LimeTerracotta |
++        BlockKind::LimeWallBanner |
++        BlockKind::LimeWool |
++        BlockKind::Lodestone |
++        BlockKind::Loom |
++        BlockKind::MagentaBanner |
++        BlockKind::MagentaBed |
++        BlockKind::MagentaCandle |
++        BlockKind::MagentaCandleCake |
++        BlockKind::MagentaCarpet |
++        BlockKind::MagentaConcrete |
++        BlockKind::MagentaConcretePowder |
++        BlockKind::MagentaGlazedTerracotta |
++        BlockKind::MagentaShulkerBox |
++        BlockKind::MagentaStainedGlass |
++        BlockKind::MagentaStainedGlassPane |
++        BlockKind::MagentaTerracotta |
++        BlockKind::MagentaWallBanner |
++        BlockKind::MagentaWool |
++        BlockKind::MagmaBlock |
++        BlockKind::MangroveDoor |
++        BlockKind::MangroveFence |
++        BlockKind::MangroveFenceGate |
++        BlockKind::MangroveHangingSign |
++        BlockKind::MangroveLeaves |
++        BlockKind::MangroveLog |
++        BlockKind::MangrovePlanks |
++        BlockKind::MangrovePropagule |
++        BlockKind::MangroveRoots |
++        BlockKind::MangroveShelf |
++        BlockKind::MangroveSign |
++        BlockKind::MangroveSlab |
++        BlockKind::MangroveStairs |
++        BlockKind::MangroveTrapdoor |
++        BlockKind::MangroveWallHangingSign |
++        BlockKind::MangroveWallSign |
++        BlockKind::MangroveWood |
++        BlockKind::MediumAmethystBud |
++        BlockKind::Melon |
++        BlockKind::MelonStem |
++        BlockKind::MossBlock |
++        BlockKind::MossCarpet |
++        BlockKind::MossyCobblestone |
++        BlockKind::MossyCobblestoneSlab |
++        BlockKind::MossyCobblestoneStairs |
++        BlockKind::MossyCobblestoneWall |
++        BlockKind::MossyStoneBrickSlab |
++        BlockKind::MossyStoneBrickStairs |
++        BlockKind::MossyStoneBrickWall |
++        BlockKind::MossyStoneBricks |
++        BlockKind::MovingPiston |
++        BlockKind::Mud |
++        BlockKind::MudBrickSlab |
++        BlockKind::MudBrickStairs |
++        BlockKind::MudBrickWall |
++        BlockKind::MudBricks |
++        BlockKind::MuddyMangroveRoots |
++        BlockKind::MushroomStem |
++        BlockKind::Mycelium |
++        BlockKind::NetherBrickFence |
++        BlockKind::NetherBrickSlab |
++        BlockKind::NetherBrickStairs |
++        BlockKind::NetherBrickWall |
++        BlockKind::NetherBricks |
++        BlockKind::NetherGoldOre |
++        BlockKind::NetherPortal |
++        BlockKind::NetherQuartzOre |
++        BlockKind::NetherSprouts |
++        BlockKind::NetherWart |
++        BlockKind::NetherWartBlock |
++        BlockKind::NetheriteBlock |
++        BlockKind::Netherrack |
++        BlockKind::NoteBlock |
++        BlockKind::OakDoor |
++        BlockKind::OakFence |
++        BlockKind::OakFenceGate |
++        BlockKind::OakHangingSign |
++        BlockKind::OakLeaves |
++        BlockKind::OakLog |
++        BlockKind::OakPlanks |
++        BlockKind::OakSapling |
++        BlockKind::OakShelf |
++        BlockKind::OakSign |
++        BlockKind::OakSlab |
++        BlockKind::OakStairs |
++        BlockKind::OakTrapdoor |
++        BlockKind::OakWallHangingSign |
++        BlockKind::OakWallSign |
++        BlockKind::OakWood |
++        BlockKind::Obsidian |
++        BlockKind::OchreFroglight |
++        BlockKind::OpenEyeblossom |
++        BlockKind::OrangeBanner |
++        BlockKind::OrangeBed |
++        BlockKind::OrangeCandle |
++        BlockKind::OrangeCandleCake |
++        BlockKind::OrangeCarpet |
++        BlockKind::OrangeConcrete |
++        BlockKind::OrangeConcretePowder |
++        BlockKind::OrangeGlazedTerracotta |
++        BlockKind::OrangeShulkerBox |
++        BlockKind::OrangeStainedGlass |
++        BlockKind::OrangeStainedGlassPane |
++        BlockKind::OrangeTerracotta |
++        BlockKind::OrangeTulip |
++        BlockKind::OrangeWallBanner |
++        BlockKind::OrangeWool |
++        BlockKind::OxeyeDaisy |
++        BlockKind::OxidizedChiseledCopper |
++        BlockKind::OxidizedCopper |
++        BlockKind::OxidizedCopperBulb |
++        BlockKind::OxidizedCopperChest |
++        BlockKind::OxidizedCopperDoor |
++        BlockKind::OxidizedCopperGolemStatue |
++        BlockKind::OxidizedCopperGrate |
++        BlockKind::OxidizedCopperTrapdoor |
++        BlockKind::OxidizedCutCopper |
++        BlockKind::OxidizedCutCopperSlab |
++        BlockKind::OxidizedCutCopperStairs |
++        BlockKind::PackedIce |
++        BlockKind::PackedMud |
++        BlockKind::PaleHangingMoss |
++        BlockKind::PaleMossBlock |
++        BlockKind::PaleMossCarpet |
++        BlockKind::PaleOakDoor |
++        BlockKind::PaleOakFence |
++        BlockKind::PaleOakFenceGate |
++        BlockKind::PaleOakHangingSign |
++        BlockKind::PaleOakLeaves |
++        BlockKind::PaleOakLog |
++        BlockKind::PaleOakPlanks |
++        BlockKind::PaleOakSapling |
++        BlockKind::PaleOakShelf |
++        BlockKind::PaleOakSign |
++        BlockKind::PaleOakSlab |
++        BlockKind::PaleOakStairs |
++        BlockKind::PaleOakTrapdoor |
++        BlockKind::PaleOakWallHangingSign |
++        BlockKind::PaleOakWallSign |
++        BlockKind::PaleOakWood |
++        BlockKind::PearlescentFroglight |
++        BlockKind::Peony |
++        BlockKind::PetrifiedOakSlab |
++        BlockKind::PiglinHead |
++        BlockKind::PiglinWallHead |
++        BlockKind::PinkBanner |
++        BlockKind::PinkBed |
++        BlockKind::PinkCandle |
++        BlockKind::PinkCandleCake |
++        BlockKind::PinkCarpet |
++        BlockKind::PinkConcrete |
++        BlockKind::PinkConcretePowder |
++        BlockKind::PinkGlazedTerracotta |
++        BlockKind::PinkPetals |
++        BlockKind::PinkShulkerBox |
++        BlockKind::PinkStainedGlass |
++        BlockKind::PinkStainedGlassPane |
++        BlockKind::PinkTerracotta |
++        BlockKind::PinkTulip |
++        BlockKind::PinkWallBanner |
++        BlockKind::PinkWool |
++        BlockKind::Piston |
++        BlockKind::PistonHead |
++        BlockKind::PitcherCrop |
++        BlockKind::PitcherPlant |
++        BlockKind::PlayerHead |
++        BlockKind::PlayerWallHead |
++        BlockKind::Podzol |
++        BlockKind::PointedDripstone |
++        BlockKind::PolishedAndesite |
++        BlockKind::PolishedAndesiteSlab |
++        BlockKind::PolishedAndesiteStairs |
++        BlockKind::PolishedBasalt |
++        BlockKind::PolishedBlackstone |
++        BlockKind::PolishedBlackstoneBrickSlab |
++        BlockKind::PolishedBlackstoneBrickStairs |
++        BlockKind::PolishedBlackstoneBrickWall |
++        BlockKind::PolishedBlackstoneBricks |
++        BlockKind::PolishedBlackstoneSlab |
++        BlockKind::PolishedBlackstoneStairs |
++        BlockKind::PolishedBlackstoneWall |
++        BlockKind::PolishedDeepslate |
++        BlockKind::PolishedDeepslateSlab |
++        BlockKind::PolishedDeepslateStairs |
++        BlockKind::PolishedDeepslateWall |
++        BlockKind::PolishedDiorite |
++        BlockKind::PolishedDioriteSlab |
++        BlockKind::PolishedDioriteStairs |
++        BlockKind::PolishedGranite |
++        BlockKind::PolishedGraniteSlab |
++        BlockKind::PolishedGraniteStairs |
++        BlockKind::PolishedTuff |
++        BlockKind::PolishedTuffSlab |
++        BlockKind::PolishedTuffStairs |
++        BlockKind::PolishedTuffWall |
++        BlockKind::Poppy |
++        BlockKind::Potatoes |
++        BlockKind::PottedAcaciaSapling |
++        BlockKind::PottedAllium |
++        BlockKind::PottedAzaleaBush |
++        BlockKind::PottedAzureBluet |
++        BlockKind::PottedBamboo |
++        BlockKind::PottedBirchSapling |
++        BlockKind::PottedBlueOrchid |
++        BlockKind::PottedBrownMushroom |
++        BlockKind::PottedCactus |
++        BlockKind::PottedCherrySapling |
++        BlockKind::PottedClosedEyeblossom |
++        BlockKind::PottedCornflower |
++        BlockKind::PottedCrimsonFungus |
++        BlockKind::PottedCrimsonRoots |
++        BlockKind::PottedDandelion |
++        BlockKind::PottedDarkOakSapling |
++        BlockKind::PottedDeadBush |
++        BlockKind::PottedFern |
++        BlockKind::PottedFloweringAzaleaBush |
++        BlockKind::PottedJungleSapling |
++        BlockKind::PottedLilyOfTheValley |
++        BlockKind::PottedMangrovePropagule |
++        BlockKind::PottedOakSapling |
++        BlockKind::PottedOpenEyeblossom |
++        BlockKind::PottedOrangeTulip |
++        BlockKind::PottedOxeyeDaisy |
++        BlockKind::PottedPaleOakSapling |
++        BlockKind::PottedPinkTulip |
++        BlockKind::PottedPoppy |
++        BlockKind::PottedRedMushroom |
++        BlockKind::PottedRedTulip |
++        BlockKind::PottedSpruceSapling |
++        BlockKind::PottedTorchflower |
++        BlockKind::PottedWarpedFungus |
++        BlockKind::PottedWarpedRoots |
++        BlockKind::PottedWhiteTulip |
++        BlockKind::PottedWitherRose |
++        BlockKind::PowderSnow |
++        BlockKind::PowderSnowCauldron |
++        BlockKind::PoweredRail |
++        BlockKind::Prismarine |
++        BlockKind::PrismarineBrickSlab |
++        BlockKind::PrismarineBrickStairs |
++        BlockKind::PrismarineBricks |
++        BlockKind::PrismarineSlab |
++        BlockKind::PrismarineStairs |
++        BlockKind::PrismarineWall |
++        BlockKind::Pumpkin |
++        BlockKind::PumpkinStem |
++        BlockKind::PurpleBanner |
++        BlockKind::PurpleBed |
++        BlockKind::PurpleCandle |
++        BlockKind::PurpleCandleCake |
++        BlockKind::PurpleCarpet |
++        BlockKind::PurpleConcrete |
++        BlockKind::PurpleConcretePowder |
++        BlockKind::PurpleGlazedTerracotta |
++        BlockKind::PurpleShulkerBox |
++        BlockKind::PurpleStainedGlass |
++        BlockKind::PurpleStainedGlassPane |
++        BlockKind::PurpleTerracotta |
++        BlockKind::PurpleWallBanner |
++        BlockKind::PurpleWool |
++        BlockKind::PurpurBlock |
++        BlockKind::PurpurPillar |
++        BlockKind::PurpurSlab |
++        BlockKind::PurpurStairs |
++        BlockKind::QuartzBlock |
++        BlockKind::QuartzBricks |
++        BlockKind::QuartzPillar |
++        BlockKind::QuartzSlab |
++        BlockKind::QuartzStairs |
++        BlockKind::Rail |
++        BlockKind::RawCopperBlock |
++        BlockKind::RawGoldBlock |
++        BlockKind::RawIronBlock |
++        BlockKind::RedBanner |
++        BlockKind::RedBed |
++        BlockKind::RedCandle |
++        BlockKind::RedCandleCake |
++        BlockKind::RedCarpet |
++        BlockKind::RedConcrete |
++        BlockKind::RedConcretePowder |
++        BlockKind::RedGlazedTerracotta |
++        BlockKind::RedMushroom |
++        BlockKind::RedMushroomBlock |
++        BlockKind::RedNetherBrickSlab |
++        BlockKind::RedNetherBrickStairs |
++        BlockKind::RedNetherBrickWall |
++        BlockKind::RedNetherBricks |
++        BlockKind::RedSand |
++        BlockKind::RedSandstone |
++        BlockKind::RedSandstoneSlab |
++        BlockKind::RedSandstoneStairs |
++        BlockKind::RedSandstoneWall |
++        BlockKind::RedShulkerBox |
++        BlockKind::RedStainedGlass |
++        BlockKind::RedStainedGlassPane |
++        BlockKind::RedTerracotta |
++        BlockKind::RedTulip |
++        BlockKind::RedWallBanner |
++        BlockKind::RedWool |
++        BlockKind::RedstoneBlock |
++        BlockKind::RedstoneLamp |
++        BlockKind::RedstoneOre |
++        BlockKind::ReinforcedDeepslate |
++        BlockKind::RepeatingCommandBlock |
++        BlockKind::ResinBlock |
++        BlockKind::ResinBrickSlab |
++        BlockKind::ResinBrickStairs |
++        BlockKind::ResinBrickWall |
++        BlockKind::ResinBricks |
++        BlockKind::ResinClump |
++        BlockKind::RespawnAnchor |
++        BlockKind::RootedDirt |
++        BlockKind::RoseBush |
++        BlockKind::Sand |
++        BlockKind::Sandstone |
++        BlockKind::SandstoneSlab |
++        BlockKind::SandstoneStairs |
++        BlockKind::SandstoneWall |
++        BlockKind::Scaffolding |
++        BlockKind::Sculk |
++        BlockKind::SculkCatalyst |
++        BlockKind::SculkShrieker |
++        BlockKind::SculkVein |
++        BlockKind::SeaLantern |
++        BlockKind::SeaPickle |
++        BlockKind::Seagrass |
++        BlockKind::ShortDryGrass |
++        BlockKind::ShortGrass |
++        BlockKind::Shroomlight |
++        BlockKind::ShulkerBox |
++        BlockKind::SkeletonSkull |
++        BlockKind::SkeletonWallSkull |
++        BlockKind::SlimeBlock |
++        BlockKind::SmallAmethystBud |
++        BlockKind::SmallDripleaf |
++        BlockKind::SmithingTable |
++        BlockKind::Smoker |
++        BlockKind::SmoothBasalt |
++        BlockKind::SmoothQuartz |
++        BlockKind::SmoothQuartzSlab |
++        BlockKind::SmoothQuartzStairs |
++        BlockKind::SmoothRedSandstone |
++        BlockKind::SmoothRedSandstoneSlab |
++        BlockKind::SmoothRedSandstoneStairs |
++        BlockKind::SmoothSandstone |
++        BlockKind::SmoothSandstoneSlab |
++        BlockKind::SmoothSandstoneStairs |
++        BlockKind::SmoothStone |
++        BlockKind::SmoothStoneSlab |
++        BlockKind::SnifferEgg |
++        BlockKind::Snow |
++        BlockKind::SnowBlock |
++        BlockKind::SoulCampfire |
++        BlockKind::SoulFire |
++        BlockKind::SoulLantern |
++        BlockKind::SoulSand |
++        BlockKind::SoulSoil |
++        BlockKind::SoulTorch |
++        BlockKind::SoulWallTorch |
++        BlockKind::Spawner |
++        BlockKind::Sponge |
++        BlockKind::SporeBlossom |
++        BlockKind::SpruceDoor |
++        BlockKind::SpruceFence |
++        BlockKind::SpruceFenceGate |
++        BlockKind::SpruceHangingSign |
++        BlockKind::SpruceLeaves |
++        BlockKind::SpruceLog |
++        BlockKind::SprucePlanks |
++        BlockKind::SpruceSapling |
++        BlockKind::SpruceShelf |
++        BlockKind::SpruceSign |
++        BlockKind::SpruceSlab |
++        BlockKind::SpruceStairs |
++        BlockKind::SpruceTrapdoor |
++        BlockKind::SpruceWallHangingSign |
++        BlockKind::SpruceWallSign |
++        BlockKind::SpruceWood |
++        BlockKind::StickyPiston |
++        BlockKind::Stone |
++        BlockKind::StoneBrickSlab |
++        BlockKind::StoneBrickStairs |
++        BlockKind::StoneBrickWall |
++        BlockKind::StoneBricks |
++        BlockKind::StoneSlab |
++        BlockKind::StoneStairs |
++        BlockKind::Stonecutter |
++        BlockKind::StrippedAcaciaLog |
++        BlockKind::StrippedAcaciaWood |
++        BlockKind::StrippedBambooBlock |
++        BlockKind::StrippedBirchLog |
++        BlockKind::StrippedBirchWood |
++        BlockKind::StrippedCherryLog |
++        BlockKind::StrippedCherryWood |
++        BlockKind::StrippedCrimsonHyphae |
++        BlockKind::StrippedCrimsonStem |
++        BlockKind::StrippedDarkOakLog |
++        BlockKind::StrippedDarkOakWood |
++        BlockKind::StrippedJungleLog |
++        BlockKind::StrippedJungleWood |
++        BlockKind::StrippedMangroveLog |
++        BlockKind::StrippedMangroveWood |
++        BlockKind::StrippedOakLog |
++        BlockKind::StrippedOakWood |
++        BlockKind::StrippedPaleOakLog |
++        BlockKind::StrippedPaleOakWood |
++        BlockKind::StrippedSpruceLog |
++        BlockKind::StrippedSpruceWood |
++        BlockKind::StrippedWarpedHyphae |
++        BlockKind::StrippedWarpedStem |
++        BlockKind::StructureBlock |
++        BlockKind::StructureVoid |
++        BlockKind::SugarCane |
++        BlockKind::Sunflower |
++        BlockKind::SuspiciousGravel |
++        BlockKind::SuspiciousSand |
++        BlockKind::SweetBerryBush |
++        BlockKind::TallDryGrass |
++        BlockKind::TallGrass |
++        BlockKind::TallSeagrass |
++        BlockKind::Target |
++        BlockKind::Terracotta |
++        BlockKind::TestBlock |
++        BlockKind::TestInstanceBlock |
++        BlockKind::TintedGlass |
++        BlockKind::Tnt |
++        BlockKind::Torch |
++        BlockKind::Torchflower |
++        BlockKind::TorchflowerCrop |
++        BlockKind::TrialSpawner |
++        BlockKind::Tripwire |
++        BlockKind::TubeCoral |
++        BlockKind::TubeCoralBlock |
++        BlockKind::TubeCoralFan |
++        BlockKind::TubeCoralWallFan |
++        BlockKind::Tuff |
++        BlockKind::TuffBrickSlab |
++        BlockKind::TuffBrickStairs |
++        BlockKind::TuffBrickWall |
++        BlockKind::TuffBricks |
++        BlockKind::TuffSlab |
++        BlockKind::TuffStairs |
++        BlockKind::TuffWall |
++        BlockKind::TurtleEgg |
++        BlockKind::TwistingVines |
++        BlockKind::TwistingVinesPlant |
++        BlockKind::Vault |
++        BlockKind::VerdantFroglight |
++        BlockKind::Vine |
++        BlockKind::VoidAir |
++        BlockKind::WallTorch |
++        BlockKind::WarpedDoor |
++        BlockKind::WarpedFence |
++        BlockKind::WarpedFenceGate |
++        BlockKind::WarpedFungus |
++        BlockKind::WarpedHangingSign |
++        BlockKind::WarpedHyphae |
++        BlockKind::WarpedNylium |
++        BlockKind::WarpedPlanks |
++        BlockKind::WarpedRoots |
++        BlockKind::WarpedShelf |
++        BlockKind::WarpedSign |
++        BlockKind::WarpedSlab |
++        BlockKind::WarpedStairs |
++        BlockKind::WarpedStem |
++        BlockKind::WarpedTrapdoor |
++        BlockKind::WarpedWallHangingSign |
++        BlockKind::WarpedWallSign |
++        BlockKind::WarpedWartBlock |
++        BlockKind::Water |
++        BlockKind::WaterCauldron |
++        BlockKind::WaxedChiseledCopper |
++        BlockKind::WaxedCopperBlock |
++        BlockKind::WaxedCopperBulb |
++        BlockKind::WaxedCopperChest |
++        BlockKind::WaxedCopperDoor |
++        BlockKind::WaxedCopperGolemStatue |
++        BlockKind::WaxedCopperGrate |
++        BlockKind::WaxedCopperTrapdoor |
++        BlockKind::WaxedCutCopper |
++        BlockKind::WaxedCutCopperSlab |
++        BlockKind::WaxedCutCopperStairs |
++        BlockKind::WaxedExposedChiseledCopper |
++        BlockKind::WaxedExposedCopper |
++        BlockKind::WaxedExposedCopperBulb |
++        BlockKind::WaxedExposedCopperChest |
++        BlockKind::WaxedExposedCopperDoor |
++        BlockKind::WaxedExposedCopperGolemStatue |
++        BlockKind::WaxedExposedCopperGrate |
++        BlockKind::WaxedExposedCopperTrapdoor |
++        BlockKind::WaxedExposedCutCopper |
++        BlockKind::WaxedExposedCutCopperSlab |
++        BlockKind::WaxedExposedCutCopperStairs |
++        BlockKind::WaxedOxidizedChiseledCopper |
++        BlockKind::WaxedOxidizedCopper |
++        BlockKind::WaxedOxidizedCopperBulb |
++        BlockKind::WaxedOxidizedCopperChest |
++        BlockKind::WaxedOxidizedCopperDoor |
++        BlockKind::WaxedOxidizedCopperGolemStatue |
++        BlockKind::WaxedOxidizedCopperGrate |
++        BlockKind::WaxedOxidizedCopperTrapdoor |
++        BlockKind::WaxedOxidizedCutCopper |
++        BlockKind::WaxedOxidizedCutCopperSlab |
++        BlockKind::WaxedOxidizedCutCopperStairs |
++        BlockKind::WaxedWeatheredChiseledCopper |
++        BlockKind::WaxedWeatheredCopper |
++        BlockKind::WaxedWeatheredCopperBulb |
++        BlockKind::WaxedWeatheredCopperChest |
++        BlockKind::WaxedWeatheredCopperDoor |
++        BlockKind::WaxedWeatheredCopperGolemStatue |
++        BlockKind::WaxedWeatheredCopperGrate |
++        BlockKind::WaxedWeatheredCopperTrapdoor |
++        BlockKind::WaxedWeatheredCutCopper |
++        BlockKind::WaxedWeatheredCutCopperSlab |
++        BlockKind::WaxedWeatheredCutCopperStairs |
++        BlockKind::WeatheredChiseledCopper |
++        BlockKind::WeatheredCopper |
++        BlockKind::WeatheredCopperBulb |
++        BlockKind::WeatheredCopperChest |
++        BlockKind::WeatheredCopperDoor |
++        BlockKind::WeatheredCopperGolemStatue |
++        BlockKind::WeatheredCopperGrate |
++        BlockKind::WeatheredCopperTrapdoor |
++        BlockKind::WeatheredCutCopper |
++        BlockKind::WeatheredCutCopperSlab |
++        BlockKind::WeatheredCutCopperStairs |
++        BlockKind::WeepingVines |
++        BlockKind::WeepingVinesPlant |
++        BlockKind::WetSponge |
++        BlockKind::Wheat |
++        BlockKind::WhiteBanner |
++        BlockKind::WhiteBed |
++        BlockKind::WhiteCandle |
++        BlockKind::WhiteCandleCake |
++        BlockKind::WhiteCarpet |
++        BlockKind::WhiteConcrete |
++        BlockKind::WhiteConcretePowder |
++        BlockKind::WhiteGlazedTerracotta |
++        BlockKind::WhiteShulkerBox |
++        BlockKind::WhiteStainedGlass |
++        BlockKind::WhiteStainedGlassPane |
++        BlockKind::WhiteTerracotta |
++        BlockKind::WhiteTulip |
++        BlockKind::WhiteWallBanner |
++        BlockKind::WhiteWool |
++        BlockKind::Wildflowers |
++        BlockKind::WitherRose |
++        BlockKind::WitherSkeletonSkull |
++        BlockKind::WitherSkeletonWallSkull |
++        BlockKind::YellowBanner |
++        BlockKind::YellowBed |
++        BlockKind::YellowCandle |
++        BlockKind::YellowCandleCake |
++        BlockKind::YellowCarpet |
++        BlockKind::YellowConcrete |
++        BlockKind::YellowConcretePowder |
++        BlockKind::YellowGlazedTerracotta |
++        BlockKind::YellowShulkerBox |
++        BlockKind::YellowStainedGlass |
++        BlockKind::YellowStainedGlassPane |
++        BlockKind::YellowTerracotta |
++        BlockKind::YellowWallBanner |
++        BlockKind::YellowWool |
++        BlockKind::ZombieHead |
++        BlockKind::ZombieWallHead
++    )
++}
++
+ /// The class overrides `updateIndirectNeighbourShapes` (redstone wire), so a place changes
+ /// shapes two cells away.
+ pub fn indirect_shape_block(kind: BlockKind) -> bool {
+diff --git a/azalea-client/src/plugins/block_actions.rs b/azalea-client/src/plugins/block_actions.rs
+index 7314b10..8fc7720 100644
+--- a/azalea-client/src/plugins/block_actions.rs
++++ b/azalea-client/src/plugins/block_actions.rs
+@@ -941,6 +941,9 @@ pub fn handle_place_block_queued(
+                             sent_yaw: cx.sent_yaw,
+                             pitch: look.x_rot(),
+                             sent_pitch: cx.sent_pitch,
++                            // the server learns a sneak change with the input packet that follows this click
++                            secondary_use: (mv.trying_to_crouch == crouching.is_some_and(|c| **c))
++                                .then(|| is_crouching(&mv, crouching)),
+                             obstacles: &cx.obstacles,
+                         };
+                         let verdict = predict_place(&bot, &request);
+diff --git a/azalea-client/src/plugins/mod.rs b/azalea-client/src/plugins/mod.rs
+index 061a571..564032d 100644
+--- a/azalea-client/src/plugins/mod.rs
++++ b/azalea-client/src/plugins/mod.rs
+@@ -26,6 +26,7 @@ pub mod mining;
+ pub mod movement;
+ pub mod packet;
+ pub mod place_prediction;
++pub mod place_rules;
+ pub mod pong;
+ pub mod client_refusals;
+ pub mod pushes;
+diff --git a/azalea-client/src/plugins/place_prediction.rs b/azalea-client/src/plugins/place_prediction.rs
+index 2741fb4..41852ce 100644
+--- a/azalea-client/src/plugins/place_prediction.rs
++++ b/azalea-client/src/plugins/place_prediction.rs
+@@ -48,6 +48,7 @@ use azalea_registry::builtin::EntityKind;
+ use azalea_world::BlockView;
+ use bevy_ecs::{prelude::*, query::QueryData, system::SystemParam};
+ 
++use super::place_rules;
+ use crate::{
+     local_player::{LocalGameMode, TabList},
+     movement::LastSentLookDirection,
+@@ -70,6 +71,13 @@ pub enum UnknownWhy {
+     EntityUnsure,
+     /// The facing family: the yaw the server uses (the last one sent) differs from the current one.
+     FacingYaw,
++    /// A support shape the fork does not model decides the state (snow layers, fence gates, shulker
++    /// boxes, chorus flowers, hanging signs, multiface blocks).
++    Support,
++    /// Redstone power at the cell cannot be shown to be absent from the blocks around it.
++    Signal,
++    /// Sneaking changed this tick, so the server's view of it is not the client's.
++    SecondaryUse,
+ }
+ 
+ impl UnknownWhy {
+@@ -82,6 +90,9 @@ impl UnknownWhy {
+             Self::ReplaceRule => "the target block has its own replace rule",
+             Self::EntityUnsure => "an entity that may block building overlaps the cell",
+             Self::FacingYaw => "the yaw the server knows differs from the current yaw",
++            Self::Support => "a neighbour's support shape is not modelled",
++            Self::Signal => "redstone power at the cell is not provably absent",
++            Self::SecondaryUse => "the sneak state is changing this tick",
+         }
+     }
+ }
+@@ -124,6 +135,8 @@ pub struct PlaceRequest<'a> {
+     /// The pitch now, and the pitch the server knows (the families that look up or down).
+     pub pitch: f32,
+     pub sent_pitch: f32,
++    /// `Player#isSecondaryUseActive` as the server knows it; `None` while that is changing.
++    pub secondary_use: Option<bool>,
+     /// The placer's box, then every other entity box near the cell.
+     pub obstacles: &'a [Obstacle],
+ }
+@@ -167,7 +180,7 @@ pub fn cell_box(pos: BlockPos) -> Aabb {
+ }
+ 
+ /// Vanilla `Direction#fromYRot`: the horizontal direction a yaw faces.
+-fn horizontal_direction(yaw: f32) -> Direction {
++pub(crate) fn horizontal_direction(yaw: f32) -> Direction {
+     match ((yaw as f64 / 90.0 + 0.5).floor() as i32) & 3 {
+         0 => Direction::South,
+         1 => Direction::West,
+@@ -176,7 +189,7 @@ fn horizontal_direction(yaw: f32) -> Direction {
+     }
+ }
+ 
+-fn clockwise(d: Direction) -> Direction {
++pub(crate) fn clockwise(d: Direction) -> Direction {
+     match d {
+         Direction::North => Direction::East,
+         Direction::East => Direction::South,
+@@ -186,11 +199,11 @@ fn clockwise(d: Direction) -> Direction {
+     }
+ }
+ 
+-fn counter_clockwise(d: Direction) -> Direction {
++pub(crate) fn counter_clockwise(d: Direction) -> Direction {
+     clockwise(clockwise(clockwise(d)))
+ }
+ 
+-fn direction_from_name(name: &str) -> Option<Direction> {
++pub(crate) fn direction_from_name(name: &str) -> Option<Direction> {
+     Some(match name {
+         "down" => Direction::Down,
+         "up" => Direction::Up,
+@@ -226,7 +239,7 @@ fn nearest_looking(yaw: f32, pitch: f32) -> Option<Direction> {
+     if l > n { pick_x } else { pick_z }
+ }
+ 
+-fn axis_name(face: Direction) -> &'static str {
++pub(crate) fn axis_name(face: Direction) -> &'static str {
+     match face {
+         Direction::Down | Direction::Up => "y",
+         Direction::North | Direction::South => "z",
+@@ -234,7 +247,7 @@ fn axis_name(face: Direction) -> &'static str {
+     }
+ }
+ 
+-fn direction_name(d: Direction) -> &'static str {
++pub(crate) fn direction_name(d: Direction) -> &'static str {
+     match d {
+         Direction::Down => "down",
+         Direction::Up => "up",
+@@ -247,7 +260,7 @@ fn direction_name(d: Direction) -> &'static str {
+ 
+ /// Whether the cell holds a water source (`FluidState#getType() == Fluids.WATER`, not flowing
+ /// water): a waterlogged block, a water block at level 0, or a plant that holds source water.
+-fn is_water_source(state: BlockState) -> bool {
++pub(crate) fn is_water_source(state: BlockState) -> bool {
+     if state.get_property("waterlogged") == Some("true") {
+         return true;
+     }
+@@ -260,7 +273,7 @@ fn is_water_source(state: BlockState) -> bool {
+     }
+ }
+ 
+-fn with_properties(kind: BlockKind, props: &[(&str, &str)]) -> Option<BlockState> {
++pub(crate) fn with_properties(kind: BlockKind, props: &[(&str, &str)]) -> Option<BlockState> {
+     let mut block: Box<dyn BlockTrait> = kind.into();
+     for (name, value) in props {
+         block.set_property(name, value).ok()?;
+@@ -458,6 +471,15 @@ pub fn predict_place(chunks: &impl BlockView, req: &PlaceRequest) -> Verdict {
+             )
+         }
+         PlaceFamily::Unknown => None,
++        // Families that read neighbours, the look or redstone: see place_rules.rs.
++        _ => {
++            let cx = place_rules::Cx { chunks, req, kind, target, before, replace_clicked };
++            match place_rules::state_for(&cx, family) {
++                place_rules::Rule::State(st) => Some(st),
++                place_rules::Rule::Fail(why) => return Verdict::Nothing(why),
++                place_rules::Rule::Unknown(why) => return Verdict::Unknown(why),
++            }
++        }
+     };
+     let Some(state) = state else { return Verdict::Unknown(UnknownWhy::Family) };
+ 
+@@ -839,6 +861,7 @@ mod tests {
+             sent_yaw: 0.0,
+             pitch: 0.0,
+             sent_pitch: 0.0,
++            secondary_use: Some(false),
+             obstacles,
+         }
+     }
+@@ -1014,7 +1037,7 @@ mod tests {
+     fn what_stage_one_cannot_compute_is_unknown() {
+         let (chunks, _keep) = world();
+         let (clicked, hit) = top_of_floor();
+-        for held in ["minecraft:oak_fence", "minecraft:oak_door", "minecraft:torch", "minecraft:diamond_sword", "minecraft:chest", "minecraft:redstone_lamp", "minecraft:oak_leaves"] {
++        for held in ["minecraft:oak_door", "minecraft:diamond_sword", "minecraft:redstone_lamp", "minecraft:powered_rail", "minecraft:white_bed"] {
+             assert_eq!(
+                 predict_place(&chunks, &req(held, clicked, Direction::Up, hit, &[])),
+                 Verdict::Unknown(UnknownWhy::Family),
+@@ -1268,4 +1291,217 @@ mod tests {
+         let sides: Vec<_> = ["down", "up", "north", "east", "south", "west"].iter().map(|n| s.get_property(n).unwrap()).collect();
+         assert_eq!(sides, ["true", "true", "true", "false", "true", "true"]);
+     }
++    // Group tests for patches 71 to 78. Expected states come from reading the 1.21.11 sources named
++    // on each test (the `getStateForPlacement` of the class), not from this module. The default
++    // look is yaw 0 (south), pitch 0: Direction#orderedByNearest gives south, down, west, north,
++    // up, east.
++
++    fn side_click<'a>(held: &'a str, wall: (i32, i32, i32), face: Direction, hit_y: f64) -> PlaceRequest<'a> {
++        req(held, BlockPos::new(wall.0, wall.1, wall.2), face, Vec3::new(2.5, hit_y, 2.5), &[])
++    }
++
++    fn props_of(s: BlockState, names: &[&str]) -> Vec<String> {
++        names.iter().map(|n| s.get_property(n).unwrap_or("-").to_string()).collect()
++    }
++
++    // StandingAndWallBlockItem#getPlacementState, WallTorchBlock#getStateForPlacement, BaseTorchBlock#canSurvive
++    #[test]
++    fn torches_stand_on_a_centre_support_or_hang_on_a_sturdy_side() {
++        let (chunks, _keep) = world();
++        let f = FLOOR as f64;
++        // on the floor: the clicked face's opposite (down) comes first, a stone floor supports the centre
++        let s = place_at(&chunks, &on_floor("minecraft:torch", f + 1.0));
++        assert_eq!(BlockKind::from(s), BlockKind::Torch);
++        // on the south face of a stone block: the north look direction goes first, so the torch
++        // hangs on that block and faces south
++        set(&chunks, 2, FLOOR + 1, 1, BlockKind::Stone, &[]);
++        let r = side_click("minecraft:soul_torch", (2, FLOOR + 1, 1), Direction::South, f + 1.5);
++        let s = place_at(&chunks, &r);
++        assert_eq!((BlockKind::from(s), s.get_property("facing")), (BlockKind::SoulWallTorch, Some("south")));
++        let r = side_click("minecraft:redstone_torch", (2, FLOOR + 1, 1), Direction::South, f + 1.5);
++        assert_eq!(BlockKind::from(place_at(&chunks, &r)), BlockKind::RedstoneWallTorch);
++        // on top of a fence post: a post covers the centre square
++        set(&chunks, 6, FLOOR + 1, 6, BlockKind::OakFence, &[]);
++        let r = req("minecraft:torch", BlockPos::new(6, FLOOR + 1, 6), Direction::Up, Vec3::new(6.5, f + 2.5, 6.5), &[]);
++        assert_eq!(BlockKind::from(place_at(&chunks, &r)), BlockKind::Torch);
++        // on leaves with nothing beside: no support, the client's try fails
++        set(&chunks, 8, FLOOR + 1, 8, BlockKind::OakLeaves, &[("persistent", "true")]);
++        let r = req("minecraft:torch", BlockPos::new(8, FLOOR + 1, 8), Direction::Up, Vec3::new(8.5, f + 2.0, 8.5), &[]);
++        assert!(matches!(predict_place(&chunks, &r), Verdict::Nothing(_)));
++        // a look that is not settled (yaw sent differs across a direction) is not guessed
++        let mut r = on_floor("minecraft:torch", f + 1.0);
++        r.yaw = 100.0;
++        assert_eq!(predict_place(&chunks, &r), Verdict::Unknown(UnknownWhy::FacingYaw));
++    }
++
++    // LadderBlock#getStateForPlacement, #canSurvive
++    #[test]
++    fn ladders_face_away_from_the_first_sturdy_look_direction() {
++        let (chunks, _keep) = world();
++        let f = FLOOR as f64;
++        set(&chunks, 2, FLOOR + 1, 1, BlockKind::Stone, &[]);
++        let r = side_click("minecraft:ladder", (2, FLOOR + 1, 1), Direction::South, f + 1.5);
++        let s = place_at(&chunks, &r);
++        assert_eq!(props_of(s, &["facing", "waterlogged"]), ["south", "false"]);
++        // nothing to hang on beside a floor click far from that wall: fails on the client
++        let r = req("minecraft:ladder", BlockPos::new(9, FLOOR, 9), Direction::Up, Vec3::new(9.5, f + 1.0, 9.5), &[]);
++        assert!(matches!(predict_place(&chunks, &r), Verdict::Nothing(_)));
++        // a ladder on a ladder facing the clicked face: null
++        set(&chunks, 4, FLOOR + 1, 4, BlockKind::Ladder, &[("facing", "south")]);
++        let r = side_click("minecraft:ladder", (4, FLOOR + 1, 4), Direction::South, f + 1.5);
++        assert!(matches!(predict_place(&chunks, &r), Verdict::Nothing(_)));
++        // water in the cell
++        set(&chunks, 2, FLOOR + 1, 2, BlockKind::Water, &[("level", "0")]);
++        let r = side_click("minecraft:ladder", (2, FLOOR + 1, 1), Direction::South, f + 1.5);
++        assert_eq!(props_of(place_at(&chunks, &r), &["waterlogged"]), ["true"]);
++    }
++
++    // FenceBlock#getStateForPlacement, #connectsTo, FenceGateBlock.connectsToDirection
++    #[test]
++    fn fences_connect_to_sturdy_sides_same_fences_and_gates_across() {
++        let (chunks, _keep) = world();
++        let h = FLOOR as f64 + 1.0;
++        set(&chunks, 3, FLOOR + 1, 2, BlockKind::Stone, &[]);
++        set(&chunks, 1, FLOOR + 1, 2, BlockKind::OakFence, &[]);
++        set(&chunks, 2, FLOOR + 1, 3, BlockKind::NetherBrickFence, &[]);
++        set(&chunks, 2, FLOOR + 1, 1, BlockKind::OakFenceGate, &[("facing", "west")]);
++        let s = place_at(&chunks, &on_floor("minecraft:oak_fence", h));
++        // north (gate whose axis crosses), east (stone), south (a nether fence is not the same kind), west (oak fence)
++        assert_eq!(props_of(s, &["north", "east", "south", "west"]), ["true", "true", "false", "true"]);
++        // the gate facing north does not connect
++        set(&chunks, 2, FLOOR + 1, 1, BlockKind::OakFenceGate, &[("facing", "north")]);
++        let s = place_at(&chunks, &on_floor("minecraft:oak_fence", h));
++        // a gate across the line is not connected and a gate's support is a bar, never a full face
++        assert_eq!(s.get_property("north"), Some("false"));
++    }
++
++    // IronBarsBlock#getStateForPlacement, #attachsTo, Block#isExceptionForConnection
++    #[test]
++    fn panes_attach_to_bars_and_walls_but_not_to_exceptions() {
++        let (chunks, _keep) = world();
++        let h = FLOOR as f64 + 1.0;
++        set(&chunks, 3, FLOOR + 1, 2, BlockKind::Stone, &[]);
++        set(&chunks, 2, FLOOR + 1, 1, BlockKind::IronBars, &[]);
++        set(&chunks, 1, FLOOR + 1, 2, BlockKind::Pumpkin, &[]);
++        set(&chunks, 2, FLOOR + 1, 3, BlockKind::CobblestoneWall, &[]);
++        let s = place_at(&chunks, &on_floor("minecraft:glass_pane", h));
++        assert_eq!(props_of(s, &["north", "east", "south", "west"]), ["true", "true", "true", "false"]);
++    }
++
++    // WallBlock#getStateForPlacement, #updateShape, #shouldRaisePost, #makeWallState
++    #[test]
++    fn walls_set_arms_by_the_block_above_and_the_post_by_the_arms() {
++        let (chunks, _keep) = world();
++        let h = FLOOR as f64 + 1.0;
++        let names = ["up", "north", "east", "south", "west"];
++        let s = place_at(&chunks, &on_floor("minecraft:cobblestone_wall", h));
++        assert_eq!(props_of(s, &names), ["true", "none", "none", "none", "none"]);
++        set(&chunks, 3, FLOOR + 1, 2, BlockKind::Stone, &[]);
++        let s = place_at(&chunks, &on_floor("minecraft:cobblestone_wall", h));
++        assert_eq!(props_of(s, &names), ["true", "none", "low", "none", "none"]);
++        set(&chunks, 1, FLOOR + 1, 2, BlockKind::Stone, &[]);
++        let s = place_at(&chunks, &on_floor("minecraft:cobblestone_wall", h));
++        assert_eq!(props_of(s, &names), ["false", "none", "low", "none", "low"]);
++        // a full block above makes both arms tall; two tall opposite arms keep the post down
++        set(&chunks, 2, FLOOR + 2, 2, BlockKind::Stone, &[]);
++        let s = place_at(&chunks, &on_floor("minecraft:cobblestone_wall", h));
++        assert_eq!(props_of(s, &names), ["false", "none", "tall", "none", "tall"]);
++        // a top slab above does not reach the cell's bottom edge: low arms (a bottom slab would)
++        set(&chunks, 2, FLOOR + 2, 2, BlockKind::StoneSlab, &[("type", "top")]);
++        let s = place_at(&chunks, &on_floor("minecraft:cobblestone_wall", h));
++        assert_eq!(props_of(s, &names), ["false", "none", "low", "none", "low"]);
++    }
++
++    // FenceGateBlock#getStateForPlacement, SignalGetter#hasNeighborSignal
++    #[test]
++    fn fence_gates_face_the_player_and_see_walls_beside_and_unprovable_power_is_unknown() {
++        let (chunks, _keep) = world();
++        let h = FLOOR as f64 + 1.0;
++        let s = place_at(&chunks, &on_floor("minecraft:oak_fence_gate", h));
++        assert_eq!(props_of(s, &["facing", "open", "powered", "in_wall"]), ["south", "false", "false", "false"]);
++        set(&chunks, 3, FLOOR + 1, 2, BlockKind::CobblestoneWall, &[]);
++        let s = place_at(&chunks, &on_floor("minecraft:oak_fence_gate", h));
++        assert_eq!(s.get_property("in_wall"), Some("true"));
++        // a redstone block beside the cell: the power is not provably absent
++        set(&chunks, 2, FLOOR + 1, 1, BlockKind::RedstoneBlock, &[]);
++        assert_eq!(predict_place(&chunks, &on_floor("minecraft:oak_fence_gate", h)), Verdict::Unknown(UnknownWhy::Signal));
++    }
++
++    // TrapDoorBlock#getStateForPlacement
++    #[test]
++    fn trapdoors_take_face_half_and_water() {
++        let (chunks, _keep) = world();
++        let f = FLOOR as f64;
++        let names = ["facing", "half", "open", "powered", "waterlogged"];
++        let s = place_at(&chunks, &on_floor("minecraft:oak_trapdoor", f + 1.0));
++        assert_eq!(props_of(s, &names), ["north", "bottom", "false", "false", "false"]);
++        set(&chunks, 2, FLOOR + 1, 1, BlockKind::Stone, &[]);
++        let r = side_click("minecraft:iron_trapdoor", (2, FLOOR + 1, 1), Direction::South, f + 1.7);
++        assert_eq!(props_of(place_at(&chunks, &r), &names), ["south", "top", "false", "false", "false"]);
++        let r = side_click("minecraft:iron_trapdoor", (2, FLOOR + 1, 1), Direction::South, f + 1.3);
++        assert_eq!(props_of(place_at(&chunks, &r), &names), ["south", "bottom", "false", "false", "false"]);
++        // placed against the underside of a block: top half
++        set(&chunks, 6, FLOOR + 3, 6, BlockKind::Stone, &[]);
++        let r = req("minecraft:oak_trapdoor", BlockPos::new(6, FLOOR + 3, 6), Direction::Down, Vec3::new(6.5, f + 3.0, 6.5), &[]);
++        assert_eq!(props_of(place_at(&chunks, &r), &names), ["north", "top", "false", "false", "false"]);
++        // a lever next to the cell can power it
++        set(&chunks, 3, FLOOR + 1, 2, BlockKind::Lever, &[]);
++        assert_eq!(predict_place(&chunks, &on_floor("minecraft:oak_trapdoor", f + 1.0)), Verdict::Unknown(UnknownWhy::Signal));
++    }
++
++    // LeavesBlock#getStateForPlacement, #updateDistance
++    #[test]
++    fn leaves_take_the_distance_from_logs_and_leaves() {
++        let (chunks, _keep) = world();
++        let h = FLOOR as f64 + 1.0;
++        let names = ["distance", "persistent", "waterlogged"];
++        assert_eq!(props_of(place_at(&chunks, &on_floor("minecraft:oak_leaves", h)), &names), ["7", "true", "false"]);
++        set(&chunks, 3, FLOOR + 1, 2, BlockKind::OakLeaves, &[("distance", "3")]);
++        assert_eq!(props_of(place_at(&chunks, &on_floor("minecraft:oak_leaves", h)), &names), ["4", "true", "false"]);
++        set(&chunks, 2, FLOOR + 2, 2, BlockKind::OakLog, &[]);
++        assert_eq!(props_of(place_at(&chunks, &on_floor("minecraft:oak_leaves", h)), &names), ["1", "true", "false"]);
++    }
++
++    // ChestBlock#getStateForPlacement, #getChestType, #candidatePartnerFacing
++    #[test]
++    fn chests_join_a_single_chest_unless_sneaking_picks_the_clicked_side() {
++        let (chunks, _keep) = world();
++        let f = FLOOR as f64;
++        let names = ["facing", "type", "waterlogged"];
++        assert_eq!(props_of(place_at(&chunks, &on_floor("minecraft:chest", f + 1.0)), &names), ["north", "single", "false"]);
++        // a chest facing the same way to the east: this one is its LEFT half (clockwise of north is east)
++        set(&chunks, 3, FLOOR + 1, 2, BlockKind::Chest, &[("facing", "north"), ("type", "single")]);
++        assert_eq!(props_of(place_at(&chunks, &on_floor("minecraft:chest", f + 1.0)), &names), ["north", "left", "false"]);
++        // a trapped chest does not join a chest
++        assert_eq!(props_of(place_at(&chunks, &on_floor("minecraft:trapped_chest", f + 1.0)), &names), ["north", "single", "false"]);
++        // a chest to the west: RIGHT
++        set(&chunks, 3, FLOOR + 1, 2, BlockKind::Air, &[]);
++        set(&chunks, 1, FLOOR + 1, 2, BlockKind::Chest, &[("facing", "north"), ("type", "single")]);
++        assert_eq!(props_of(place_at(&chunks, &on_floor("minecraft:chest", f + 1.0)), &names), ["north", "right", "false"]);
++        // sneaking and clicking the east face of that west chest: the new chest copies its facing
++        let mut r = side_click("minecraft:chest", (1, FLOOR + 1, 2), Direction::East, f + 1.5);
++        r.secondary_use = Some(true);
++        assert_eq!(props_of(place_at(&chunks, &r), &names), ["north", "right", "false"]);
++        r.secondary_use = None;
++        assert_eq!(predict_place(&chunks, &r), Verdict::Unknown(UnknownWhy::SecondaryUse));
++    }
++
++    // BaseRailBlock#getStateForPlacement, #canSurvive (canSupportRigidBlock)
++    #[test]
++    fn plain_rails_run_along_the_look_and_need_a_rigid_support() {
++        let (chunks, _keep) = world();
++        let f = FLOOR as f64;
++        let names = ["shape", "waterlogged"];
++        assert_eq!(props_of(place_at(&chunks, &on_floor("minecraft:rail", f + 1.0)), &names), ["north_south", "false"]);
++        let mut r = on_floor("minecraft:rail", f + 1.0);
++        r.yaw = 90.0;
++        r.sent_yaw = 90.0;
++        assert_eq!(props_of(place_at(&chunks, &r), &names), ["east_west", "false"]);
++        // a fence post top is not a rigid support, a bottom slab neither
++        set(&chunks, 6, FLOOR + 1, 6, BlockKind::OakFence, &[]);
++        let r = req("minecraft:rail", BlockPos::new(6, FLOOR + 1, 6), Direction::Up, Vec3::new(6.5, f + 2.5, 6.5), &[]);
++        assert!(matches!(predict_place(&chunks, &r), Verdict::Nothing(_)));
++        // a powered rail runs redstone code on the client: not predicted
++        assert_eq!(predict_place(&chunks, &on_floor("minecraft:powered_rail", f + 1.0)), Verdict::Unknown(UnknownWhy::Family));
++    }
+ }
+diff --git a/azalea-client/src/plugins/place_rules.rs b/azalea-client/src/plugins/place_rules.rs
+new file mode 100644
+index 0000000..6dc0121
+--- /dev/null
++++ b/azalea-client/src/plugins/place_rules.rs
+@@ -0,0 +1,581 @@
++//! Placement rules that read neighbours, the look or redstone (Null fork patches 71 to 78).
++//!
++//! Each rule follows one vanilla `getStateForPlacement` (Mojang names are in the comments). A rule
++//! returns the state the client writes, a client FAIL (`Verdict::Nothing`), or `Unknown` when it
++//! would have to guess: a support shape the fork does not model, redstone power it cannot rule out,
++//! or a look that differs from the one the server knows. A wrong prediction is worse than none.
++//!
++//! Grim (`BlockPlace`, `CheckManagerListener`) works out the same state itself; a different
++//! state near the bot costs `Simulation`.
++//!
++//! Spec: specs/B6-placement-breaking.md §4.10 (place prediction, patches 71 to 78)
++
++use azalea_block::{
++    BlockState, PlaceFamily, gives_no_direct_signal, gives_no_signal, torch_wall_block,
++};
++use azalea_core::{direction::Direction, position::BlockPos};
++use azalea_physics::collision::{
++    FaceRegion, SupportType, collision_face_covers, is_face_sturdy, is_face_supported,
++};
++use azalea_registry::{builtin::BlockKind, tags};
++use azalea_world::BlockView;
++
++use super::place_prediction::{
++    PlaceRequest, UnknownWhy, axis_name, clockwise, counter_clockwise, direction_name,
++    horizontal_direction, is_water_source, with_properties,
++};
++
++/// What a rule says.
++pub enum Rule {
++    State(BlockState),
++    /// The client's own try fails (`getStateForPlacement` null or `canSurvive` false): the packet
++    /// goes out and nothing is predicted.
++    Fail(&'static str),
++    Unknown(UnknownWhy),
++}
++
++/// What a rule can read.
++pub struct Cx<'a, V: BlockView> {
++    pub chunks: &'a V,
++    pub req: &'a PlaceRequest<'a>,
++    pub kind: BlockKind,
++    /// `BlockPlaceContext#getClickedPos`: the cell the block goes into.
++    pub target: BlockPos,
++    /// The state in that cell now.
++    pub before: BlockState,
++    /// `BlockPlaceContext#replacingClickedOnBlock`.
++    pub replace_clicked: bool,
++}
++
++type Res<T> = Result<T, Rule>;
++
++fn unknown<T>(why: UnknownWhy) -> Res<T> {
++    Err(Rule::Unknown(why))
++}
++
++impl<V: BlockView> Cx<'_, V> {
++    fn state(&self, pos: BlockPos) -> Res<BlockState> {
++        match self.chunks.get_block_state(pos) {
++            Some(s) => Ok(s),
++            None => unknown(UnknownWhy::Unloaded),
++        }
++    }
++
++    fn water(&self) -> &'static str {
++        if is_water_source(self.before) { "true" } else { "false" }
++    }
++
++    /// `isFaceSturdy(FULL)` of the block at `pos` on `face`.
++    fn sturdy(&self, pos: BlockPos, face: Direction) -> Res<bool> {
++        match is_face_sturdy(self.state(pos)?, face) {
++            Some(b) => Ok(b),
++            None => unknown(UnknownWhy::Support),
++        }
++    }
++
++    /// `Entity#getDirection` for the server: the yaw it knows must give the same direction.
++    fn horizontal(&self) -> Res<Direction> {
++        let now = horizontal_direction(self.req.yaw);
++        if now != horizontal_direction(self.req.sent_yaw) {
++            return unknown(UnknownWhy::FacingYaw);
++        }
++        Ok(now)
++    }
++
++    /// `BlockPlaceContext#getNearestLookingDirections`.
++    fn looking(&self) -> Res<[Direction; 6]> {
++        let (Some(now), Some(sent)) = (
++            ordered_by_nearest(self.req.yaw, self.req.pitch),
++            ordered_by_nearest(self.req.sent_yaw, self.req.sent_pitch),
++        ) else {
++            return unknown(UnknownWhy::FacingYaw);
++        };
++        if now != sent {
++            return unknown(UnknownWhy::FacingYaw);
++        }
++        let mut dirs = now;
++        if !self.replace_clicked {
++            // The face we clicked, turned round, goes first.
++            let first = self.req.face.opposite();
++            if let Some(i) = dirs.iter().position(|d| *d == first) {
++                dirs[..=i].rotate_right(1);
++            }
++        }
++        Ok(dirs)
++    }
++
++    /// `SignalGetter#hasNeighborSignal` for the target cell, or unknown. A neighbour is trusted
++    /// to give no signal only when its class never outputs one, and a touching block only when
++    /// none of its own neighbours (this cell included) can power it directly.
++    fn no_neighbor_signal(&self) -> Res<()> {
++        for d in ALL {
++            let n = self.target.offset_with_direction(d);
++            if !gives_no_signal(BlockKind::from(self.state(n)?)) {
++                return unknown(UnknownWhy::Signal);
++            }
++            for d2 in ALL {
++                let m = n.offset_with_direction(d2);
++                let state = if m == self.target { self.before } else { self.state(m)? };
++                if !gives_no_direct_signal(BlockKind::from(state)) {
++                    return unknown(UnknownWhy::Signal);
++                }
++            }
++        }
++        Ok(())
++    }
++}
++
++const ALL: [Direction; 6] = [
++    Direction::Down,
++    Direction::Up,
++    Direction::North,
++    Direction::South,
++    Direction::West,
++    Direction::East,
++];
++
++const SIDES: [Direction; 4] = [Direction::North, Direction::East, Direction::South, Direction::West];
++
++/// `Direction#orderedByNearest`: all six directions, nearest to the look first. `None` when two
++/// compared lengths are within a hair of each other: vanilla reads its sine table there.
++// Spec: specs/B6-placement-breaking.md §4.10 (patch 71: torches and ladders)
++pub fn ordered_by_nearest(yaw: f32, pitch: f32) -> Option<[Direction; 6]> {
++    const TIE: f64 = 1e-3;
++    let (f, g) = ((pitch as f64).to_radians(), -(yaw as f64).to_radians());
++    let (h, i, j, k) = (f.sin(), f.cos(), g.sin(), g.cos());
++    let (l, m, n) = (j.abs(), h.abs(), k.abs());
++    let (o, p) = (l * i, n * i);
++    // Both exactly zero (yaw 0 and pitch 0) is no tie: the table gives exact zeros there.
++    let near = |a: f64, b: f64| (a - b).abs() < TIE && !(a == 0.0 && b == 0.0);
++    if near(l, n) || near(m, o) || near(m, p) {
++        return None;
++    }
++    let x = if j > 0.0 { Direction::East } else { Direction::West };
++    let y = if h < 0.0 { Direction::Up } else { Direction::Down };
++    let z = if k > 0.0 { Direction::South } else { Direction::North };
++    let (a, b, c) = if l > n {
++        if m > o {
++            (y, x, z)
++        } else if p > m {
++            (x, z, y)
++        } else {
++            (x, y, z)
++        }
++    } else if m > p {
++        (y, z, x)
++    } else if o > m {
++        (z, x, y)
++    } else {
++        (z, y, x)
++    };
++    Some([a, b, c, c.opposite(), b.opposite(), a.opposite()])
++}
++
++/// The state this family's item places, as the vanilla client works it out.
++// Spec: specs/B6-placement-breaking.md §4.10 (patches 71 to 78)
++pub fn state_for<V: BlockView>(cx: &Cx<V>, family: PlaceFamily) -> Rule {
++    let res = match family {
++        PlaceFamily::Torch => torch(cx),
++        PlaceFamily::Ladder => ladder(cx),
++        PlaceFamily::Fence => fence(cx),
++        PlaceFamily::Pane => pane(cx),
++        PlaceFamily::Wall => wall(cx),
++        PlaceFamily::FenceGate => fence_gate(cx),
++        PlaceFamily::Trapdoor => trapdoor(cx),
++        PlaceFamily::Leaves => leaves(cx),
++        PlaceFamily::Chest => chest(cx),
++        PlaceFamily::Rail => rail(cx),
++        _ => unknown(UnknownWhy::Family),
++    };
++    match res {
++        Ok(Some(s)) => Rule::State(s),
++        Ok(None) => Rule::Fail("the block cannot be placed or survive here (getStateForPlacement)"),
++        Err(rule) => rule,
++    }
++}
++
++fn props(cx: &Cx<impl BlockView>, kind: BlockKind, p: &[(&str, &str)]) -> Res<Option<BlockState>> {
++    let _ = cx;
++    match with_properties(kind, p) {
++        Some(s) => Ok(Some(s)),
++        None => unknown(UnknownWhy::Family),
++    }
++}
++
++// --- torches (StandingAndWallBlockItem#getPlacementState, WallTorchBlock#getStateForPlacement) ---
++
++/// A torch's survival: `BaseTorchBlock#canSurvive` wants a centre support below.
++fn standing_torch_survives<V: BlockView>(cx: &Cx<V>) -> Res<bool> {
++    let below = cx.state(cx.target.down(1))?;
++    match is_face_supported(below, Direction::Up, SupportType::Center) {
++        Some(b) => Ok(b),
++        None => unknown(UnknownWhy::Support),
++    }
++}
++
++fn torch<V: BlockView>(cx: &Cx<V>) -> Res<Option<BlockState>> {
++    let Some(wall) = torch_wall_block(cx.kind) else { return unknown(UnknownWhy::Family) };
++    let dirs = cx.looking()?;
++    // WallTorchBlock#getStateForPlacement: the first horizontal look direction whose far side is
++    // sturdy, facing back toward the player.
++    let wall_state = {
++        let mut found = None;
++        for d in dirs {
++            if !matches!(d, Direction::North | Direction::South | Direction::East | Direction::West) {
++                continue;
++            }
++            // canSurvive(facing = d.opposite): the block at target + d, sturdy on face d.opposite
++            if cx.sturdy(cx.target.offset_with_direction(d), d.opposite())? {
++                found = Some(d.opposite());
++                break;
++            }
++        }
++        found
++    };
++    for d in dirs {
++        if d == Direction::Up {
++            continue; // attachmentDirection.getOpposite()
++        }
++        if d == Direction::Down {
++            if standing_torch_survives(cx)? {
++                return Ok(Some(cx_default(cx.kind)));
++            }
++        } else if let Some(facing) = wall_state {
++            return props(cx, wall, &[("facing", direction_name(facing))]);
++        }
++    }
++    Ok(None)
++}
++
++fn cx_default(kind: BlockKind) -> BlockState {
++    BlockState::from(kind)
++}
++
++// --- ladders (LadderBlock#getStateForPlacement) ---
++
++fn ladder<V: BlockView>(cx: &Cx<V>) -> Res<Option<BlockState>> {
++    if !cx.replace_clicked {
++        // a ladder on the clicked block facing the clicked face: null
++        let behind = cx.state(cx.req.clicked)?;
++        if BlockKind::from(behind) == cx.kind && behind.get_property("facing") == Some(direction_name(cx.req.face)) {
++            return Ok(None);
++        }
++    }
++    for d in cx.looking()? {
++        if !SIDES.contains(&d) {
++            continue;
++        }
++        // facing d.opposite; canAttachTo(the block at target + d, face d.opposite)
++        if cx.sturdy(cx.target.offset_with_direction(d), d.opposite())? {
++            return props(cx, cx.kind, &[("facing", direction_name(d.opposite())), ("waterlogged", cx.water())]);
++        }
++    }
++    Ok(None)
++}
++
++// --- fences, panes, walls: connections ---
++
++/// `Block#isExceptionForConnection`.
++fn connection_exception(kind: BlockKind) -> bool {
++    kind.to_str().ends_with("_leaves")
++        || matches!(
++            kind,
++            BlockKind::Barrier
++                | BlockKind::CarvedPumpkin
++                | BlockKind::JackOLantern
++                | BlockKind::Melon
++                | BlockKind::Pumpkin
++        )
++        || tags::blocks::SHULKER_BOXES.contains(&kind)
++}
++
++fn is_gate(kind: BlockKind) -> bool {
++    kind.to_str().ends_with("_fence_gate")
++}
++
++/// `FenceGateBlock.connectsToDirection`: the gate's facing axis is the one across `direction`.
++fn gate_connects(gate: BlockState, direction: Direction) -> bool {
++    let facing = gate.get_property("facing").and_then(super::place_prediction::direction_from_name);
++    let across = clockwise(direction);
++    matches!((facing, across), (Some(f), a) if axis_name(f) == axis_name(a))
++}
++
++/// `IronBarsBlock` (glass panes, iron bars, copper bars).
++fn is_bars(kind: BlockKind) -> bool {
++    let n = kind.to_str();
++    n.ends_with("glass_pane") || n.ends_with("iron_bars") || n.ends_with("copper_bars")
++}
++
++/// The neighbour on `side` of the target, its state, and the face of it that touches us.
++fn side_neighbour<V: BlockView>(cx: &Cx<V>, side: Direction) -> Res<(BlockPos, BlockState)> {
++    let pos = cx.target.offset_with_direction(side);
++    Ok((pos, cx.state(pos)?))
++}
++
++fn fence<V: BlockView>(cx: &Cx<V>) -> Res<Option<BlockState>> {
++    let own_wooden = tags::blocks::WOODEN_FENCES.contains(&cx.kind);
++    let mut values = [("", "false"); 4];
++    for (i, side) in SIDES.into_iter().enumerate() {
++        let (pos, st) = side_neighbour(cx, side)?;
++        let kind = BlockKind::from(st);
++        // FenceBlock#connectsTo(state, sturdy, direction = the face that looks back at us)
++        let back = side.opposite();
++        let same = tags::blocks::FENCES.contains(&kind) && tags::blocks::WOODEN_FENCES.contains(&kind) == own_wooden;
++        let gate = is_gate(kind) && gate_connects(st, back);
++        let connects = if same || gate {
++            true
++        } else if connection_exception(kind) {
++            false
++        } else {
++            cx.sturdy(pos, back)?
++        };
++        values[i] = (direction_name(side), if connects { "true" } else { "false" });
++    }
++    props(cx, cx.kind, &[values[0], values[1], values[2], values[3], ("waterlogged", cx.water())])
++}
++
++fn pane<V: BlockView>(cx: &Cx<V>) -> Res<Option<BlockState>> {
++    let mut values = [("", "false"); 4];
++    for (i, side) in SIDES.into_iter().enumerate() {
++        let (pos, st) = side_neighbour(cx, side)?;
++        let kind = BlockKind::from(st);
++        let back = side.opposite();
++        // IronBarsBlock#attachsTo
++        let attaches = if is_bars(kind) || tags::blocks::WALLS.contains(&kind) {
++            true
++        } else if connection_exception(kind) {
++            false
++        } else {
++            cx.sturdy(pos, back)?
++        };
++        values[i] = (direction_name(side), if attaches { "true" } else { "false" });
++    }
++    props(cx, cx.kind, &[values[0], values[1], values[2], values[3], ("waterlogged", cx.water())])
++}
++
++// --- walls (WallBlock#getStateForPlacement, #updateShape, #shouldRaisePost) ---
++
++#[derive(Clone, Copy, Eq, PartialEq)]
++enum Arm {
++    None,
++    Low,
++    Tall,
++}
++
++impl Arm {
++    fn name(self) -> &'static str {
++        match self {
++            Self::None => "none",
++            Self::Low => "low",
++            Self::Tall => "tall",
++        }
++    }
++}
++
++const SIXTEENTH: f64 = 1.0 / 16.0;
++
++/// The test shape of one arm seen from below: a 2 wide strip from the middle to the edge, in the
++/// plane of the face (x then z).
++fn arm_region(side: Direction) -> FaceRegion {
++    let (m0, m1) = (7.0 * SIXTEENTH, 9.0 * SIXTEENTH);
++    match side {
++        Direction::North => (m0, m1, 0.0, m1),
++        Direction::South => (m0, m1, m0, 1.0),
++        Direction::West => (0.0, m1, m0, m1),
++        _ => (m0, 1.0, m0, m1),
++    }
++}
++
++fn wall<V: BlockView>(cx: &Cx<V>) -> Res<Option<BlockState>> {
++    let mut connected = [false; 4];
++    for (i, side) in SIDES.into_iter().enumerate() {
++        let (pos, st) = side_neighbour(cx, side)?;
++        let kind = BlockKind::from(st);
++        let back = side.opposite();
++        // WallBlock#connectsTo
++        connected[i] = if tags::blocks::WALLS.contains(&kind) || is_bars(kind) {
++            true
++        } else if is_gate(kind) && gate_connects(st, back) {
++            true
++        } else if connection_exception(kind) {
++            false
++        } else {
++            cx.sturdy(pos, back)?
++        };
++    }
++    let above = cx.state(cx.target.up(1))?;
++    let mut arms = [Arm::None; 4];
++    for (i, side) in SIDES.into_iter().enumerate() {
++        // makeWallState: tall when the face of the block above covers the arm's test shape
++        arms[i] = if !connected[i] {
++            Arm::None
++        } else if collision_face_covers(above, Direction::Down, arm_region(side)) {
++            Arm::Tall
++        } else {
++            Arm::Low
++        };
++    }
++    // shouldRaisePost
++    let [n, e, s, w] = arms;
++    let above_kind = BlockKind::from(above);
++    let up = if tags::blocks::WALLS.contains(&above_kind) && above.get_property("up") == Some("true") {
++        true
++    } else {
++        let (sn, ss, se, sw) = (n == Arm::None, s == Arm::None, e == Arm::None, w == Arm::None);
++        if (sn && ss && sw && se) || sn != ss || sw != se {
++            true
++        } else if (n == Arm::Tall && s == Arm::Tall) || (e == Arm::Tall && w == Arm::Tall) {
++            false
++        } else {
++            let m = (7.0 * SIXTEENTH, 9.0 * SIXTEENTH, 7.0 * SIXTEENTH, 9.0 * SIXTEENTH);
++            tags::blocks::WALL_POST_OVERRIDE.contains(&above_kind)
++                || collision_face_covers(above, Direction::Down, m)
++        }
++    };
++    props(
++        cx,
++        cx.kind,
++        &[
++            ("up", if up { "true" } else { "false" }),
++            ("north", n.name()),
++            ("east", e.name()),
++            ("south", s.name()),
++            ("west", w.name()),
++            ("waterlogged", cx.water()),
++        ],
++    )
++}
++
++// --- fence gates, trapdoors (hasNeighborSignal) ---
++
++fn fence_gate<V: BlockView>(cx: &Cx<V>) -> Res<Option<BlockState>> {
++    cx.no_neighbor_signal()?; // powered = open = false
++    let dir = cx.horizontal()?;
++    let is_wall = |side: Direction| -> Res<bool> {
++        Ok(tags::blocks::WALLS.contains(&BlockKind::from(cx.state(cx.target.offset_with_direction(side))?)))
++    };
++    // axis Z (facing north or south): walls to the west or east; axis X: to the north or south
++    let in_wall = if axis_name(dir) == "z" {
++        is_wall(Direction::West)? || is_wall(Direction::East)?
++    } else {
++        is_wall(Direction::North)? || is_wall(Direction::South)?
++    };
++    props(
++        cx,
++        cx.kind,
++        &[
++            ("facing", direction_name(dir)),
++            ("open", "false"),
++            ("powered", "false"),
++            ("in_wall", if in_wall { "true" } else { "false" }),
++        ],
++    )
++}
++
++fn trapdoor<V: BlockView>(cx: &Cx<V>) -> Res<Option<BlockState>> {
++    cx.no_neighbor_signal()?;
++    let face = cx.req.face;
++    let (facing, half) = if !cx.replace_clicked && axis_name(face) != "y" {
++        let top = cx.req.hit.y - cx.target.y as f64 > 0.5;
++        (face, if top { "top" } else { "bottom" })
++    } else {
++        (cx.horizontal()?.opposite(), if face == Direction::Up { "bottom" } else { "top" })
++    };
++    props(
++        cx,
++        cx.kind,
++        &[
++            ("facing", direction_name(facing)),
++            ("half", half),
++            ("open", "false"),
++            ("powered", "false"),
++            ("waterlogged", cx.water()),
++        ],
++    )
++}
++
++// --- leaves (LeavesBlock#getStateForPlacement, #updateDistance) ---
++
++fn leaves<V: BlockView>(cx: &Cx<V>) -> Res<Option<BlockState>> {
++    let mut distance = 7u8;
++    for d in ALL {
++        let st = cx.state(cx.target.offset_with_direction(d))?;
++        let at = if tags::blocks::LOGS.contains(&BlockKind::from(st)) {
++            0
++        } else {
++            st.get_property("distance").and_then(|v| v.parse::<u8>().ok()).unwrap_or(7)
++        };
++        distance = distance.min(at + 1);
++        if distance == 1 {
++            break;
++        }
++    }
++    let distance = distance.to_string();
++    props(cx, cx.kind, &[("persistent", "true"), ("waterlogged", cx.water()), ("distance", &distance)])
++}
++
++// --- chests (ChestBlock#getStateForPlacement) ---
++
++fn chest<V: BlockView>(cx: &Cx<V>) -> Res<Option<BlockState>> {
++    let Some(sneaking) = cx.req.secondary_use else { return unknown(UnknownWhy::SecondaryUse) };
++    let mut facing = cx.horizontal()?.opposite();
++    // candidatePartnerFacing: a single chest of the same block next to `pos` on `side`
++    let partner = |pos: BlockPos, side: Direction| -> Res<Option<Direction>> {
++        let st = cx.state(pos.offset_with_direction(side))?;
++        if BlockKind::from(st) == cx.kind && st.get_property("type") == Some("single") {
++            Ok(st.get_property("facing").and_then(super::place_prediction::direction_from_name))
++        } else {
++            Ok(None)
++        }
++    };
++    let mut ty = "single";
++    let face = cx.req.face;
++    if sneaking && axis_name(face) != "y" {
++        if let Some(d3) = partner(cx.target, face.opposite())? {
++            if axis_name(d3) != axis_name(face) {
++                facing = d3;
++                ty = if counter_clockwise(d3) == face.opposite() { "right" } else { "left" };
++            }
++        }
++    }
++    if ty == "single" && !sneaking {
++        // getChestType
++        if partner(cx.target, clockwise(facing))? == Some(facing) {
++            ty = "left";
++        } else if partner(cx.target, counter_clockwise(facing))? == Some(facing) {
++            ty = "right";
++        }
++    }
++    props(cx, cx.kind, &[("facing", direction_name(facing)), ("type", ty), ("waterlogged", cx.water())])
++}
++
++// --- plain rails (BaseRailBlock#getStateForPlacement, #canSurvive) ---
++
++fn rail<V: BlockView>(cx: &Cx<V>) -> Res<Option<BlockState>> {
++    let below = cx.state(cx.target.down(1))?;
++    // canSupportRigidBlock
++    match is_face_supported(below, Direction::Up, SupportType::Rigid) {
++        None => return unknown(UnknownWhy::Support),
++        Some(false) => return Ok(None),
++        Some(true) => {}
++    }
++    let dir = cx.horizontal()?;
++    let shape = if axis_name(dir) == "x" { "east_west" } else { "north_south" };
++    props(cx, cx.kind, &[("shape", shape), ("waterlogged", cx.water())])
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn nearest_order_follows_the_look() {
++        // yaw 0 faces south, level: south first, then up or down by pitch sign
++        let o = ordered_by_nearest(0.0, 10.0).unwrap();
++        assert_eq!(o[0], Direction::South);
++        assert_eq!(o[5], Direction::North);
++        // looking straight down: down first
++        assert_eq!(ordered_by_nearest(0.0, 80.0).unwrap()[0], Direction::Down);
++        assert_eq!(ordered_by_nearest(0.0, -80.0).unwrap()[0], Direction::Up);
++    }
++}
+diff --git a/azalea-physics/src/collision/mod.rs b/azalea-physics/src/collision/mod.rs
+index 78561d6..8bea1a5 100644
+--- a/azalea-physics/src/collision/mod.rs
++++ b/azalea-physics/src/collision/mod.rs
+@@ -28,7 +28,7 @@ pub use offset::{BlockShapeAt, block_offset};
+ pub use discrete_voxel_shape::*;
+ use entity_collisions::{CollidableEntityQuery, get_entity_collisions};
+ pub use shape::*;
+-pub use sturdy::is_face_sturdy;
++pub use sturdy::{FaceRegion, SupportType, collision_face_covers, is_face_sturdy, is_face_supported};
+ use tracing::warn;
+ 
+ use self::world_collisions::get_block_collisions;
+diff --git a/azalea-physics/src/collision/sturdy.rs b/azalea-physics/src/collision/sturdy.rs
+index 1f78828..0b8482b 100644
+--- a/azalea-physics/src/collision/sturdy.rs
++++ b/azalea-physics/src/collision/sturdy.rs
+@@ -1,22 +1,21 @@
+ //! `BlockBehaviour.BlockStateBase#isFaceSturdy` with `SupportType.FULL` (Null fork, patch 58).
+ 
+ use azalea_block::BlockState;
+-use azalea_core::{aabb::Aabb, direction::Direction};
++use azalea_core::{aabb::Aabb, direction::Direction, position::Vec3};
+ use azalea_registry::builtin::BlockKind;
+ 
+ use super::blocks::BlockWithShape;
+ 
+-/// Whether `face` of the block is sturdy (`isFaceSturdy` FULL: the block's support shape covers
+-/// the whole square of that face, flush with the cell edge). The support shape is the collision
+-/// shape except in the few blocks that override `getBlockSupportShape`: leaves (empty), mud and
+-/// soul sand (a full block). `None` for a block whose override depends on more than its state
+-/// (snow layers, fence gates, shulker boxes, chorus flowers, hanging signs, multiface blocks), so
+-/// the caller does not guess.
+-// Spec: specs/B6-placement-breaking.md §4.10 (patch 58: sturdy face for the place verdict)
+-pub fn is_face_sturdy(state: BlockState, face: Direction) -> Option<bool> {
++/// The support shape as boxes (`BlockStateBase#getBlockSupportShape`): the collision shape except
++/// in the few blocks that override it. Leaves have an empty one, mud and soul sand a full cube, a
++/// closed fence gate a thin bar (`FenceGateBlock#getBlockSupportShape`, empty while open). `None`
++/// for a block whose override depends on more than its state (snow layers, shulker boxes, chorus
++/// flowers, hanging signs, multiface blocks), so the caller does not guess.
++fn support_boxes(state: BlockState) -> Option<Vec<Aabb>> {
++    let full = || vec![Aabb { min: Vec3::new(0.0, 0.0, 0.0), max: Vec3::new(1.0, 1.0, 1.0) }];
+     match BlockKind::from(state) {
+-        BlockKind::Mud | BlockKind::SoulSand => return Some(true),
+-        k if k.to_str().ends_with("_leaves") => return Some(false),
++        BlockKind::Mud | BlockKind::SoulSand => return Some(full()),
++        k if k.to_str().ends_with("_leaves") => return Some(Vec::new()),
+         BlockKind::SnowBlock => {}
+         BlockKind::Snow
+         | BlockKind::ChorusFlower
+@@ -26,24 +25,87 @@ pub fn is_face_sturdy(state: BlockState, face: Direction) -> Option<bool> {
+         | BlockKind::ResinClump => return None,
+         k => {
+             let name = k.to_str();
+-            if name.ends_with("_fence_gate")
+-                || name.ends_with("shulker_box")
+-                || name.ends_with("hanging_sign")
+-            {
++            if name.ends_with("shulker_box") || name.ends_with("hanging_sign") {
+                 return None;
+             }
++            if name.ends_with("_fence_gate") {
++                if state.get_property("open") == Some("true") {
++                    return Some(Vec::new());
++                }
++                // a 4 wide bar from 5/16 to 24/16 high along the panel (the panel of a gate that
++                // faces north or south runs east to west)
++                let along_x = matches!(state.get_property("facing"), Some("north" | "south"));
++                let (lo, hi) = (6.0 / 16.0, 10.0 / 16.0);
++                let (min, max) = if along_x {
++                    (Vec3::new(0.0, 5.0 / 16.0, lo), Vec3::new(1.0, 1.5, hi))
++                } else {
++                    (Vec3::new(lo, 5.0 / 16.0, 0.0), Vec3::new(hi, 1.5, 1.0))
++                };
++                return Some(vec![Aabb { min, max }]);
++            }
+         }
+     }
++    Some(state.collision_shape().to_aabbs())
++}
++
++/// Whether `face` of the block is sturdy (`isFaceSturdy` FULL: the block's support shape covers
++/// the whole square of that face, flush with the cell edge). `None` when the support shape is not
++/// modelled.
++// Spec: specs/B6-placement-breaking.md §4.10 (patch 58: sturdy face for the place verdict)
++pub fn is_face_sturdy(state: BlockState, face: Direction) -> Option<bool> {
++    is_face_supported(state, face, SupportType::Full)
++}
++
++/// A rectangle in the plane of a face: (min, max) on the first and second plane axes (x then z
++/// for up and down, x then y for north and south, z then y for west and east).
++pub type FaceRegion = (f64, f64, f64, f64);
++
++/// The whole face.
++pub const UNIT: FaceRegion = (0.0, 1.0, 0.0, 1.0);
++
++/// Which `SupportType` to test (`BlockBehaviour.BlockStateBase#isFaceSturdy` with a support type).
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum SupportType {
++    Full,
++    /// `SupportType.CENTER`: the face covers the 2 by 2 square in its middle.
++    Center,
++    /// `SupportType.RIGID`: the face covers all of it except the 12 by 12 middle (a 2 wide frame).
++    Rigid,
++}
++
++/// `isFaceSturdy(.., face, supportType)` on the support shape; `None` where it is not modelled.
++// Spec: specs/B6-placement-breaking.md §4.10 (patch 71: support types for torches and rails)
++pub fn is_face_supported(state: BlockState, face: Direction, support: SupportType) -> Option<bool> {
++    let boxes = support_boxes(state)?;
++    if boxes.is_empty() {
++        return Some(false);
++    }
++    let regions: &[FaceRegion] = match support {
++        SupportType::Full => &[UNIT],
++        SupportType::Center => &[(7.0 / 16.0, 9.0 / 16.0, 7.0 / 16.0, 9.0 / 16.0)],
++        SupportType::Rigid => &[
++            (0.0, 1.0, 0.0, 2.0 / 16.0),
++            (0.0, 1.0, 14.0 / 16.0, 1.0),
++            (0.0, 2.0 / 16.0, 2.0 / 16.0, 14.0 / 16.0),
++            (14.0 / 16.0, 1.0, 2.0 / 16.0, 14.0 / 16.0),
++        ],
++    };
++    Some(face_covered(&boxes, face, regions))
++}
++
++/// Whether the face slice of the block's collision shape (`VoxelShape#getFaceShape`) covers the
++/// region: used by walls (`WallBlock#updateShape` reads the face of the block above).
++// Spec: specs/B6-placement-breaking.md §4.10 (patch 74: walls)
++pub fn collision_face_covers(state: BlockState, face: Direction, region: FaceRegion) -> bool {
+     let shape = state.collision_shape();
+     if shape.is_empty() {
+-        return Some(false);
++        return false;
+     }
+-    let boxes: Vec<Aabb> = shape.to_aabbs();
+-    Some(face_covered(&boxes, face))
++    face_covered(&shape.to_aabbs(), face, &[region])
+ }
+ 
+-/// The boxes that touch the cell edge on `face` cover the unit square of that face.
+-fn face_covered(boxes: &[Aabb], face: Direction) -> bool {
++/// The boxes that touch the cell edge on `face` cover every one of the regions of that face.
++fn face_covered(boxes: &[Aabb], face: Direction, regions: &[FaceRegion]) -> bool {
+     const EDGE: f64 = 1.0e-7;
+     // (axis of the face, at the max side?, the two other axes)
+     let on_face = |b: &Aabb| match face {
+@@ -66,6 +128,10 @@ fn face_covered(boxes: &[Aabb], face: Direction) -> bool {
+     // Compress the edges: every cell between two neighbouring edges must lie in some rectangle.
+     let mut xs = vec![0.0, 1.0];
+     let mut ys = vec![0.0, 1.0];
++    for r in regions {
++        xs.extend([r.0, r.1]);
++        ys.extend([r.2, r.3]);
++    }
+     for r in &rects {
+         xs.extend([r.0, r.1]);
+         ys.extend([r.2, r.3]);
+@@ -78,7 +144,7 @@ fn face_covered(boxes: &[Aabb], face: Direction) -> bool {
+                 continue;
+             }
+             let (cx, cy) = ((xw[0] + xw[1]) / 2.0, (yw[0] + yw[1]) / 2.0);
+-            if !(0.0..=1.0).contains(&cx) || !(0.0..=1.0).contains(&cy) {
++            if !regions.iter().any(|r| r.0 <= cx && cx <= r.1 && r.2 <= cy && cy <= r.3) {
+                 continue;
+             }
+             if !rects.iter().any(|r| r.0 <= cx && cx <= r.1 && r.2 <= cy && cy <= r.3) {
+@@ -114,6 +180,22 @@ mod tests {
+         assert_eq!(is_face_sturdy(s, Direction::North), Some(false), "half height side");
+     }
+ 
++    // FenceGateBlock#getBlockSupportShape: a thin bar when closed (centre support on top, never
++    // full), nothing when open
++    #[test]
++    fn a_fence_gate_supports_the_centre_when_closed_only() {
++        let gate = |open: &str| {
++            let mut b: Box<dyn azalea_block::BlockTrait> = BlockKind::OakFenceGate.into();
++            b.set_property("facing", "north").unwrap();
++            b.set_property("open", open).unwrap();
++            b.as_block_state()
++        };
++        assert_eq!(is_face_sturdy(gate("false"), Direction::Up), Some(false));
++        assert_eq!(is_face_supported(gate("false"), Direction::Up, SupportType::Center), Some(true));
++        assert_eq!(is_face_supported(gate("true"), Direction::Up, SupportType::Center), Some(false));
++        assert_eq!(is_face_supported(gate("false"), Direction::Down, SupportType::Center), Some(false));
++    }
++
+     #[test]
+     fn overrides_of_the_support_shape_are_read() {
+         assert_eq!(is_face_sturdy(st(BlockKind::OakLeaves), Direction::Up), Some(false));
+@@ -122,3 +204,47 @@ mod tests {
+         assert_eq!(is_face_sturdy(st(BlockKind::Air), Direction::Up), Some(false));
+     }
+ }
++
++#[cfg(test)]
++mod support_tests {
++    use super::*;
++
++    fn with(kind: BlockKind, props: &[(&str, &str)]) -> BlockState {
++        let mut b: Box<dyn azalea_block::BlockTrait> = kind.into();
++        for (n, v) in props {
++            b.set_property(n, v).unwrap();
++        }
++        b.as_block_state()
++    }
++
++    // SupportType.CENTER on a fence post: the collision column covers the middle square
++    #[test]
++    fn center_support_of_a_fence_top_and_a_bottom_slab_side() {
++        assert_eq!(is_face_supported(BlockState::from(BlockKind::OakFence), Direction::Up, SupportType::Center), Some(true));
++        assert_eq!(is_face_sturdy(BlockState::from(BlockKind::OakFence), Direction::Up), Some(false));
++        // a bottom slab top is below the cell edge: nothing there
++        let slab = with(BlockKind::StoneSlab, &[("type", "bottom")]);
++        assert_eq!(is_face_supported(slab, Direction::Up, SupportType::Center), Some(false));
++        assert_eq!(is_face_supported(BlockState::from(BlockKind::OakLeaves), Direction::Up, SupportType::Center), Some(false));
++    }
++
++    // SupportType.RIGID: a full cube yes, a fence post no (the frame is open)
++    #[test]
++    fn rigid_support_needs_the_frame() {
++        assert_eq!(is_face_supported(BlockState::from(BlockKind::Stone), Direction::Up, SupportType::Rigid), Some(true));
++        assert_eq!(is_face_supported(BlockState::from(BlockKind::OakFence), Direction::Up, SupportType::Rigid), Some(false));
++        assert_eq!(is_face_supported(BlockState::from(BlockKind::Air), Direction::Up, SupportType::Rigid), Some(false));
++    }
++
++    // WallBlock#updateShape: the face of the block above covers the wall arm test shape
++    #[test]
++    fn collision_face_of_the_block_above() {
++        let north_arm = (7.0 / 16.0, 9.0 / 16.0, 0.0, 9.0 / 16.0);
++        assert!(collision_face_covers(BlockState::from(BlockKind::Stone), Direction::Down, north_arm));
++        assert!(!collision_face_covers(BlockState::from(BlockKind::Air), Direction::Down, north_arm));
++        let top_slab = with(BlockKind::StoneSlab, &[("type", "top")]);
++        assert!(!collision_face_covers(top_slab, Direction::Down, north_arm), "the top slab does not reach the cell's bottom edge");
++        let bottom_slab = with(BlockKind::StoneSlab, &[("type", "bottom")]);
++        assert!(collision_face_covers(bottom_slab, Direction::Down, north_arm));
++    }
++}
+diff --git a/codegen/gen_place_families.py b/codegen/gen_place_families.py
+index ead62c4..439b98e 100644
+--- a/codegen/gen_place_families.py
++++ b/codegen/gen_place_families.py
+@@ -63,6 +63,9 @@ for f in block_dir.rglob("*.java"):
+         or "implements SegmentableBlock" in text
+         or re.search(r"\bSegmentableBlock\b", text) is not None and name != "SegmentableBlock",
+         indirect=bool(re.search(r"updateIndirectNeighbourShapes\(", text)),
++        # redstone output: a class that overrides `getSignal` or `isSignalSource` may power a neighbour
++        signal=bool(re.search(r"\bint getSignal\(|\bboolean isSignalSource\(", text)),
++        direct=bool(re.search(r"\bint getDirectSignal\(", text)),
+     )
+ 
+ 
+@@ -107,10 +110,29 @@ def chain(cls):
+     return seen
+ 
+ 
++# Classes whose `getStateForPlacement` reads neighbours or looks (patch 71 and later), each with
++# the only classes of its chain allowed to override `canSurvive` (checked by the Rust rule).
++ATTACHED = {
++    "FenceBlock": ("Fence", []),
++    "IronBarsBlock": ("Pane", []),
++    "WallBlock": ("Wall", []),
++    "FenceGateBlock": ("FenceGate", []),
++    "TrapDoorBlock": ("Trapdoor", []),
++    "LeavesBlock": ("Leaves", []),
++    "LadderBlock": ("Ladder", ["LadderBlock"]),
++    "ChestBlock": ("Chest", []),
++}
++
++
+ def family(cls):
+     ch = chain(cls)
+     surv = [c for c in ch if classes[c]["survive"]]
+     first = classes_first_gsp(ch)
++    if first in ATTACHED and set(surv) <= set(ATTACHED[first][1]):
++        return ATTACHED[first][0]
++    # a plain rail (not powered, activator or detector: those run redstone code on the client)
++    if cls == "RailBlock" and first == "BaseRailBlock" and surv == ["BaseRailBlock"]:
++        return "Rail"
+     # VegetationBlock#canSurvive with the base mayPlaceOn (dirt tag or farmland) and the default state
+     if surv == ["VegetationBlock"] and first is None and not any(classes[c]["mayplace"] for c in ch if c != "VegetationBlock"):
+         return "Vegetation"
+@@ -206,14 +228,23 @@ for m in re.finditer(r"= registerBlock\((.*?)\);\n", items_text, re.S):
+     # a BlockItem: no second argument, a properties argument, or a stack-component operator
+     if rest == "" or re.match(r",\s*(new Item\.Properties\(\)|\(UnaryOperator<Item\.Properties>\))", rest):
+         plain_items.add(first.group(1))
++# Torches: `StandingAndWallBlockItem(block, wall block, ...)`, the item of the standing block.
++torch_items = {}
++for m in re.finditer(r"registerBlock\(\s*Blocks\.(\w+)\s*,[^;]*?new StandingAndWallBlockItem\(block, Blocks\.(\w+),", items_text):
++    torch_items[m.group(1).lower()] = m.group(2).lower()
+ plain_items = {i.lower() for i in plain_items}
++plain_items |= set(torch_items)
+ 
+ camel = lambda s: "".join(p.capitalize() for p in s.split("_"))
+ by_family = {}
+ inert_ids, plain_replace, indirect = [], [], []
++no_signal, no_direct = [], []
+ for bid, cls in registered:
+     if cls not in classes and cls != "Block":
+         fam = "Unknown"
++    elif bid in torch_items:
++        # BaseTorchBlock#canSurvive (centre support below) and the wall block's rules: Torch rule in Rust
++        fam = "Torch" if cls in ("TorchBlock", "RedstoneTorchBlock") else "Unknown"
+     else:
+         fam = family(cls) if cls != "Block" else "Plain"
+     if bid not in plain_items:
+@@ -226,11 +257,16 @@ for bid, cls in registered:
+         plain_replace.append(bid)
+     if ch is not None and any(classes[c]["indirect"] for c in ch):
+         indirect.append(bid)
++    if cls == "Block" or (ch is not None and not any(classes[c]["signal"] for c in ch)):
++        no_signal.append(bid)
++    if cls == "Block" or (ch is not None and not any(classes[c]["direct"] for c in ch)):
++        no_direct.append(bid)
+ 
+ 
+ FAMILIES = ["Plain", "Axis", "Waterloggable", "Slab", "HorizontalFacing", "HorizontalFacingSame", "FacingClockwise",
+             "LookingOpposite", "LookingSame", "AxisWaterlogged", "ClickedFaceWaterlogged", "Vegetation", "Stairs",
+-            "SnowyTop", "HugeMushroom"]
++            "SnowyTop", "HugeMushroom", "Torch", "Ladder", "Fence", "Pane", "Wall", "FenceGate", "Trapdoor", "Leaves",
++            "Chest", "Rail"]
+ 
+ 
+ def arms(ids):
+@@ -282,6 +318,26 @@ out = [
+     "    SnowyTop,",
+     "    /// `HugeMushroomBlock`: a face is shown unless the neighbour is the same block.",
+     "    HugeMushroom,",
++    "    /// `StandingAndWallBlockItem`: a standing or wall torch (the wall block is [`torch_wall_block`]).",
++    "    Torch,",
++    "    /// `LadderBlock`: faces away from the nearest looking horizontal direction that has support.",
++    "    Ladder,",
++    "    /// `FenceBlock`: four sides from the neighbours, plus water.",
++    "    Fence,",
++    "    /// `IronBarsBlock` (glass panes, iron and copper bars): four sides from the neighbours, plus water.",
++    "    Pane,",
++    "    /// `WallBlock`: sides, post and heights from the neighbours and the block above, plus water.",
++    "    Wall,",
++    "    /// `FenceGateBlock`: facing, powered and open from the signal, in_wall from the walls beside.",
++    "    FenceGate,",
++    "    /// `TrapDoorBlock`: facing and half from the click, open and powered from the signal, plus water.",
++    "    Trapdoor,",
++    "    /// `LeavesBlock`: persistent, distance from the neighbours, plus water.",
++    "    Leaves,",
++    "    /// `ChestBlock`: facing, single or double from the neighbours and sneaking, plus water.",
++    "    Chest,",
++    "    /// `RailBlock` (the plain rail): straight along the look, plus water, needs a rigid support below.",
++    "    Rail,",
+     "    Unknown,",
+     "}",
+     "",
+@@ -309,6 +365,27 @@ out.append("pub fn plain_replace_rule(kind: BlockKind) -> bool {")
+ out.append(f"    matches!(\n        kind,\n        {arms(plain_replace)}\n    )")
+ out.append("}")
+ out.append("")
++out.append("/// The wall block a torch item places on a side face (`StandingAndWallBlockItem`).")
++out.append("pub fn torch_wall_block(kind: BlockKind) -> Option<BlockKind> {")
++out.append("    match kind {")
++for a, b in sorted(torch_items.items()):
++    out.append(f"        BlockKind::{camel(a)} => Some(BlockKind::{camel(b)}),")
++out.append("        _ => None,")
++out.append("    }")
++out.append("}")
++out.append("")
++out.append("/// No class in the chain overrides `getSignal` or `isSignalSource`: the block never outputs")
++out.append("/// redstone power (`SignalGetter#getSignal`).")
++out.append("pub fn gives_no_signal(kind: BlockKind) -> bool {")
++out.append(f"    matches!(\n        kind,\n        {arms(no_signal)}\n    )")
++out.append("}")
++out.append("")
++out.append("/// No class in the chain overrides `getDirectSignal`: the block never powers a block it touches")
++out.append("/// directly (`SignalGetter#getDirectSignalTo`).")
++out.append("pub fn gives_no_direct_signal(kind: BlockKind) -> bool {")
++out.append(f"    matches!(\n        kind,\n        {arms(no_direct)}\n    )")
++out.append("}")
++out.append("")
+ out.append("/// The class overrides `updateIndirectNeighbourShapes` (redstone wire), so a place changes")
+ out.append("/// shapes two cells away.")
+ out.append("pub fn indirect_shape_block(kind: BlockKind) -> bool {")
+-- 
+2.56.0
+

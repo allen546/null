@@ -1,0 +1,481 @@
+From 740b3be603b7d297ad5b1a5e28867ed28fb78470 Mon Sep 17 00:00:00 2001
+From: bench <bench@local>
+Date: Tue, 10 Nov 2026 00:42:29 +0800
+Subject: [PATCH] null patch: 58-section-store
+
+Chunk sections are Arc<Section>, immutable, stored once per process by content (hash, then full comparison). An edit copies the section and stores the result; a frame's edits to one section are stored once. Shared-mode behaviour is unchanged.
+
+Vanilla: LevelChunk#setBlockState, ClientPacketListener#handleBlockUpdate / #handleChunkBlocksUpdate. Grim: the collision and prediction checks read the same blocks.
+---
+ azalea-client/src/plugins/block_update.rs     |  13 +-
+ .../src/collision/world_collisions.rs         |   2 +-
+ azalea-world/src/chunk/mod.rs                 | 126 +++++++++++++-
+ azalea-world/src/chunk/section_store.rs       | 155 ++++++++++++++++++
+ azalea-world/src/chunk/storage.rs             |  29 ++++
+ azalea-world/src/heightmap.rs                 |   2 +-
+ 6 files changed, 315 insertions(+), 12 deletions(-)
+ create mode 100644 azalea-world/src/chunk/section_store.rs
+
+diff --git a/azalea-client/src/plugins/block_update.rs b/azalea-client/src/plugins/block_update.rs
+index 2549e7b..dda7aa1 100644
+--- a/azalea-client/src/plugins/block_update.rs
++++ b/azalea-client/src/plugins/block_update.rs
+@@ -50,15 +50,18 @@ impl QueuedServerBlockUpdates {
+         prediction: &mut BlockStatePredictionHandler,
+     ) {
+         let mut kept = Vec::new();
++        let mut edits = Vec::new();
+         for (pos, block_state) in self.list.drain(..) {
+             if world.get_block_state(pos).is_none() {
+                 kept.push((pos, block_state));
+             } else {
+-                // the shared world holds server data only; a pending cell also keeps it for the ack
+-                world.chunks.set_block_state(pos, block_state);
++                // the world holds server data only; a pending cell also keeps it for the ack
++                edits.push((pos, block_state));
+                 prediction.update_known_server_state(pos, block_state);
+             }
+         }
++        // One frame's edits go in together: one section copy per section (design item 5).
++        world.chunks.set_block_states(&edits);
+         self.list = kept;
+     }
+ }
+@@ -72,8 +75,10 @@ pub fn handle_block_update_event(
+ ) {
+     for (mut queued, world_holder, mut prediction_handler) in query.iter_mut() {
+         let world = world_holder.shared.read();
+-        for (pos, block_state) in queued.list.drain(..) {
+-            world.chunks.set_block_state(pos, block_state);
++        // Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 5
++        let edits: Vec<_> = queued.list.drain(..).collect();
++        world.chunks.set_block_states(&edits);
++        for (pos, block_state) in edits {
+             prediction_handler.update_known_server_state(pos, block_state);
+         }
+     }
+diff --git a/azalea-physics/src/collision/world_collisions.rs b/azalea-physics/src/collision/world_collisions.rs
+index 99c2cfa..96d2d59 100644
+--- a/azalea-physics/src/collision/world_collisions.rs
++++ b/azalea-physics/src/collision/world_collisions.rs
+@@ -75,7 +75,7 @@ pub struct BlockCollisionsState<'a> {
+ 
+     _context: EntityCollisionContext,
+ 
+-    cached_sections: Vec<(ChunkSectionPos, azalea_world::Section)>,
++    cached_sections: Vec<(ChunkSectionPos, std::sync::Arc<azalea_world::Section>)>,
+     cached_block_shapes: Vec<(BlockState, &'static VoxelShape)>,
+ }
+ 
+diff --git a/azalea-world/src/chunk/mod.rs b/azalea-world/src/chunk/mod.rs
+index 7c53531..967b1b8 100644
+--- a/azalea-world/src/chunk/mod.rs
++++ b/azalea-world/src/chunk/mod.rs
+@@ -1,4 +1,5 @@
+ pub mod partial;
++pub mod section_store;
+ pub mod storage;
+ 
+ use std::{
+@@ -6,6 +7,7 @@ use std::{
+     fmt::Debug,
+     io,
+     io::{Cursor, Write},
++    sync::Arc,
+ };
+ 
+ use azalea_block::block_state::{BlockState, BlockStateIntegerRepr};
+@@ -30,7 +32,8 @@ const SECTION_HEIGHT: u32 = 16;
+ /// [`ChunkStorage`]: crate::ChunkStorage
+ #[derive(Debug)]
+ pub struct Chunk {
+-    pub sections: Box<[Section]>,
++    /// Immutable and shared by content ([`section_store`]); an edit stores a new section.
++    pub sections: Box<[Arc<Section>]>,
+     /// Heightmaps are used for identifying the surface blocks in a chunk.
+     /// Usually for clients only `WorldSurface` and `MotionBlocking` are
+     /// present.
+@@ -60,7 +63,7 @@ pub fn calculate_chunk_storage_range(view_distance: u32) -> u32 {
+ impl Default for Chunk {
+     fn default() -> Self {
+         Chunk {
+-            sections: vec![Section::default(); (384 / 16) as usize].into(),
++            sections: vec![section_store::intern(Section::default()); (384 / 16) as usize].into(),
+             heightmaps: HashMap::new(),
+         }
+     }
+@@ -77,7 +80,7 @@ impl Chunk {
+         let mut sections = Vec::with_capacity(section_count as usize);
+         for _ in 0..section_count {
+             let section = Section::azalea_read(buf)?;
+-            sections.push(section);
++            sections.push(section_store::intern(section));
+         }
+         let sections = sections.into_boxed_slice();
+ 
+@@ -113,7 +116,9 @@ impl Chunk {
+             return BlockState::AIR;
+         };
+         let chunk_section_pos = ChunkSectionBlockPos::from(pos);
+-        let previous_state = section.get_and_set_block_state(chunk_section_pos, state);
++        let mut edited = Section::clone(section);
++        let previous_state = edited.get_and_set_block_state(chunk_section_pos, state);
++        *section = section_store::intern(edited);
+ 
+         for heightmap in self.heightmaps.values_mut() {
+             heightmap.update(pos, state, &self.sections);
+@@ -122,6 +127,44 @@ impl Chunk {
+         previous_state
+     }
+ 
++    /// Apply edits in order, copying and storing each touched section once, not once per edit.
++    ///
++    /// Returns the previous state of each edit. The result equals applying the edits one by one;
++    /// the heightmaps are updated after the sections hold the final content.
++    // Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 5
++    pub fn set_block_states(
++        &mut self,
++        edits: &[(ChunkBlockPos, BlockState)],
++        min_y: i32,
++    ) -> Vec<BlockState> {
++        let mut working: HashMap<u32, Section> = HashMap::new();
++        let mut previous = Vec::with_capacity(edits.len());
++        for (pos, state) in edits {
++            let index = section_index(pos.y, min_y);
++            let Some(shared) = self.sections.get(index as usize) else {
++                warn!("Tried to set block state {state:?} at out-of-bounds relative chunk position {pos:?}");
++                previous.push(BlockState::AIR);
++                continue;
++            };
++            let section = working
++                .entry(index)
++                .or_insert_with(|| Section::clone(shared));
++            previous.push(section.get_and_set_block_state(ChunkSectionBlockPos::from(pos), *state));
++        }
++        for (index, section) in working {
++            self.sections[index as usize] = section_store::intern(section);
++        }
++        for (pos, state) in edits {
++            if section_index(pos.y, min_y) as usize >= self.sections.len() {
++                continue;
++            }
++            for heightmap in self.heightmaps.values_mut() {
++                heightmap.update(pos, *state, &self.sections);
++            }
++        }
++        previous
++    }
++
+     pub fn set_block_state(&mut self, pos: &ChunkBlockPos, state: BlockState, min_y: i32) {
+         let section_index = section_index(pos.y, min_y);
+         let Some(section) = self.sections.get_mut(section_index as usize) else {
+@@ -131,7 +174,9 @@ impl Chunk {
+             return;
+         };
+         let chunk_section_pos = ChunkSectionBlockPos::from(pos);
+-        section.get_and_set_block_state(chunk_section_pos, state);
++        let mut edited = Section::clone(section);
++        edited.get_and_set_block_state(chunk_section_pos, state);
++        *section = section_store::intern(edited);
+ 
+         for heightmap in self.heightmaps.values_mut() {
+             heightmap.update(pos, state, &self.sections);
+@@ -158,7 +203,7 @@ impl Chunk {
+ /// `None` if the position is out of bounds.
+ #[inline]
+ pub fn get_block_state_from_sections(
+-    sections: &[Section],
++    sections: &[Arc<Section>],
+     pos: &ChunkBlockPos,
+     min_y: i32,
+ ) -> Option<BlockState> {
+@@ -305,3 +350,72 @@ mod tests {
+         assert_eq!(section, deserialized_section);
+     }
+ }
++
++#[cfg(test)]
++mod batch_tests {
++    use azalea_core::position::ChunkBlockPos;
++    use azalea_registry::builtin::BlockKind;
++
++    use super::*;
++
++    fn chunk() -> Chunk {
++        let mut c = Chunk::default();
++        c.heightmaps.insert(
++            HeightmapKind::WorldSurface,
++            Heightmap::new(HeightmapKind::WorldSurface, 384, -64, Box::new([0; 37])),
++        );
++        c
++    }
++
++    // Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 5
++    #[test]
++    fn a_batch_equals_the_same_edits_one_by_one() {
++        let stone: BlockState = BlockKind::Stone.into();
++        let edits = vec![
++            (ChunkBlockPos::new(1, 10, 1), stone),
++            (ChunkBlockPos::new(2, 11, 1), stone),
++            (ChunkBlockPos::new(1, 10, 1), BlockState::AIR),
++            (ChunkBlockPos::new(3, 100, 3), stone),
++            (ChunkBlockPos::new(3, 100, 3), BlockState::AIR),
++            (ChunkBlockPos::new(3, 12, 3), stone),
++        ];
++        let (mut one, mut batch) = (chunk(), chunk());
++        let seq: Vec<_> = edits.iter().map(|(p, s)| one.get_and_set_block_state(p, *s, -64)).collect();
++        let prev = batch.set_block_states(&edits, -64);
++        assert_eq!(seq, prev);
++        for (a, b) in one.sections.iter().zip(batch.sections.iter()) {
++            assert_eq!(a, b);
++        }
++        assert_eq!(
++            one.heightmaps[&HeightmapKind::WorldSurface].get_first_available(3, 3),
++            batch.heightmaps[&HeightmapKind::WorldSurface].get_first_available(3, 3)
++        );
++    }
++
++    #[test]
++    fn a_batch_stores_each_touched_section_once() {
++        let stone: BlockState = BlockKind::Stone.into();
++        let mut c = chunk();
++        let untouched = c.sections[8].clone();
++        let edits: Vec<_> = (0..10).map(|x| (ChunkBlockPos::new(x, 10, 0), stone)).collect();
++        let before = section_store::INTERN_CALLS.with(|c| c.get());
++        c.set_block_states(&edits, -64);
++        // Ten edits in one section make one store call, not ten.
++        assert_eq!(section_store::INTERN_CALLS.with(|c| c.get()) - before, 1);
++        assert!(Arc::ptr_eq(&untouched, &c.sections[8]));
++    }
++
++    // Spec: specs/plans/LOAD_CONTRACT.md "Build order" step 3
++    #[test]
++    fn one_chunks_write_never_changes_what_another_chunk_reads() {
++        let stone: BlockState = BlockKind::Stone.into();
++        let (mut a, b) = (chunk(), chunk());
++        let pos = ChunkBlockPos::new(1, 10, 1);
++        assert!(Arc::ptr_eq(&a.sections[8], &b.sections[8]), "equal content shares one section");
++        let _ = a.get_and_set_block_state(&pos, stone, -64);
++        assert_eq!(a.get_block_state(&pos, -64), Some(stone));
++        assert_eq!(b.get_block_state(&pos, -64), Some(BlockState::AIR));
++        a.set_block_states(&[(pos, BlockState::AIR)], -64);
++        assert_eq!(b.get_block_state(&pos, -64), Some(BlockState::AIR));
++    }
++}
+diff --git a/azalea-world/src/chunk/section_store.rs b/azalea-world/src/chunk/section_store.rs
+new file mode 100644
+index 0000000..6f4791e
+--- /dev/null
++++ b/azalea-world/src/chunk/section_store.rs
+@@ -0,0 +1,155 @@
++//! One copy of each different section in the process. Sections here are immutable, so a section
++//! shared by content cannot carry one bot's state to another.
++// Spec: specs/plans/LOAD_CONTRACT.md (Swarm world design)
++
++use std::{
++    collections::HashMap,
++    hash::{DefaultHasher, Hash, Hasher},
++    sync::{Arc, LazyLock, Weak},
++};
++
++use parking_lot::Mutex;
++
++use super::Section;
++use crate::palette::{Palette, PalettedContainer, PalletedContainerKind};
++
++#[derive(Default)]
++struct Store {
++    by_hash: HashMap<u64, Vec<Weak<Section>>>,
++    next_sweep: usize,
++}
++
++#[cfg(test)]
++thread_local! {
++    /// Store calls made by this thread, so a test can count them.
++    pub(crate) static INTERN_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
++
++static STORE: LazyLock<Mutex<Store>> = LazyLock::new(Default::default);
++
++fn hash_container<S: PalletedContainerKind>(c: &PalettedContainer<S>, h: &mut DefaultHasher) {
++    c.bits_per_entry.hash(h);
++    match &c.palette {
++        Palette::SingleValue(v) => Into::<u32>::into(*v).hash(h),
++        Palette::Linear(v) | Palette::Hashmap(v) => {
++            for x in v {
++                Into::<u32>::into(*x).hash(h);
++            }
++        }
++        Palette::Global => {}
++    }
++    c.storage.data.hash(h);
++}
++
++/// The stored section with this content. The hash finds a match; the full comparison confirms it.
++// Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 2
++pub fn intern(section: Section) -> Arc<Section> {
++    let mut h = DefaultHasher::new();
++    section.block_count.hash(&mut h);
++    hash_container(&section.states, &mut h);
++    hash_container(&section.biomes, &mut h);
++    intern_with_key(section, h.finish())
++}
++
++/// [`intern`] with the hash given, so a test can force two different sections onto one key.
++fn intern_with_key(section: Section, key: u64) -> Arc<Section> {
++    #[cfg(test)]
++    INTERN_CALLS.with(|c| c.set(c.get() + 1));
++    let mut store = STORE.lock();
++    let entries = store.by_hash.entry(key).or_default();
++    for weak in entries.iter() {
++        if let Some(found) = weak.upgrade()
++            && *found == section
++        {
++            return found;
++        }
++    }
++    let new = Arc::new(section);
++    entries.retain(|w| w.strong_count() > 0);
++    entries.push(Arc::downgrade(&new));
++
++    // Dropped sections leave dead entries; clear them when the table has doubled.
++    if store.by_hash.len() >= store.next_sweep {
++        store.by_hash.retain(|_, v| {
++            v.retain(|w| w.strong_count() > 0);
++            !v.is_empty()
++        });
++        store.next_sweep = (store.by_hash.len() * 2).max(1024);
++    }
++    new
++}
++
++#[cfg(test)]
++mod tests {
++    use azalea_block::BlockState;
++    use azalea_core::position::ChunkSectionBlockPos;
++    use azalea_registry::builtin::BlockKind;
++
++    use super::*;
++
++    fn with_block(x: u8, kind: BlockKind) -> Section {
++        let mut s = Section::default();
++        s.get_and_set_block_state(ChunkSectionBlockPos::new(x, 0, 0), kind.into());
++        s
++    }
++
++    // Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 2
++    #[test]
++    fn equal_content_gives_one_pointer() {
++        let a = intern(with_block(1, BlockKind::Stone));
++        let b = intern(with_block(1, BlockKind::Stone));
++        assert!(Arc::ptr_eq(&a, &b));
++        let c = intern(with_block(2, BlockKind::Stone));
++        assert!(!Arc::ptr_eq(&a, &c), "different content, different pointer");
++    }
++
++    #[test]
++    fn an_edit_never_changes_what_another_holder_reads() {
++        let a = intern(with_block(3, BlockKind::Dirt));
++        let b = intern(with_block(3, BlockKind::Dirt));
++        // Bot A edits: copy, change, store. Bot B's pointer is untouched.
++        let mut edited = Section::clone(&a);
++        edited.get_and_set_block_state(ChunkSectionBlockPos::new(3, 0, 0), BlockState::AIR);
++        let a2 = intern(edited);
++        assert!(!Arc::ptr_eq(&a2, &b));
++        assert_eq!(b.get_block_state(ChunkSectionBlockPos::new(3, 0, 0)), BlockKind::Dirt.into());
++        assert_eq!(a2.get_block_state(ChunkSectionBlockPos::new(3, 0, 0)), BlockState::AIR);
++    }
++
++    #[test]
++    fn a_section_is_freed_when_no_bot_points_to_it() {
++        let marker = with_block(9, BlockKind::GoldBlock);
++        // Count only this content: other tests share the process-wide store.
++        let alive = |s: &Section| {
++            STORE.lock().by_hash.values().flatten().filter_map(Weak::upgrade).filter(|x| **x == *s).count()
++        };
++        assert_eq!(alive(&marker), 0);
++        let a = intern(marker.clone());
++        assert_eq!(alive(&marker), 1);
++        let b = intern(marker.clone());
++        assert_eq!(alive(&marker), 1, "two holders, one entry");
++        drop(a);
++        assert_eq!(alive(&marker), 1, "one holder left");
++        // The probe does not keep the section alive. If the store held a strong reference, the
++        // section would outlive its last holder and the probe would still upgrade.
++        let probe = Arc::downgrade(&b);
++        drop(b);
++        assert_eq!(alive(&marker), 0, "no holder, no entry");
++        assert!(probe.upgrade().is_none(), "the store must not keep a section alive");
++    }
++
++    #[test]
++    fn a_hash_collision_with_different_content_keeps_two_entries() {
++        let one = with_block(4, BlockKind::Sand);
++        let two = with_block(5, BlockKind::Gravel);
++        assert!(one != two);
++        let a = intern_with_key(one.clone(), 0xC0111DE);
++        let b = intern_with_key(two.clone(), 0xC0111DE);
++        assert!(!Arc::ptr_eq(&a, &b), "same hash, different content: no false match");
++        assert_eq!(*a, one);
++        assert_eq!(*b, two);
++        // Each still finds itself on the same key.
++        assert!(Arc::ptr_eq(&a, &intern_with_key(one, 0xC0111DE)));
++        assert!(Arc::ptr_eq(&b, &intern_with_key(two, 0xC0111DE)));
++    }
++}
+diff --git a/azalea-world/src/chunk/storage.rs b/azalea-world/src/chunk/storage.rs
+index 926c0b4..4a0ea9a 100644
+--- a/azalea-world/src/chunk/storage.rs
++++ b/azalea-world/src/chunk/storage.rs
+@@ -60,6 +60,35 @@ pub trait ChunkStorageTrait: Send + Sync + Any {
+         let mut chunk = chunk.write();
+         Some(chunk.get_and_set_block_state(&ChunkBlockPos::from(pos), state, self.min_y()))
+     }
++    /// Set many blocks. Edits in one chunk share one write lock, and each touched section is
++    /// copied and stored once. Same result as calling [`Self::set_block_state`] in order.
++    // Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 5
++    fn set_block_states(&self, edits: &[(BlockPos, BlockState)]) -> Vec<Option<BlockState>> {
++        let mut out = vec![None; edits.len()];
++        let mut by_chunk: Vec<(ChunkPos, Vec<usize>)> = Vec::new();
++        for (i, (pos, _)) in edits.iter().enumerate() {
++            if pos.y < self.min_y() || pos.y >= (self.min_y() + self.height() as i32) {
++                continue;
++            }
++            let cp = ChunkPos::from(*pos);
++            match by_chunk.iter_mut().find(|(c, _)| *c == cp) {
++                Some((_, v)) => v.push(i),
++                None => by_chunk.push((cp, vec![i])),
++            }
++        }
++        for (cp, indexes) in by_chunk {
++            let Some(chunk) = self.get(&cp) else { continue };
++            let local: Vec<(ChunkBlockPos, BlockState)> = indexes
++                .iter()
++                .map(|&i| (ChunkBlockPos::from(edits[i].0), edits[i].1))
++                .collect();
++            let previous = chunk.write().set_block_states(&local, self.min_y());
++            for (&i, prev) in indexes.iter().zip(previous) {
++                out[i] = Some(prev);
++            }
++        }
++        out
++    }
+     fn get_fluid_state(&self, pos: BlockPos) -> Option<FluidState> {
+         let block_state = self.get_block_state(pos)?;
+         Some(FluidState::from(block_state))
+diff --git a/azalea-world/src/heightmap.rs b/azalea-world/src/heightmap.rs
+index 789f83e..740654c 100644
+--- a/azalea-world/src/heightmap.rs
++++ b/azalea-world/src/heightmap.rs
+@@ -92,7 +92,7 @@ impl Heightmap {
+         &mut self,
+         pos: &ChunkBlockPos,
+         block_state: BlockState,
+-        sections: &[Section],
++        sections: &[std::sync::Arc<Section>],
+     ) -> bool {
+         let first_available_y = self.get_first_available(pos.x, pos.z);
+         if pos.y <= first_available_y - 2 {
+-- 
+2.56.0
+

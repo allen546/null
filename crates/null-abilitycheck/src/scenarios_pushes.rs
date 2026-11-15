@@ -27,11 +27,12 @@ use std::{
 use azalea::{
     account::Account,
     app::{App, Plugin},
-    core::{entity_id::MinecraftEntityId, tick::GameTick},
+    core::tick::GameTick,
+    world::WorldName,
     ecs::prelude::*,
     entity::{
         EntityKindComponent, HasClientLoaded, LocalEntity, Physics, Position, dimensions::EntityDimensions,
-        interpolation::PeerView, push::PushRecord,
+        push::PushRecord,
     },
     pushes::PushSystems,
     registry::builtin::EntityKind,
@@ -69,7 +70,7 @@ pub struct PushTick {
     pub max_in_tick: u32,
     /// Entities whose box strictly meets the bot's box at the end of this tick.
     pub touching: Vec<EntityKind>,
-    /// The other bot as this bot's patch 31 view holds it (smoothed), when the view has it.
+    /// The other bot as this bot's own world holds it (smoothed), when the world has it.
     pub peer: Option<(f64, f64)>,
     /// The nearest cow, boat or armor stand within 3 blocks, at the position the push passes used
     /// (the probe runs after pass B, which runs after the interpolation step of this tick).
@@ -92,12 +93,12 @@ impl Plugin for PushProbe {
         let main = self.main.clone();
         app.add_systems(
             GameTick,
-            (move |me: Query<(&Account, &Position, &Physics, &PushRecord, &TicksConnected, &EntityDimensions, Option<&PeerView>, Option<&MinecraftEntityId>), (With<LocalEntity>, With<HasClientLoaded>)>,
-                   others: Query<(&EntityKindComponent, &Position, &EntityDimensions, Option<&MinecraftEntityId>), Without<LocalEntity>>| {
+            (move |me: Query<(&Account, &Position, &Physics, &PushRecord, &TicksConnected, &EntityDimensions, &WorldName), (With<LocalEntity>, With<HasClientLoaded>)>,
+                   others: Query<(&EntityKindComponent, &Position, &EntityDimensions, &WorldName), Without<LocalEntity>>| {
                 if !TRACE_ON.load(Ordering::Relaxed) {
                     return;
                 }
-                for (a, p, ph, rec, t, d, view, own) in &me {
+                for (a, p, ph, rec, t, d, world) in &me {
                     let buf = if a.username() == main {
                         &TRACE
                     } else if a.username() == format!("{main}2") {
@@ -106,28 +107,25 @@ impl Plugin for PushProbe {
                         continue;
                     };
                     let mine = d.make_bounding_box(**p);
+                    // Each bot has its own world (patch 59): read only the entities of this bot's world.
+                    let others = others.iter().filter(|(.., w)| *w == world);
                     let touching = others
-                        .iter()
-                        .filter(|(_, op, od, _)| mine.intersects_aabb(&od.make_bounding_box(***op)))
+                        .clone()
+                        .filter(|(_, op, od, ..)| mine.intersects_aabb(&od.make_bounding_box(***op)))
                         .map(|(k, ..)| k.0)
                         .collect();
                     let near = others
-                        .iter()
+                        .clone()
                         .filter(|(k, ..)| matches!(k.0, EntityKind::Cow | EntityKind::OakBoat | EntityKind::ArmorStand))
                         .map(|(_, op, ..)| (op.x, op.z))
                         .filter(|o| (o.0 - p.x).abs() < 3.0 && (o.1 - p.z).abs() < 3.0)
                         .min_by(|a, b| (a.0 - p.x).abs().total_cmp(&(b.0 - p.x).abs()));
-                    // The other bot, nearest first. With a companion the view holds two bots, and `iter().next()`
-                    // is in hash order. A bot that joined the swarm later can be a plain remote player here
-                    // (a second entity carrying its id, never one carrying this bot's own id), and the push
-                    // then reads that entity.
-                    let from_view = view.into_iter().flat_map(|v| v.iter().map(|(_, e)| (e.position.x, e.position.z)));
-                    let from_world = others
-                        .iter()
-                        .filter(|(k, _, _, id)| k.0 == EntityKind::Player && id.is_none_or(|i| Some(i) != own))
-                        .map(|(_, op, ..)| (op.x, op.z));
-                    let peer = from_view
-                        .chain(from_world)
+                    // The other bot, nearest first: its plain remote-player entity in this bot's own world
+                    // (smoothed by the interpolation step). Before patch 59 this read the bot-to-bot `PeerView`;
+                    // that copy is now this entity. The own id cannot be on another entity, so no id filter.
+                    let peer = others
+                        .filter(|(k, ..)| k.0 == EntityKind::Player)
+                        .map(|(_, op, ..)| (op.x, op.z))
                         .min_by(|a, b| (a.0 - p.x).hypot(a.1 - p.z).total_cmp(&(b.0 - p.x).hypot(b.1 - p.z)));
                     buf.lock().unwrap().push(PushTick {
                         tick: t.0,
