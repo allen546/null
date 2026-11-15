@@ -29,6 +29,9 @@ None of these blocks current work. Each has a default.
 | item | when it matters | default now | where |
 |---|---|---|---|
 | The rubric for the commander's decision quality (F3 §4.7), which only Allen writes | before the long commander test (COMMANDER_HARNESS §9 step 4) | mechanical scores only | F3, `specs/proposals/COMMANDER_HARNESS.md` §8 |
+| Horizon as a reference: read only, never copied; 26.3 sources for a method diff; the spike that maps every gap to a Horizon port (2026-11-15) | before the next parity gap is built (pistons, beds, elytra) | not used | `specs/proposals/HORIZON_REFERENCE.md` §9 |
+| A18 row 5 `bot_beyond_16_blocks_is_not_kept_and_comes_back` now checks that a far bot is kept (own worlds removed the 16-block rule); rename or drop | before the pair | keep the name | BURST_2026-11-10 "State, 2026-11-15" |
+| GitHub Actions trial: CI files to `main` for repeat runs (`runs: 3` on `40b6af0`) | before CI runs the stack layers | not merged | ABILITY_CHECK "GitHub Actions trial" |
 | AD-C3.1 central depots or storage per operation | large logistics | per operation, depots when shared | C3 |
 | AD-C7.1 fights bigger than one squad | large fights | bigger squads first | C7 |
 | AD-C8.1 bots talk to people in v1 | first public server | silent | C8 |
