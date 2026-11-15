@@ -1,0 +1,102 @@
+# Trial: the ability check as a live run on GitHub runners. Not a gate; the Pi pair stays the gate until
+# this is measured (specs/plans/ABILITY_CHECK.md, "GitHub Actions trial"). Each job is one VM with one server
+# built from nothing (scripts/ci/provision_server.sh) and the Pi's driver (scripts/pi/run_server_suite.py).
+# Start it by hand (Actions tab or `gh workflow run live-run.yml`), or push the head to a `live-run/<name>` branch.
+name: live-run
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: "Modules: all, or a list such as A1,AT"
+        default: all
+      shuffle:
+        description: "Shuffle seed (empty: module order as written)"
+        default: ""
+      runs:
+        description: "Repeats of the same head, each on its own VM (1 to 10; more than 1 is for calibration only)"
+        default: "1"
+  push:
+    branches: ["live-run/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      runs: ${{ steps.m.outputs.runs }}
+    steps:
+      - id: m
+        env:
+          RUNS: ${{ inputs.runs }}
+        run: |
+          n=${RUNS:-1}
+          [[ "$n" =~ ^([1-9]|10)$ ]] || { echo "runs must be 1 to 10" >&2; exit 1; }
+          echo "runs=$(seq 1 "$n" | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+  suite:
+    needs: plan
+    name: ${{ matrix.kind }} run ${{ matrix.run }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [vanilla, grim]
+        run: ${{ fromJSON(needs.plan.outputs.runs) }}
+    env:
+      NULL_HARNESS: ${{ github.workspace }}/harness
+      KIND: ${{ matrix.kind }}
+      SCENARIO: ${{ inputs.scenario }}
+      SHUFFLE: ${{ inputs.shuffle }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25" # the Mac's servers run on Java 25
+      - uses: astral-sh/setup-uv@v5
+      - name: Rust toolchain of rust-toolchain.toml
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      # No [patch] here: this builds the fork rev pinned in Cargo.toml, so the run tests the pushed fork head.
+      - name: Build null-abilitycheck
+        run: |
+          cargo build --release --locked -p null-abilitycheck
+          mkdir -p "$NULL_HARNESS/bin" "$NULL_HARNESS/logs"
+          cp target/release/null-abilitycheck "$NULL_HARNESS/bin/"
+      - name: Build the server
+        run: scripts/ci/provision_server.sh "$KIND"
+      # The build is over and nothing else runs on this VM: a busy CPU stalls the bot and draws Grim Timer alerts.
+      - name: Run the suite
+        run: |
+          args=(--scenario "${SCENARIO:-all}")
+          [ -n "${SHUFFLE:-}" ] && args+=(--shuffle "$SHUFFLE")
+          uv run --no-project python scripts/pi/run_server_suite.py "$KIND" ci "${args[@]}"
+      - name: Result
+        if: always()
+        run: |
+          L=$NULL_HARNESS/logs
+          {
+            echo "### $KIND, $(git rev-parse --short HEAD), fork $(grep -m1 -o 'rev = "[0-9a-f]*"' Cargo.toml | cut -c8-14)"
+            echo '```'
+            echo "runner: $(nproc) CPUs, $(lscpu | sed -n 's/^Model name: *//p' | head -1)"
+            grep -E "scenario\(s\)|^FAIL|server settle|TIMING total" "$L/ci_${KIND}_run.log" | cut -c1-300 || true
+            grep -E "RCON running|WARMUP|BOT exit|GRIM alerts|server exit|DIED" "$L/ci_${KIND}_monitor.log" || true
+            grep TICK "$L/ci_${KIND}_monitor.log" | sed -E 's/.*Average time per tick: ([0-9.]+)ms.*P99: ([0-9.]+)ms.*/\1 \2/' |
+              sort -k2 -n | tail -1 | sed 's/^/worst P99 sample (mean, P99 ms): /' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Clean means: a summary line with 0 failed, and no Grim alert that no row allowed.
+          grep -Eq "^[0-9]+ scenario\(s\), [0-9]+ passed, 0 failed" "$L/ci_${KIND}_run.log" || { echo "failed rows or no summary line" >&2; exit 1; }
+          grep -q "GRIM alerts in the suite: 0 " "$L/ci_${KIND}_monitor.log" || { echo "Grim alerts in the suite" >&2; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ matrix.kind }}-${{ matrix.run }}
+          path: |
+            harness/logs/
+            harness/*/server/server.log
+          retention-days: 30
