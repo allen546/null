@@ -16,6 +16,10 @@ on:
       runs:
         description: "Repeats of the same head, each on its own VM (1 to 10; more than 1 is for calibration only)"
         default: "1"
+      series:
+        description: "Run the jobs one after another (vanilla, then grim) instead of at once"
+        type: boolean
+        default: true
   push:
     branches: ["live-run/**"]
 
@@ -43,6 +47,8 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
+      # One job at a time when asked (the Pi pair's order). A push run has no inputs and runs at once.
+      max-parallel: ${{ inputs.series && 1 || 20 }}
       matrix:
         kind: [vanilla, grim]
         run: ${{ fromJSON(needs.plan.outputs.runs) }}
