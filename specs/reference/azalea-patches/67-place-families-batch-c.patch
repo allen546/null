@@ -1,4 +1,4 @@
-From 1c51685e97728d533f721491e68400e693ab5bfe Mon Sep 17 00:00:00 2001
+From ab87a7b48c6feaa50619704bd6a0049e86cde073 Mon Sep 17 00:00:00 2001
 From: bench <bench@local>
 Date: Tue, 10 Nov 2026 00:35:35 +0800
 Subject: [PATCH] null patch: 67-place-families-batch-c
@@ -289,7 +289,7 @@ index 6a3ee82..7314b10 100644
                          };
                          let verdict = predict_place(&bot, &request);
 diff --git a/azalea-client/src/plugins/place_prediction.rs b/azalea-client/src/plugins/place_prediction.rs
-index 1b60cf1..2741fb4 100644
+index f7eb4a0..1f0ee26 100644
 --- a/azalea-client/src/plugins/place_prediction.rs
 +++ b/azalea-client/src/plugins/place_prediction.rs
 @@ -121,6 +121,9 @@ pub struct PlaceRequest<'a> {
@@ -335,7 +335,7 @@ index 1b60cf1..2741fb4 100644
 +/// Vanilla `Direction#orderedByNearest(player)[0]`: the axis the look vector is longest on, with
 +/// the sign of that component. `None` when two compared lengths are within a hair of each other:
 +/// vanilla reads its sine table there and the pick could differ from this exact maths.
-+// Spec: specs/B6-placement-breaking.md §4.10 (families that look: patch 70)
++// Spec: specs/B6-placement-breaking.md §4.10 (families that look: patch 67)
 +fn nearest_looking(yaw: f32, pitch: f32) -> Option<Direction> {
 +    const TIE: f64 = 1e-3;
 +    let (f, g) = ((pitch as f64).to_radians(), -(yaw as f64).to_radians());
@@ -858,6 +858,3 @@ index e1a5ce4..ead62c4 100644
      ids = by_family.get(fam, [])
      if ids:
          out.append(f"        {arms(ids)} => PlaceFamily::{fam},")
--- 
-2.56.0
-

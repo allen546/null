@@ -1,4 +1,4 @@
-From 14e8577758d53756ae3e61d7021b00b04331288e Mon Sep 17 00:00:00 2001
+From 88f25473cca265d06ac939f647dd0b53f9e5bb6f Mon Sep 17 00:00:00 2001
 From: bench <bench@local>
 Date: Tue, 10 Nov 2026 00:44:57 +0800
 Subject: [PATCH] null patch: 68-throw-all-compares-item-kind
@@ -8,7 +8,7 @@ Subject: [PATCH] null patch: 68-throw-all-compares-item-kind
  1 file changed, 13 insertions(+), 1 deletion(-)
 
 diff --git a/azalea-entity/src/inventory.rs b/azalea-entity/src/inventory.rs
-index 27aeaa1..beff124 100644
+index 7596d21..3431818 100644
 --- a/azalea-entity/src/inventory.rs
 +++ b/azalea-entity/src/inventory.rs
 @@ -126,7 +126,7 @@ impl Inventory {
@@ -39,6 +39,3 @@ index 27aeaa1..beff124 100644
          // a refill with another item ends the loop
          let mut inv = player(&[(9, ItemKind::Stone, 4)]);
          let n = inv.throw_drops(9, true, |i, _| {
--- 
-2.56.0
-

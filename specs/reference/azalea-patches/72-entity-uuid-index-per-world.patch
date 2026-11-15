@@ -1,0 +1,429 @@
+From 19a8a3cb5c33142020ae2335dff00a8e2f9442f8 Mon Sep 17 00:00:00 2001
+From: bench <bench@local>
+Date: Sun, 15 Nov 2026 17:34:43 +0800
+Subject: [PATCH] null patch: 72-entity-uuid-index-per-world
+
+The uuid index was one process-wide resource, so bot B could look up bot A's own entity by uuid (Client::entity_by_uuid, entity_id_by_uuid), and a player-info packet to B could write a GameProfile onto A's entity (retroactively_add_game_profile_component). Each bot has its own world since patch 59, so the index now lives in World (entity_by_uuid), written with entity_by_id and removed with it. EntityUuidIndex keeps only the bots' own join entities, written only by handle_start_join_server_event, so the rejoin lookup at join.rs cannot return a copy from another bot's world.
+
+Vanilla: one ClientLevel per connection, so ClientPacketListener#handlePlayerInfoUpdate and Level#getPlayerByUUID reach only entities of that connection.
+
+Test: entity_uuid_per_world (two bots). The packet test fails on the old code (A's profile name became the one B's packet carried).
+---
+ Cargo.lock                                    |   1 +
+ azalea-client/src/player.rs                   |  15 ++-
+ azalea-client/src/plugins/join.rs             |   3 +-
+ azalea-client/src/plugins/packet/game/mod.rs  |   8 +-
+ .../tests/simulation/entity_uuid_per_world.rs | 106 ++++++++++++++++++
+ azalea-client/tests/simulation/mod.rs         |   1 +
+ azalea-entity/src/plugin/indexing.rs          |  27 ++---
+ azalea-world/Cargo.toml                       |   1 +
+ azalea-world/src/container.rs                 |   1 +
+ azalea-world/src/world.rs                     |   9 ++
+ azalea/src/client_impl/mod.rs                 |   5 +-
+ 11 files changed, 147 insertions(+), 30 deletions(-)
+ create mode 100644 azalea-client/tests/simulation/entity_uuid_per_world.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 2a24ad4..ef32c23 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -606,6 +606,7 @@ dependencies = [
+  "rustc-hash",
+  "serde",
+  "tracing",
++ "uuid",
+ ]
+ 
+ [[package]]
+diff --git a/azalea-client/src/player.rs b/azalea-client/src/player.rs
+index b1978e7..2cc8555 100644
+--- a/azalea-client/src/player.rs
++++ b/azalea-client/src/player.rs
+@@ -1,16 +1,15 @@
+ use azalea_auth::game_profile::GameProfile;
+ use azalea_chat::FormattedText;
+ use azalea_core::game_type::GameMode;
+-use azalea_entity::indexing::EntityUuidIndex;
+ use bevy_ecs::{
+     component::Component,
+     message::MessageReader,
+-    system::{Commands, Res},
++    system::{Commands, Query},
+ };
+ use derive_more::{Deref, DerefMut};
+ use uuid::Uuid;
+ 
+-use crate::packet::game::AddPlayerEvent;
++use crate::{local_player::WorldHolder, packet::game::AddPlayerEvent};
+ 
+ /// A player in the tab list.
+ #[derive(Clone, Debug)]
+@@ -44,13 +43,19 @@ pub struct GameProfileComponent(pub GameProfile);
+ /// Add a [`GameProfileComponent`] when an [`AddPlayerEvent`] is received.
+ /// Usually the `GameProfileComponent` will be added from the
+ /// `ClientboundGamePacket::AddPlayer` handler though.
++// Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 1
+ pub fn retroactively_add_game_profile_component(
+     mut commands: Commands,
+     mut events: MessageReader<AddPlayerEvent>,
+-    entity_uuid_index: Res<EntityUuidIndex>,
++    holders: Query<&WorldHolder>,
+ ) {
+     for event in events.read() {
+-        if let Some(entity) = entity_uuid_index.get(&event.info.uuid) {
++        // Look in the world of the bot that got the packet, never in another bot's world.
++        let Ok(holder) = holders.get(event.entity) else {
++            continue;
++        };
++        let found = holder.shared.read().entity_by_uuid.get(&event.info.uuid).copied();
++        if let Some(entity) = found {
+             commands
+                 .entity(entity)
+                 .insert(GameProfileComponent(event.info.profile.clone()));
+diff --git a/azalea-client/src/plugins/join.rs b/azalea-client/src/plugins/join.rs
+index 0f5747e..3e72fc8 100644
+--- a/azalea-client/src/plugins/join.rs
++++ b/azalea-client/src/plugins/join.rs
+@@ -122,7 +122,8 @@ pub fn handle_start_join_server_event(
+         } else {
+             let entity = commands.spawn_empty().id();
+             debug!("Created new entity {entity:?} for client");
+-            // add to the uuid index
++            // Only join entities enter this index, so a lookup by account uuid never returns a copy
++            // of an entity seen in another bot's world (Null fork, patch 72).
+             entity_uuid_index.insert(uuid, entity);
+             entity
+         };
+diff --git a/azalea-client/src/plugins/packet/game/mod.rs b/azalea-client/src/plugins/packet/game/mod.rs
+index 2da82db..2d32635 100644
+--- a/azalea-client/src/plugins/packet/game/mod.rs
++++ b/azalea-client/src/plugins/packet/game/mod.rs
+@@ -14,7 +14,7 @@ use azalea_entity::{
+     Attributes, Dead, EntityBundle, EntityKindComponent, HasClientLoaded, LoadedBy, LocalEntity, LookDirection,
+     Physics, PlayerAbilities, Position,
+     effect_events::{AddEffectEvent, RemoveEffectsEvent},
+-    indexing::{EntityIdIndex, EntityUuidIndex},
++    indexing::EntityIdIndex,
+     inventory::Inventory,
+     metadata::{Health, apply_metadata},
+ };
+@@ -229,7 +229,6 @@ impl GamePacketHandler<'_> {
+             >,
+             MessageWriter<WorldLoadedEvent>,
+             ResMut<Worlds>,
+-            ResMut<EntityUuidIndex>,
+             Query<&mut LoadedBy, Without<LocalEntity>>,
+         )>(
+             self.ecs,
+@@ -238,7 +237,6 @@ impl GamePacketHandler<'_> {
+                 mut query,
+                 mut world_loaded_events,
+                 mut worlds,
+-                mut entity_uuid_index,
+                 mut loaded_by_query,
+             )| {
+                 let (
+@@ -332,7 +330,6 @@ impl GamePacketHandler<'_> {
+                     self.player,
+                     Some(game_profile.uuid),
+                     &mut entity_id_index,
+-                    &mut entity_uuid_index,
+                     &mut world_holder.shared.write(),
+                 );
+ 
+@@ -604,7 +601,6 @@ impl GamePacketHandler<'_> {
+             Query<&mut LoadedBy>,
+             Query<Entity>,
+             Res<Worlds>,
+-            ResMut<EntityUuidIndex>,
+             Query<Has<LocalEntity>>,
+         )>(
+             self.ecs,
+@@ -614,7 +610,6 @@ impl GamePacketHandler<'_> {
+                 mut loaded_by_query,
+                 entity_query,
+                 worlds,
+-                mut entity_uuid_index,
+                 local_query,
+             )| {
+                 let (mut entity_id_index, world_name, tab_list) =
+@@ -687,7 +682,6 @@ impl GamePacketHandler<'_> {
+                     ecs_entity,
+                     Some(p.uuid),
+                     &mut entity_id_index,
+-                    &mut entity_uuid_index,
+                     &mut world.write(),
+                 );
+ 
+diff --git a/azalea-client/tests/simulation/entity_uuid_per_world.rs b/azalea-client/tests/simulation/entity_uuid_per_world.rs
+new file mode 100644
+index 0000000..72f2939
+--- /dev/null
++++ b/azalea-client/tests/simulation/entity_uuid_per_world.rs
+@@ -0,0 +1,106 @@
++use azalea_auth::game_profile::GameProfile;
++use azalea_client::{player::GameProfileComponent, test_utils::prelude::*};
++use azalea_core::{entity_id::MinecraftEntityId, game_type::GameMode, position::ChunkPos};
++use azalea_entity::{EntityUuid, indexing::EntityIdIndex};
++use azalea_protocol::packets::{
++    ConnectionProtocol,
++    game::{
++        ClientboundPlayerInfoUpdate,
++        c_player_info_update::{ActionEnumSet, PlayerInfoEntry},
++    },
++};
++use azalea_registry::builtin::EntityKind;
++use bevy_ecs::prelude::*;
++use uuid::Uuid;
++
++// Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 1
++// Two bots of one swarm, each with its own world. Bot B hears about bot A (it spawns a copy of A)
++// and gets a player-info entry for A's uuid. The uuid belongs to two entities in the app: A's own
++// entity and B's copy. Every lookup must stay in B's world, so only B's copy gets the profile.
++// Vanilla has one level per connection, so `ClientPacketListener#handlePlayerInfoUpdate` can
++// only ever reach entities of that connection.
++fn setup() -> (Simulation, Entity, Entity, Uuid) {
++    let mut simulation = Simulation::new(ConnectionProtocol::Game);
++    simulation.receive_packet(default_login_packet());
++    simulation.receive_packet(make_basic_empty_chunk(ChunkPos::new(0, 0), (384 + 64) / 16));
++    simulation.tick();
++    let a = simulation.entity;
++    let a_id = simulation.minecraft_entity_id();
++    let a_uuid = **simulation.app.world().get::<EntityUuid>(a).expect("A has a uuid");
++
++    let b = simulation.add_client(Uuid::from_u128(5678), "b");
++    let mut login = default_login_packet();
++    login.player_id = MinecraftEntityId(77);
++    simulation.receive_packet_for(b, login);
++    simulation.receive_packet_for(b, make_basic_empty_chunk(ChunkPos::new(0, 0), (384 + 64) / 16));
++    let mut add_a = make_basic_add_entity(EntityKind::Player, a_id.0, (0., 0., 0.));
++    add_a.uuid = a_uuid;
++    simulation.receive_packet_for(b, add_a);
++    for _ in 0..3 {
++        simulation.tick();
++    }
++    let b_copy_of_a = simulation
++        .app
++        .world()
++        .get::<EntityIdIndex>(b)
++        .unwrap()
++        .get_by_minecraft_entity(a_id)
++        .expect("B holds a copy of A");
++    assert_ne!(b_copy_of_a, a, "control: B's copy is not A's own entity");
++    (simulation, b, b_copy_of_a, a_uuid)
++}
++
++#[test]
++fn test_a_player_info_packet_to_bot_b_never_writes_onto_bot_a() {
++    let _lock = init();
++    let (mut simulation, b, b_copy_of_a, a_uuid) = setup();
++    let a = simulation.entity;
++    let a_name_before = simulation.app.world().get::<GameProfileComponent>(a).map(|p| p.name.clone());
++
++    simulation.receive_packet_for(
++        b,
++        ClientboundPlayerInfoUpdate {
++            actions: ActionEnumSet {
++                add_player: true,
++                initialize_chat: false,
++                update_game_mode: false,
++                update_listed: false,
++                update_latency: false,
++                update_display_name: false,
++                update_list_order: false,
++                update_hat: false,
++            },
++            entries: vec![PlayerInfoEntry {
++                profile: GameProfile::new(a_uuid, "named-by-b".to_owned()),
++                game_mode: GameMode::Survival,
++                ..Default::default()
++            }],
++        },
++    );
++    for _ in 0..3 {
++        simulation.tick();
++    }
++
++    let world = simulation.app.world();
++    assert_eq!(
++        world.get::<GameProfileComponent>(a).map(|p| p.name.clone()),
++        a_name_before,
++        "B's packet changed A's own entity"
++    );
++    assert_eq!(
++        world.get::<GameProfileComponent>(b_copy_of_a).map(|p| p.name.clone()).as_deref(),
++        Some("named-by-b"),
++        "B's own copy of A gets the profile"
++    );
++}
++
++#[test]
++fn test_each_bots_world_resolves_the_uuid_to_its_own_entity() {
++    let _lock = init();
++    let (simulation, b, b_copy_of_a, a_uuid) = setup();
++    let a = simulation.entity;
++    let a_world = simulation.app.world().get::<azalea_client::local_player::WorldHolder>(a).unwrap().shared.clone();
++    let b_world = simulation.app.world().get::<azalea_client::local_player::WorldHolder>(b).unwrap().shared.clone();
++    assert_eq!(a_world.read().entity_by_uuid.get(&a_uuid), Some(&a), "A's world: A's own entity");
++    assert_eq!(b_world.read().entity_by_uuid.get(&a_uuid), Some(&b_copy_of_a), "B's world: B's copy of A");
++}
+diff --git a/azalea-client/tests/simulation/mod.rs b/azalea-client/tests/simulation/mod.rs
+index aef28c4..b14008a 100644
+--- a/azalea-client/tests/simulation/mod.rs
++++ b/azalea-client/tests/simulation/mod.rs
+@@ -17,6 +17,7 @@ mod drop_click_swings;
+ mod enchantments;
+ mod entity_interpolation;
+ mod entity_pushes;
++mod entity_uuid_per_world;
+ mod fast_login;
+ mod input_log;
+ mod item_use_hold_and_release;
+diff --git a/azalea-entity/src/plugin/indexing.rs b/azalea-entity/src/plugin/indexing.rs
+index 3da807e..c063609 100644
+--- a/azalea-entity/src/plugin/indexing.rs
++++ b/azalea-entity/src/plugin/indexing.rs
+@@ -16,9 +16,15 @@ use uuid::Uuid;
+ use super::LoadedBy;
+ use crate::{EntityUuid, LocalEntity, Position};
+ 
++/// Maps an account UUID to the bot's own (local) entity, so a rejoin reuses the entity.
++///
++/// Only `handle_start_join_server_event` writes it. It holds no other entity: lookups of entities
++/// seen in a world go through [`World::entity_by_uuid`], one per bot (Null fork, patch 72).
++///
++/// Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 1
+ #[derive(Default, Resource)]
+ pub struct EntityUuidIndex {
+-    /// An index of entities by their UUIDs
++    /// An index of the bots' own entities by account UUID
+     entity_by_uuid: HashMap<Uuid, Entity>,
+ }
+ impl EntityUuidIndex {
+@@ -243,7 +249,6 @@ pub fn insert_entity_chunk_position(
+ #[allow(clippy::type_complexity)]
+ pub fn remove_despawned_entities_from_indexes(
+     mut commands: Commands,
+-    mut entity_uuid_index: ResMut<EntityUuidIndex>,
+     worlds: Res<Worlds>,
+     query: Query<
+         (
+@@ -262,10 +267,6 @@ pub fn remove_despawned_entities_from_indexes(
+         let Some(world_lock) = worlds.get(world_name) else {
+             // the world isn't even loaded by us, so we can safely delete the entity
+             debug!("Despawned entity {entity:?} because it's in a world that isn't loaded anymore");
+-            // Each bot holds its own copy of an entity, so the index may point at another bot's copy.
+-            if entity_uuid_index.get(uuid) == Some(entity) {
+-                entity_uuid_index.remove(uuid);
+-            }
+             // and now remove the entity from the ecs
+             commands.entity(entity).despawn();
+ 
+@@ -325,9 +326,9 @@ pub fn remove_despawned_entities_from_indexes(
+                 }
+             }
+         }
+-        // remove it from the uuid index
+-        if entity_uuid_index.get(uuid) == Some(entity) {
+-            entity_uuid_index.remove(uuid);
++        // remove it from the per-world uuid index (only if it is this copy)
++        if world.entity_by_uuid.get(uuid) == Some(&entity) {
++            world.entity_by_uuid.remove(uuid);
+         }
+         if world.entity_by_id.remove(minecraft_id).is_none() {
+             debug!(
+@@ -351,7 +352,6 @@ pub fn add_entity_to_indexes(
+     ecs_entity: Entity,
+     entity_uuid: Option<Uuid>,
+     entity_id_index: &mut EntityIdIndex,
+-    entity_uuid_index: &mut EntityUuidIndex,
+     world: &mut World,
+ ) {
+     // per-client id index
+@@ -361,10 +361,7 @@ pub fn add_entity_to_indexes(
+     world.entity_by_id.insert(entity_id, ecs_entity);
+ 
+     if let Some(uuid) = entity_uuid {
+-        // per-world uuid index
+-        // Every bot holds a copy of one uuid; never overwrite an earlier entry.
+-        if !entity_uuid_index.contains_key(&uuid) {
+-            entity_uuid_index.insert(uuid, ecs_entity);
+-        }
++        // per-world uuid index: each bot has its own world, so this never meets another bot's copy
++        world.entity_by_uuid.insert(uuid, ecs_entity);
+     }
+ }
+diff --git a/azalea-world/Cargo.toml b/azalea-world/Cargo.toml
+index 73b2d3a..bf4ca85 100644
+--- a/azalea-world/Cargo.toml
++++ b/azalea-world/Cargo.toml
+@@ -22,6 +22,7 @@ parking_lot.workspace = true
+ rustc-hash.workspace = true
+ serde = { workspace = true, optional = true }
+ tracing.workspace = true
++uuid.workspace = true
+ 
+ [features]
+ serde = ["dep:serde"]
+diff --git a/azalea-world/src/container.rs b/azalea-world/src/container.rs
+index 876b403..0d17722 100644
+--- a/azalea-world/src/container.rs
++++ b/azalea-world/src/container.rs
+@@ -79,6 +79,7 @@ impl Worlds {
+                     chunks: ChunkStorage::new(height, min_y),
+                     entities_by_chunk: HashMap::new(),
+                     entity_by_id: IntMap::default(),
++            entity_by_uuid: HashMap::new(),
+                     registries: default_registries.clone(),
+                 }));
+                 debug!("Added new world {name:?}");
+diff --git a/azalea-world/src/world.rs b/azalea-world/src/world.rs
+index 74390ee..3d222b4 100644
+--- a/azalea-world/src/world.rs
++++ b/azalea-world/src/world.rs
+@@ -103,6 +103,14 @@ pub struct World {
+     /// players.
+     pub entity_by_id: IntMap<azalea_core::entity_id::MinecraftEntityId, Entity>,
+ 
++    /// An index of Minecraft UUIDs to Azalea ECS entities in this world.
++    ///
++    /// Each bot has its own world, so a lookup here never returns another bot's copy of an
++    /// entity (Null fork, patch 72).
++    ///
++    /// Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 1
++    pub entity_by_uuid: HashMap<uuid::Uuid, Entity>,
++
+     pub registries: RegistryHolder,
+ }
+ 
+@@ -169,6 +177,7 @@ impl From<ChunkStorage> for World {
+             chunks,
+             entities_by_chunk: HashMap::new(),
+             entity_by_id: IntMap::default(),
++            entity_by_uuid: HashMap::new(),
+             registries: RegistryHolder::default(),
+         }
+     }
+diff --git a/azalea/src/client_impl/mod.rs b/azalea/src/client_impl/mod.rs
+index baf6f18..c319507 100644
+--- a/azalea/src/client_impl/mod.rs
++++ b/azalea/src/client_impl/mod.rs
+@@ -17,7 +17,7 @@ use azalea_core::{
+     data_registry::{DataRegistryWithKey, ResolvableDataRegistry},
+     entity_id::MinecraftEntityId,
+ };
+-use azalea_entity::indexing::{EntityIdIndex, EntityUuidIndex};
++use azalea_entity::indexing::EntityIdIndex;
+ use azalea_protocol::{
+     address::{ResolvableAddr, ResolvedAddr},
+     connect::Proxy,
+@@ -482,7 +482,8 @@ impl Client {
+     /// Also see [`Self::entity_by_uuid`] and
+     /// [`Self::entity_id_by_minecraft_id`].
+     pub fn entity_id_by_uuid(&self, uuid: Uuid) -> Option<Entity> {
+-        self.map_resource::<EntityUuidIndex, _>(|entity_uuid_index| entity_uuid_index.get(&uuid))
++        // This bot's own world only (Null fork, patch 72).
++        self.world().ok()?.read().entity_by_uuid.get(&uuid).copied()
+     }
+     /// Get an [`EntityRef`] in the world by its Minecraft UUID, if it's within
+     /// render distance.

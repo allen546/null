@@ -1,4 +1,4 @@
-From 740b3be603b7d297ad5b1a5e28867ed28fb78470 Mon Sep 17 00:00:00 2001
+From 33bac7af455fc69ec036b895c0fa58578db2e8bd Mon Sep 17 00:00:00 2001
 From: bench <bench@local>
 Date: Tue, 10 Nov 2026 00:42:29 +0800
 Subject: [PATCH] null patch: 58-section-store
@@ -476,6 +476,3 @@ index 789f83e..740654c 100644
      ) -> bool {
          let first_available_y = self.get_first_available(pos.x, pos.z);
          if pos.y <= first_available_y - 2 {
--- 
-2.56.0
-

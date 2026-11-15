@@ -1,4 +1,4 @@
-From 19f8c5c4aeed5626c902350b47cc04150b45f873 Mon Sep 17 00:00:00 2001
+From 866a59c6b359a9c9b371a856e322624a77bf8f3c Mon Sep 17 00:00:00 2001
 From: bench <bench@local>
 Date: Tue, 10 Nov 2026 00:20:59 +0800
 Subject: [PATCH] null patch: 61-unknown-place-swing
@@ -30,7 +30,7 @@ index d158225..6a3ee82 100644
                  let decision = match view.context(entity, &world, **position, dims, cells) {
                      Some(cx) => {
 diff --git a/azalea-client/src/plugins/place_prediction.rs b/azalea-client/src/plugins/place_prediction.rs
-index 5e9331d..1b60cf1 100644
+index 5e9331d..f7eb4a0 100644
 --- a/azalea-client/src/plugins/place_prediction.rs
 +++ b/azalea-client/src/plugins/place_prediction.rs
 @@ -108,6 +108,7 @@ pub struct Obstacle {
@@ -80,9 +80,9 @@ index 5e9331d..1b60cf1 100644
 +/// Redstone dust (`minecraft:redstone` is an `ItemNameBlockItem` for `redstone_wire`): no
 +/// collision, so nothing obstructs it, and `RedStoneWireBlock#canSurvive` wants a sturdy top face
 +/// below the cell (`BlockStateBase#isFaceSturdy`) or a hopper. A bottom slab has no sturdy top,
-+/// so that place fails on the client (patch 58). `None` for any other item, or a block below
++/// so that place fails on the client (patch 61). `None` for any other item, or a block below
 +/// whose support shape the fork does not model.
-+// Spec: specs/B6-placement-breaking.md §4.10 (patch 58: redstone wire swing)
++// Spec: specs/B6-placement-breaking.md §4.10 (patch 61: redstone wire swing)
 +fn redstone_wire_place_succeeds(chunks: &impl BlockView, req: &PlaceRequest) -> Option<bool> {
 +    if req.held != "minecraft:redstone" || req.has_block_state_component {
 +        return None;
@@ -114,7 +114,7 @@ index 5e9331d..1b60cf1 100644
 +        client_swing(chunks, r, &v)
 +    }
 +
-+    // Spec: specs/B6-placement-breaking.md §4.10 (patch 58: redstone wire swing)
++    // Spec: specs/B6-placement-breaking.md §4.10 (patch 61: redstone wire swing)
 +    #[test]
 +    fn redstone_dust_swings_on_a_full_block_and_not_on_a_bottom_slab() {
 +        let (chunks, _p) = world();
@@ -134,7 +134,7 @@ index 5e9331d..1b60cf1 100644
 +        assert_eq!(swing_of(&chunks, &r), ClientSwing::Unknown, "snow layer support is not modelled");
 +    }
 +
-+    // Spec: specs/B6-placement-breaking.md §4.10 (patch 58: a facing mismatch does not change the result)
++    // Spec: specs/B6-placement-breaking.md §4.10 (patch 61: a facing mismatch does not change the result)
 +    #[test]
 +    fn a_facing_yaw_mismatch_still_gives_the_swing_result() {
 +        let (chunks, _p) = world();
@@ -150,14 +150,14 @@ index 5e9331d..1b60cf1 100644
 +    }
  }
 diff --git a/azalea-client/tests/simulation/place_prediction_like_vanilla.rs b/azalea-client/tests/simulation/place_prediction_like_vanilla.rs
-index 0b55555..1b254bf 100644
+index 0b55555..a8b93c4 100644
 --- a/azalea-client/tests/simulation/place_prediction_like_vanilla.rs
 +++ b/azalea-client/tests/simulation/place_prediction_like_vanilla.rs
 @@ -232,6 +232,25 @@ fn a_sapling_swings_on_grass_and_not_on_stone() {
      assert_eq!((used_item_on(&sent), swings(&sent)), (1, 1), "grass below: SUCCESS, swing");
  }
  
-+// Spec: specs/B6-placement-breaking.md §4.10 (patch 58: redstone wire needs a sturdy top face below, `RedStoneWireBlock#canSurvive`)
++// Spec: specs/B6-placement-breaking.md §4.10 (patch 61: redstone wire needs a sturdy top face below, `RedStoneWireBlock#canSurvive`)
 +#[test]
 +fn redstone_dust_on_a_bottom_slab_is_sent_with_no_swing() {
 +    let _lock = init();
@@ -201,11 +201,11 @@ index 9e569ad..a9bf253 100644
  use self::world_collisions::get_block_collisions;
 diff --git a/azalea-physics/src/collision/sturdy.rs b/azalea-physics/src/collision/sturdy.rs
 new file mode 100644
-index 0000000..1f78828
+index 0000000..6a963f5
 --- /dev/null
 +++ b/azalea-physics/src/collision/sturdy.rs
 @@ -0,0 +1,124 @@
-+//! `BlockBehaviour.BlockStateBase#isFaceSturdy` with `SupportType.FULL` (Null fork, patch 58).
++//! `BlockBehaviour.BlockStateBase#isFaceSturdy` with `SupportType.FULL` (Null fork, patch 61).
 +
 +use azalea_block::BlockState;
 +use azalea_core::{aabb::Aabb, direction::Direction};
@@ -219,7 +219,7 @@ index 0000000..1f78828
 +/// soul sand (a full block). `None` for a block whose override depends on more than its state
 +/// (snow layers, fence gates, shulker boxes, chorus flowers, hanging signs, multiface blocks), so
 +/// the caller does not guess.
-+// Spec: specs/B6-placement-breaking.md §4.10 (patch 58: sturdy face for the place verdict)
++// Spec: specs/B6-placement-breaking.md §4.10 (patch 61: sturdy face for the place verdict)
 +pub fn is_face_sturdy(state: BlockState, face: Direction) -> Option<bool> {
 +    match BlockKind::from(state) {
 +        BlockKind::Mud | BlockKind::SoulSand => return Some(true),
@@ -329,6 +329,3 @@ index 0000000..1f78828
 +        assert_eq!(is_face_sturdy(st(BlockKind::Air), Direction::Up), Some(false));
 +    }
 +}
--- 
-2.56.0
-

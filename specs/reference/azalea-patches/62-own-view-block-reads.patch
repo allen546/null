@@ -1,4 +1,4 @@
-From 61db2f7e511fdb7bf7ac75aa0a02891833f7d101 Mon Sep 17 00:00:00 2001
+From 6d4ec9a673207a817517ed095fea76313b640128 Mon Sep 17 00:00:00 2001
 From: bench <bench@local>
 Date: Tue, 10 Nov 2026 00:23:22 +0800
 Subject: [PATCH] null patch: 62-own-view-block-reads
@@ -90,7 +90,7 @@ index ba78fee..baf6f18 100644
 +    }
 +}
 diff --git a/azalea/src/container.rs b/azalea/src/container.rs
-index 20c787d..9d70283 100644
+index 20c787d..58adc3c 100644
 --- a/azalea/src/container.rs
 +++ b/azalea/src/container.rs
 @@ -74,11 +74,8 @@ impl Client {
@@ -102,11 +102,8 @@ index 20c787d..9d70283 100644
 -                .read()
 -                .get_block_state(pos)
 -                .unwrap_or_default();
-+            // the bot's own view, not shared truth (patch 59)
++            // the bot's own view, not shared truth (patch 62)
 +            let block = self.own_block_state(pos)?.unwrap_or_default();
              if !block.is_collision_shape_empty() {
                  break;
              }
--- 
-2.56.0
-

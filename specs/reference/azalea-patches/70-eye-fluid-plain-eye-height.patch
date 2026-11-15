@@ -1,4 +1,4 @@
-From 91e18962836ff79ccab808b171195c92a6a52b80 Mon Sep 17 00:00:00 2001
+From 6e65af54c19ff22b6f976c38487deb22f6165222 Mon Sep 17 00:00:00 2001
 From: bench <bench@local>
 Date: Tue, 10 Nov 2026 00:45:55 +0800
 Subject: [PATCH] null patch: 70-eye-fluid-plain-eye-height
@@ -8,7 +8,7 @@ Subject: [PATCH] null patch: 70-eye-fluid-plain-eye-height
  1 file changed, 16 insertions(+), 6 deletions(-)
 
 diff --git a/azalea-entity/src/plugin/mod.rs b/azalea-entity/src/plugin/mod.rs
-index 66b6896..870e8ed 100644
+index 64cc8b2..df993a6 100644
 --- a/azalea-entity/src/plugin/mod.rs
 +++ b/azalea-entity/src/plugin/mod.rs
 @@ -138,12 +138,12 @@ pub fn update_fluid_on_eyes(
@@ -20,7 +20,7 @@ index 66b6896..870e8ed 100644
  /// height (`FluidState#getHeight`, a full cell when the same fluid is above) reaches above the
  /// eye. Vehicles are not modelled.
 -// Spec: specs/B1-movement.md §4.6 (patch 65: eyes-site helper)
-+// Spec: specs/B1-movement.md §4.6 (patch 66: the eye point is the plain eye height)
++// Spec: specs/B1-movement.md §4.6 (patch 70: the eye point is the plain eye height)
  pub fn fluid_kind_on_eyes(world: &impl BlockView, position: Vec3, eye_height: f32) -> FluidKind {
 -    let eye_y = position.y + (eye_height as f64) - 0.1111111119389534;
 +    let eye_y = position.y + eye_height as f64;
@@ -32,7 +32,7 @@ index 66b6896..870e8ed 100644
      }
  
 -    // Spec: specs/B1-movement.md §4.6 (patch 65)
-+    // Spec: specs/B1-movement.md §4.6 (patch 66)
++    // Spec: specs/B1-movement.md §4.6 (patch 70)
      // the partial world owns the chunk; the shared storage holds it weakly, so it is returned too
      fn water_world(cells: &[(i32, BlockState)]) -> (PartialWorld, World) {
          let mut chunks = ChunkStorage::default();
@@ -52,7 +52,7 @@ index 66b6896..870e8ed 100644
 +
      #[test]
      fn eye_fluid_counts_a_full_cell_when_the_same_fluid_is_above() {
-         // flowing level 1 under another water cell reaches the top of its cell (patch 61), so an eye
+         // flowing level 1 under another water cell reaches the top of its cell (patch 64), so an eye
          // at 64.95 is in water; the cell's own height (8/9) would leave it dry.
          let (_keep, world) = water_world(&[(64, water(1)), (65, water(1))]);
          let w = azalea_world::BotWorld::truth(&world);
@@ -64,6 +64,3 @@ index 66b6896..870e8ed 100644
 +        assert_eq!(fluid_kind_on_eyes(&w, Vec3::new(8.5, 64.95, 8.5), 0.0), FluidKind::Empty);
      }
  }
--- 
-2.56.0
-

@@ -1,4 +1,4 @@
-From e6a153379dfdcffb16da61c7e5e193d2922fc923 Mon Sep 17 00:00:00 2001
+From 5f70f5bb998d11ee8a0fca3619ab1de0bb245402 Mon Sep 17 00:00:00 2001
 From: bench <bench@local>
 Date: Tue, 10 Nov 2026 00:22:08 +0800
 Subject: [PATCH] null patch: 56-position-based-shape-offset
@@ -1761,6 +1761,3 @@ index 0000000..3373e72
 +    }
 +    assert!(differing >= 8);
 +}
--- 
-2.56.0
-

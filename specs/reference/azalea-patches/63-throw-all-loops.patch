@@ -1,4 +1,4 @@
-From e6f7b00ff2dbe3edd686effa8b83002d4794263c Mon Sep 17 00:00:00 2001
+From 49eba10f864da72b1376e316623a9f90aec7c527 Mon Sep 17 00:00:00 2001
 From: bench <bench@local>
 Date: Tue, 10 Nov 2026 00:26:05 +0800
 Subject: [PATCH] null patch: 63-throw-all-loops
@@ -8,14 +8,14 @@ Subject: [PATCH] null patch: 63-throw-all-loops
  1 file changed, 90 insertions(+), 25 deletions(-)
 
 diff --git a/azalea-entity/src/inventory.rs b/azalea-entity/src/inventory.rs
-index 4a6d285..27aeaa1 100644
+index 4a6d285..7596d21 100644
 --- a/azalea-entity/src/inventory.rs
 +++ b/azalea-entity/src/inventory.rs
 @@ -90,6 +90,57 @@ impl Inventory {
          }
      }
  
-+    // Spec: specs/B3-inventory-crafting.md §4.1 (patch 60: throw-all loops like `AbstractContainerMenu#doClick`)
++    // Spec: specs/B3-inventory-crafting.md §4.1 (patch 63: throw-all loops like `AbstractContainerMenu#doClick`)
 +    /// A Throw click on `slot` with an empty cursor, as `doClick` does it: take the click's count
 +    /// (one item, or the whole stack for `all`; a crafting result always leaves whole), drop it,
 +    /// and for `all` take again while the slot holds the same item again, stopping when the
@@ -120,7 +120,7 @@ index 4a6d285..27aeaa1 100644
          assert_eq!(inv.inventory_menu.slot(9), Some(&ItemStack::new(ItemKind::Cobblestone, 31)));
      }
  
-+    // Spec: specs/B3-inventory-crafting.md §4.1 (patch 60: throw-all loops while the slot refills)
++    // Spec: specs/B3-inventory-crafting.md §4.1 (patch 63: throw-all loops while the slot refills)
 +    #[test]
 +    fn throw_all_loops_while_the_slot_holds_the_same_item_and_single_does_not() {
 +        let refill = |inv: &mut Inventory, left: &mut i32| {
@@ -154,6 +154,3 @@ index 4a6d285..27aeaa1 100644
      #[test]
      fn throwing_the_last_item_empties_the_slot() {
          let mut inv = player(&[(9, ItemKind::Stone, 1)]);
--- 
-2.56.0
-

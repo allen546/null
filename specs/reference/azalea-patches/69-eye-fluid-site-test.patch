@@ -1,4 +1,4 @@
-From 520d11a24ae69f4c17216cc7570900bc714818f8 Mon Sep 17 00:00:00 2001
+From e07e638baaa277851ff04e78cc8e60733c824c6f Mon Sep 17 00:00:00 2001
 From: bench <bench@local>
 Date: Tue, 10 Nov 2026 00:45:27 +0800
 Subject: [PATCH] null patch: 69-eye-fluid-site-test
@@ -8,7 +8,7 @@ Subject: [PATCH] null patch: 69-eye-fluid-site-test
  1 file changed, 48 insertions(+), 12 deletions(-)
 
 diff --git a/azalea-entity/src/plugin/mod.rs b/azalea-entity/src/plugin/mod.rs
-index 8195cee..66b6896 100644
+index 8195cee..64cc8b2 100644
 --- a/azalea-entity/src/plugin/mod.rs
 +++ b/azalea-entity/src/plugin/mod.rs
 @@ -7,7 +7,7 @@ use std::collections::HashSet;
@@ -95,7 +95,7 @@ index 8195cee..66b6896 100644
 +
 +    #[test]
 +    fn eye_fluid_counts_a_full_cell_when_the_same_fluid_is_above() {
-+        // flowing level 1 under another water cell reaches the top of its cell (patch 61), so an eye
++        // flowing level 1 under another water cell reaches the top of its cell (patch 64), so an eye
 +        // at 64.95 is in water; the cell's own height (8/9) would leave it dry.
 +        let (_keep, world) = water_world(&[(64, water(1)), (65, water(1))]);
 +        let w = azalea_world::BotWorld::truth(&world);
@@ -105,6 +105,3 @@ index 8195cee..66b6896 100644
 +        assert_eq!(fluid_kind_on_eyes(&w, Vec3::new(8.5, 65.06, 8.5), 0.0), FluidKind::Empty);
 +    }
  }
--- 
-2.56.0
-

@@ -1,4 +1,4 @@
-From a742e4c1c908010437e881cc282375376c146c6f Mon Sep 17 00:00:00 2001
+From 7a5c2e782a7cd1328179dd2c38a57725d92c9ef3 Mon Sep 17 00:00:00 2001
 From: bench <bench@local>
 Date: Tue, 10 Nov 2026 00:32:28 +0800
 Subject: [PATCH] null patch: 66-face-sturdy-by-support-shape
@@ -9,7 +9,7 @@ Subject: [PATCH] null patch: 66-face-sturdy-by-support-shape
  2 files changed, 51 insertions(+), 4 deletions(-)
 
 diff --git a/azalea-physics/src/fluids.rs b/azalea-physics/src/fluids.rs
-index 16229a2..789893e 100644
+index 16229a2..84376e0 100644
 --- a/azalea-physics/src/fluids.rs
 +++ b/azalea-physics/src/fluids.rs
 @@ -269,14 +269,17 @@ fn is_solid_face(
@@ -18,7 +18,7 @@ index 16229a2..789893e 100644
  
 -// `BlockBehaviour#isFaceSturdy`, for blocks whose collision shape is the full cube. A partial
 -// shape (stairs, slabs, fences) counts as not sturdy here, where vanilla checks the face.
-+// `BlockBehaviour#isFaceSturdy` (FULL support type), patch 63: the face of the block's support
++// `BlockBehaviour#isFaceSturdy` (FULL support type), patch 66: the face of the block's support
 +// shape covers the whole square (`collision::is_face_sturdy`), so a stair's back or a mud block
 +// counts and leaves do not. A block whose support shape the fork does not model keeps the old
 +// full-cube answer.
@@ -35,14 +35,14 @@ index 16229a2..789893e 100644
 +        .unwrap_or_else(|| block_state.is_collision_shape_full())
  }
 diff --git a/azalea-physics/tests/physics.rs b/azalea-physics/tests/physics.rs
-index 55be429..cd03cb8 100644
+index 6125394..71cf422 100644
 --- a/azalea-physics/tests/physics.rs
 +++ b/azalea-physics/tests/physics.rs
 @@ -568,6 +568,50 @@ fn test_falling_water_beside_a_wall_flows_down() {
      assert!(walled.y < -0.95 && walled.x > -0.25, "wall: mostly down, got {walled:?}");
  }
  
-+// Patch 63: the wall's face decides (`isFaceSturdy`), not whether the block is a full cube. The
++// Patch 66: the wall's face decides (`isFaceSturdy`), not whether the block is a full cube. The
 +// flow tested is at the falling water's east side, where `isSolidFace` reads the east face.
 +// A stair that ascends east has a full east face; one that ascends west has a stepped face; leaves are a
 +// full cube with an empty support shape. Spec: specs/B1-movement.md §4.6
@@ -89,6 +89,3 @@ index 55be429..cd03cb8 100644
  #[test]
  fn test_afk_pool() {
      let mut app = make_test_app();
--- 
-2.56.0
-

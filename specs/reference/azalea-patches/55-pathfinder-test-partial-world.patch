@@ -1,4 +1,4 @@
-From abd298f9892f3e21ddc656c51b7ed1f00115c651 Mon Sep 17 00:00:00 2001
+From 9930d6d78a3741b8000d795086c316b5e3941d72 Mon Sep 17 00:00:00 2001
 From: bench <bench@local>
 Date: Tue, 10 Nov 2026 00:11:19 +0800
 Subject: [PATCH] null patch: 55-pathfinder-test-partial-world
@@ -48,6 +48,3 @@ index 89fefaa..2a84ed2 100644
              shared: world.clone(),
          },
          Inventory::default(),
--- 
-2.56.0
-

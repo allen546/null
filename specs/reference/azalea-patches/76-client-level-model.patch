@@ -1,0 +1,2320 @@
+From e1884102b6c21bd51388f15378c4b97cdd77fce4 Mon Sep 17 00:00:00 2001
+From: bench <bench@local>
+Date: Sun, 15 Nov 2026 18:07:23 +0800
+Subject: [PATCH] null patch: 76-client-level-model
+
+A bot's block predictions are written into its own World, as vanilla's ClientLevel does, and the patch 53 overlay is gone. BotWorld, the predicted field, set_predicted, clear_predictions_in_chunk and has_override_in are removed; BlockView stays as the read interface. BlockStatePredictionHandler now holds the sequence, the acked sequence and, per pending cell, the sequence, the server's last state and the player position. Its methods follow the four rules of CLIENT_LEVEL_MODEL: predict_block (rule 1: write the level; keep the old state only if the cell changed; a pending cell keeps its first old state), set_server_verified (rule 2: a pending cell takes the update in its entry and the level is not written), end_predictions_up_to (rule 3: write the kept state where the level differs, then the caller's snap test) and a chunk packet or forget leaves the handler alone (rule 4). The new accessor server_block_state reads the entry's state for a pending cell, else the level; the patch 54 judgement (settle_block_actions) reads it. Readers in physics, entity, client and azalea no longer take the handler.
+
+Vanilla, Mojang names: ClientLevel#setBlock, #setServerVerifiedBlockState, #syncBlockState; BlockStatePredictionHandler#retainKnownServerState, #updateKnownServerState, #endPredictionsUpTo; ClientPacketListener#updateLevelChunk. Closes the chunk-re-sent corner (edge a): the ack writes the kept state over the packet's block.
+---
+ azalea-client/src/plugins/block_actions.rs    |  43 ++--
+ azalea-client/src/plugins/block_update.rs     |  24 +--
+ azalea-client/src/plugins/chunks.rs           |  12 +-
+ azalea-client/src/plugins/entity_actions.rs   |  15 +-
+ azalea-client/src/plugins/interact/mod.rs     | 155 +++++++++-----
+ azalea-client/src/plugins/interact/pick.rs    |  16 +-
+ azalea-client/src/plugins/mining.rs           |  28 ++-
+ azalea-client/src/plugins/movement.rs         |  15 +-
+ azalea-client/src/plugins/packet/game/mod.rs  |  10 +-
+ .../src/plugins/unmodelled_disconnect.rs      |   5 +-
+ azalea-client/src/test_utils/simulation.rs    |   9 +-
+ .../tests/simulation/mine_block_rollback.rs   |   6 +-
+ .../simulation/mine_block_without_rollback.rs |   6 +-
+ .../place_prediction_like_vanilla.rs          |  47 ++++-
+ .../simulation/shared_world_prediction.rs     |  67 +++---
+ azalea-entity/src/plugin/mod.rs               |  30 ++-
+ azalea-physics/benches/collision_queries.rs   |  36 +---
+ azalea-physics/src/collision/mod.rs           |  10 +-
+ .../src/collision/world_collisions.rs         |  34 +--
+ azalea-physics/src/fluids.rs                  |  18 +-
+ azalea-physics/src/lib.rs                     |  21 +-
+ azalea-physics/src/travel.rs                  |  17 +-
+ azalea-physics/src/unmodelled_contacts.rs     |   4 +-
+ azalea-physics/tests/physics.rs               |  44 ++--
+ azalea-world/src/lib.rs                       |   2 +-
+ azalea-world/src/prediction.rs                | 197 ++++++------------
+ azalea/src/client_impl/mod.rs                 |  26 ++-
+ 27 files changed, 424 insertions(+), 473 deletions(-)
+
+diff --git a/azalea-client/src/plugins/block_actions.rs b/azalea-client/src/plugins/block_actions.rs
+index 8fc7720..b459f71 100644
+--- a/azalea-client/src/plugins/block_actions.rs
++++ b/azalea-client/src/plugins/block_actions.rs
+@@ -41,7 +41,7 @@ use azalea_registry::{
+     builtin::{BlockKind, MenuKind},
+     tags,
+ };
+-use azalea_world::{BlockView, BotWorld};
++use azalea_world::BlockView;
+ use std::collections::VecDeque;
+ 
+ use bevy_app::{App, Plugin};
+@@ -607,15 +607,14 @@ pub fn handle_look_at_block_queued(
+         &Position,
+         &EntityDimensions,
+         &Attributes,
+-        &BlockStatePredictionHandler,
+     )>,
+ ) {
+-    for (entity, queued, mut look, world, position, dims, attrs, pending) in &mut query {
++    for (entity, queued, mut look, world, position, dims, attrs) in &mut query {
+         commands.entity(entity).remove::<LookAtBlockQueued>();
+         let eye = position.up(dims.eye_height.into());
+         let range = attrs.block_interaction_range.calculate();
+         let world = world.shared.read();
+-        if let Some(aim) = aim_at_block(&BotWorld::new(&world, pending), eye, range, *look, queued.position, queued.direction) {
++        if let Some(aim) = aim_at_block(&*world, eye, range, *look, queued.position, queued.direction) {
+             look.update(aim);
+         }
+     }
+@@ -800,8 +799,8 @@ pub fn handle_place_block_queued(
+     ) in &mut query
+     {
+         let world = world.shared.read();
+-        // this bot's view: shared server data plus its own pending cells
+-        let bot = BotWorld::new(&world, &prediction);
++        // this bot's own level: server data plus its own pending cells
++        let bot = &*world;
+         // What the checks below see, kept for a refusal (patch 28).
+         let look_after_hit = look.last_changed().is_newer_than(hit_result.last_changed(), ticks.this_run());
+         let evidence = |mv: &ClientMovementState, look: LookDirection| {
+@@ -831,7 +830,7 @@ pub fn handle_place_block_queued(
+                 let crouched_eye = position.up(CROUCH_EYE_HEIGHT);
+                 let range = attrs.block_interaction_range.calculate();
+                 if let Some(aim) =
+-                    aim_at_block(&bot, crouched_eye, range, *look, queued.position, Some(queued.direction))
++                    aim_at_block(bot, crouched_eye, range, *look, queued.position, Some(queued.direction))
+                 {
+                     look.update(aim);
+                 }
+@@ -946,15 +945,15 @@ pub fn handle_place_block_queued(
+                                 .then(|| is_crouching(&mv, crouching)),
+                             obstacles: &cx.obstacles,
+                         };
+-                        let verdict = predict_place(&bot, &request);
++                        let verdict = predict_place(bot, &request);
+                         // the old target rule and stage 1 must agree on the cell
+                         let verdict = match verdict {
+                             Verdict::Predict { pos, .. } if pos != target => Verdict::Unknown(UnknownWhy::ReplaceRule),
+                             v => v,
+                         };
+                         tracing::debug!(?verdict, "place prediction");
+-                        swing = client_swing(&bot, &request, &verdict) != ClientSwing::No;
+-                        decide(&bot, verdict, cells, &cx.zone)
++                        swing = client_swing(bot, &request, &verdict) != ClientSwing::No;
++                        decide(bot, verdict, cells, &cx.zone)
+                     }
+                     // the bot is not fully set up: predict nothing, refuse nothing (as before)
+                     None => Decision::Send { write: None },
+@@ -973,13 +972,10 @@ pub fn handle_place_block_queued(
+                 }
+                 let seq = prediction.start_predicting();
+                 result.seq = Some(seq);
+-                // `ClientLevel#setBlock` while predicting: retain the server's state, then write
+-                // Null: the prediction goes into this bot's own handler, never the shared world (patch 53).
+-                if let Decision::Send { write: Some((pos, state)) } = decision
+-                    && let Some(old) = BotWorld::new(&world, &prediction).get_block_state(pos)
+-                {
+-                    prediction.retain_known_server_state(pos, old, **position);
+-                    prediction.set_predicted(pos, state);
++                // `ClientLevel#setBlock` while predicting: write this bot's own world, keeping the
++                // server's state for the ack (patch 76).
++                if let Decision::Send { write: Some((pos, state)) } = decision {
++                    prediction.predict_block(&world, pos, state, **position);
+                 }
+                 commands.trigger(SendGamePacketEvent::new(
+                     entity,
+@@ -1076,7 +1072,7 @@ pub fn handle_use_block_queued(
+     {
+         commands.entity(entity).remove::<UseBlockQueued>();
+         let world = world.shared.read();
+-        let state = BotWorld::new(&world, &prediction).get_block_state(queued.position).unwrap_or_default();
++        let state = world.get_block_state(queued.position).unwrap_or_default();
+         let eye = position.up(dims.eye_height.into());
+         let range = attrs.block_interaction_range.calculate();
+         // Vanilla places the held item instead of using the block when crouching with either hand
+@@ -1151,7 +1147,6 @@ pub fn begin_break_result(
+             Entity,
+             &MiningQueued,
+             &mut BlockActionResults,
+-            &BlockStatePredictionHandler,
+             &WorldHolder,
+             &Position,
+             &EntityDimensions,
+@@ -1171,7 +1166,6 @@ pub fn begin_break_result(
+         entity,
+         queued,
+         mut results,
+-        prediction,
+         world,
+         position,
+         dims,
+@@ -1189,7 +1183,7 @@ pub fn begin_break_result(
+             continue;
+         }
+         let world = world.shared.read();
+-        let state = BotWorld::new(&world, &prediction).get_block_state(queued.position).unwrap_or_default();
++        let state = world.get_block_state(queued.position).unwrap_or_default();
+         let eye = position.up(dims.eye_height.into());
+         let range = attrs.block_interaction_range.calculate();
+         results.next_id += 1;
+@@ -1207,7 +1201,7 @@ pub fn begin_break_result(
+             place_kind: None,
+         };
+         // mining.rs drops a restricted break silently; say so
+-        let refusal = if check_is_interaction_restricted(&BotWorld::new(&world, &prediction), queued.position, &mode.current, inv) {
++        let refusal = if check_is_interaction_restricted(&world, queued.position, &mode.current, inv) {
+             Some(BlockActionRefusal::NotAllowed)
+         } else if let Some(why) = checked
+             .then(|| check_click(eye, range, queued.position, None, &state.outline_shape_at(queued.position), &hit_result).err())
+@@ -1431,8 +1425,9 @@ pub fn settle_block_actions(
+     mut finished: MessageWriter<BlockActionFinished>,
+ ) {
+     for (entity, mut results, prediction, world, mining, queued) in &mut query {
+-        // The server's data, not the bot's view: the view can hold a later prediction of this bot.
+-        let block_at = |p: BlockPos| world.shared.read().get_block_state(p);
++        // The server's state of the cell, not the bot's level: the level can hold a later
++        // prediction of this bot (B6 §4.6; `server_block_state` is the accessor, patch 76).
++        let block_at = |p: BlockPos| prediction.server_block_state(&world.shared.read(), p);
+         for (is_break, result) in results.settle(prediction.acked_seq(), mining || queued, &block_at) {
+             finished.write(BlockActionFinished { entity, is_break, result });
+         }
+diff --git a/azalea-client/src/plugins/block_update.rs b/azalea-client/src/plugins/block_update.rs
+index dda7aa1..b076f07 100644
+--- a/azalea-client/src/plugins/block_update.rs
++++ b/azalea-client/src/plugins/block_update.rs
+@@ -17,7 +17,7 @@ impl Plugin for BlockUpdatePlugin {
+             // Update then the block update actually gets applied
+             handle_block_update_event
+                 .after(handle_receive_chunk_event)
+-                // patch 53: readers of the bot's pending cells run after the writers
++                // readers of a bot's block state run after the writers
+                 .before(azalea_entity::update_on_climbable)
+                 .before(crate::interact::pick::insert_initial_hit_result_component),
+         );
+@@ -36,9 +36,10 @@ pub struct QueuedServerBlockUpdates {
+ }
+ 
+ impl QueuedServerBlockUpdates {
+-    /// Apply the queued updates whose chunk is loaded, in order: into the known server state of a
+-    /// retained cell (`ClientLevel#setServerVerifiedBlockState`), else into the world. An update
+-    /// for a chunk that is not loaded yet stays queued.
++    /// Apply the queued updates in order: a pending cell takes the update as the server's last
++    /// word (`ClientLevel#setServerVerifiedBlockState`, which does not write the world), any
++    /// other cell whose chunk is loaded is written. An update for a chunk that is not loaded yet
++    /// stays queued.
+     ///
+     /// The ack handler runs this first: vanilla applies a block update the moment its packet
+     /// arrives, so an update that came before the ack is already in the known state when the ack
+@@ -52,16 +53,14 @@ impl QueuedServerBlockUpdates {
+         let mut kept = Vec::new();
+         let mut edits = Vec::new();
+         for (pos, block_state) in self.list.drain(..) {
+-            if world.get_block_state(pos).is_none() {
+-                kept.push((pos, block_state));
+-            } else {
+-                // the world holds server data only; a pending cell also keeps it for the ack
++            if prediction.is_pending(pos) || world.get_block_state(pos).is_some() {
+                 edits.push((pos, block_state));
+-                prediction.update_known_server_state(pos, block_state);
++            } else {
++                kept.push((pos, block_state));
+             }
+         }
+         // One frame's edits go in together: one section copy per section (design item 5).
+-        world.chunks.set_block_states(&edits);
++        prediction.set_server_verified(world, &edits);
+         self.list = kept;
+     }
+ }
+@@ -77,9 +76,6 @@ pub fn handle_block_update_event(
+         let world = world_holder.shared.read();
+         // Spec: specs/plans/LOAD_CONTRACT.md "Swarm world design" item 5
+         let edits: Vec<_> = queued.list.drain(..).collect();
+-        world.chunks.set_block_states(&edits);
+-        for (pos, block_state) in edits {
+-            prediction_handler.update_known_server_state(pos, block_state);
+-        }
++        prediction_handler.set_server_verified(&world, &edits);
+     }
+ }
+diff --git a/azalea-client/src/plugins/chunks.rs b/azalea-client/src/plugins/chunks.rs
+index 3bbfe1e..c05555d 100644
+--- a/azalea-client/src/plugins/chunks.rs
++++ b/azalea-client/src/plugins/chunks.rs
+@@ -34,7 +34,7 @@ impl Plugin for ChunksPlugin {
+                 .chain()
+                 .before(InventorySystems)
+                 .before(perform_respawn)
+-                // patch 53: the chunk packet turns this bot's overrides off before they are read
++                // the chunk packet is applied before the readers of block state run
+                 .before(azalea_entity::update_on_climbable),
+         )
+         .add_message::<ReceiveChunkEvent>()
+@@ -74,13 +74,13 @@ pub struct ChunkBatchFinishedEvent {
+ 
+ pub fn handle_receive_chunk_event(
+     mut events: MessageReader<ReceiveChunkEvent>,
+-    mut query: Query<(&WorldHolder, &mut crate::interact::BlockStatePredictionHandler)>,
++    query: Query<&WorldHolder>,
+ ) {
+     let _bt = crate::bench_metrics::Timer::new(crate::bench_metrics::Kind::ChunkEvent);
+     for event in events.read() {
+         let pos = ChunkPos::new(event.packet.x, event.packet.z);
+ 
+-        let (local_player, mut prediction) = query.get_mut(event.entity).unwrap();
++        let local_player = query.get(event.entity).unwrap();
+         // `ClientPacketListener` handles a chunk packet in packet order, against the level of
+         // that moment; a later respawn builds a new level. A chunk of a level the bot has left
+         // is dropped, as vanilla's write into the old level is lost with it.
+@@ -89,10 +89,10 @@ pub fn handle_receive_chunk_event(
+             trace!("Dropping chunk {pos:?} of a level the bot has left");
+             continue;
+         }
+-        // `ClientPacketListener#updateLevelChunk`: the packet's blocks win over a pending
+-        // prediction; the retained state stays for the ack.
++        // `ClientPacketListener#updateLevelChunk` replaces the chunk, so the packet's blocks win
++        // over a pending prediction; the handler keeps its entry, and the ack writes the kept
++        // state over the packet's block (the vanilla result; patch 76).
+         // Spec: specs/B6-placement-breaking.md §4.10
+-        prediction.clear_predictions_in_chunk(pos);
+ 
+         let mut world = local_player.shared.write();
+         let mut partial_world = local_player.partial.write();
+diff --git a/azalea-client/src/plugins/entity_actions.rs b/azalea-client/src/plugins/entity_actions.rs
+index c796f71..09ee87e 100644
+--- a/azalea-client/src/plugins/entity_actions.rs
++++ b/azalea-client/src/plugins/entity_actions.rs
+@@ -517,21 +517,16 @@ fn crosshair(
+     eye: Vec3,
+     bbox: &Aabb,
+     world: &World,
+-    pending: Option<&azalea_world::BlockStatePredictionHandler>,
+     attrs: &Attributes,
+     aabb_query: &AabbQuery,
+     pickable: &MaybePickableEntityQuery,
+ ) -> HitResult {
+-    let world = match pending {
+-        Some(pending) => azalea_world::BotWorld::new(world, pending),
+-        None => azalea_world::BotWorld::truth(world),
+-    };
+     pick(PickOpts {
+         source_entity: source,
+         look_direction: look,
+         eye_position: eye,
+         aabb: bbox,
+-        world: &world,
++        world,
+         entity_pick_range: attrs.entity_interaction_range.calculate(),
+         block_pick_range: attrs.block_interaction_range.calculate(),
+         aabb_query,
+@@ -557,7 +552,6 @@ pub fn handle_look_at_entity_queued(
+     boxes: Query<&LastBoundingBox>,
+     aabb_query: AabbQuery,
+     pickable: MaybePickableEntityQuery,
+-    pendings: Query<&azalea_world::BlockStatePredictionHandler>,
+ ) {
+     for (entity, queued, mut look, world, position, dims, attrs, physics, ids) in &mut query {
+         commands.entity(entity).remove::<LookAtEntityQueued>();
+@@ -572,7 +566,7 @@ pub fn handle_look_at_entity_queued(
+         let world = world.shared.read();
+         let current = *look;
+         let aim = aim_at_entity(eye, &target_box, current, target, |l| {
+-            crosshair(entity, l, eye, &physics.bounding_box, &world, pendings.get(entity).ok(), attrs, &aabb_query, &pickable)
++            crosshair(entity, l, eye, &physics.bounding_box, &world, attrs, &aabb_query, &pickable)
+         });
+         if let Some(aim) = aim {
+             look.update(aim);
+@@ -629,7 +623,6 @@ pub fn handle_use_entity_queued(
+     )>,
+     aabb_query: AabbQuery,
+     pickable: MaybePickableEntityQuery,
+-    pendings: Query<&azalea_world::BlockStatePredictionHandler>,
+ ) {
+     for (
+         entity,
+@@ -683,7 +676,7 @@ pub fn handle_use_entity_queued(
+         }
+         let world = world.shared.read();
+         let eye = position.up(dims.eye_height.into());
+-        let hit = crosshair(entity, *look, eye, &physics.bounding_box, &world, pendings.get(entity).ok(), attrs, &aabb_query, &pickable);
++        let hit = crosshair(entity, *look, eye, &physics.bounding_box, &world, attrs, &aabb_query, &pickable);
+         let range = attrs.entity_interaction_range.calculate();
+         let checked = check_entity_click(eye, view_vector(*look), range, target, &target_box, &hit);
+         // Patch 28: what this check saw, kept for a refusal. The pick above is fresh, so the hit
+@@ -718,7 +711,7 @@ pub fn handle_use_entity_queued(
+             let crouched_eye = position.up(CROUCH_EYE_HEIGHT);
+             let current = *look;
+             let aim = aim_at_entity(crouched_eye, &target_box, current, target, |l| {
+-                crosshair(entity, l, crouched_eye, &physics.bounding_box, &world, pendings.get(entity).ok(), attrs, &aabb_query, &pickable)
++                crosshair(entity, l, crouched_eye, &physics.bounding_box, &world, attrs, &aabb_query, &pickable)
+             });
+             if let Some(aim) = aim {
+                 look.update(aim);
+diff --git a/azalea-client/src/plugins/interact/mod.rs b/azalea-client/src/plugins/interact/mod.rs
+index 9c0502e..9149d26 100644
+--- a/azalea-client/src/plugins/interact/mod.rs
++++ b/azalea-client/src/plugins/interact/mod.rs
+@@ -105,7 +105,7 @@ pub fn end_prediction_up_to(
+     player_box: Option<&Aabb>,
+ ) -> Option<Vec3> {
+     let mut snap = None;
+-    for (pos, server_block_state, player_pos) in handler.settle_up_to(seq, world) {
++    for (pos, server_block_state, player_pos) in handler.end_predictions_up_to(seq, world) {
+         if let Some(player_box) = player_box {
+             let cell = Vec3::new(pos.x as f64, pos.y as f64, pos.z as f64);
+             let colliding = server_block_state
+@@ -414,7 +414,7 @@ pub fn handle_entity_interact(
+ /// The world, block position, and inventory are used for the adventure mode
+ /// check.
+ pub fn check_is_interaction_restricted(
+-    world: &azalea_world::BotWorld,
++    world: &World,
+     block_pos: BlockPos,
+     game_mode: &GameMode,
+     inventory: &Inventory,
+@@ -525,7 +525,7 @@ fn update_attributes_for_gamemode(
+ mod prediction_tests {
+     use azalea_core::position::ChunkPos;
+     use azalea_registry::builtin::BlockKind;
+-    use azalea_world::{BotWorld, Chunk, PartialChunkStorage};
++    use azalea_world::{Chunk, PartialChunkStorage};
+ 
+     use super::*;
+ 
+@@ -547,29 +547,28 @@ mod prediction_tests {
+     fn far_box() -> Aabb {
+         Aabb { min: Vec3::new(10.0, 64.0, 10.0), max: Vec3::new(10.6, 65.8, 10.6) }
+     }
+-    /// Predict `state` at `POS` the way the action systems do: retain what the bot shows, then
+-    /// show the prediction to this bot only.
++    /// Predict `state` at `POS` the way the action systems do: a write into the bot's own world
++    /// inside a prediction scope.
+     fn predict(h: &mut BlockStatePredictionHandler, world: &World, state: BlockState, at: Vec3) {
+-        let old = BotWorld::new(world, h).get_block_state(POS).unwrap_or_default();
+-        h.retain_known_server_state(POS, old, at);
+-        h.set_predicted(POS, state);
++        h.predict_block(world, POS, state, at);
+     }
+-    fn shown(h: &BlockStatePredictionHandler, world: &World) -> Option<BlockState> {
+-        BotWorld::new(world, h).get_block_state(POS)
++    fn shown(world: &World) -> Option<BlockState> {
++        world.get_block_state(POS)
+     }
+ 
+     // Spec: specs/B6-placement-breaking.md §4.10 (write and roll back)
+     #[test]
+-    fn a_prediction_is_shown_to_this_bot_only() {
++    fn a_prediction_is_in_this_bots_own_world_only() {
+         let (world, _keep) = world();
++        let (other_world, _keep_b) = self::world();
+         let mut h = BlockStatePredictionHandler::default();
+-        let other = BlockStatePredictionHandler::default();
+         h.start_predicting();
+         predict(&mut h, &world, stone(), Vec3::ZERO);
+-        assert_eq!(shown(&h, &world), Some(stone()));
+-        // the shared world and another bot's view still show the server's block
+-        assert_eq!(world.get_block_state(POS), Some(BlockState::AIR));
+-        assert_eq!(shown(&other, &world), Some(BlockState::AIR));
++        assert_eq!(shown(&world), Some(stone()));
++        // the other bot's world still shows the server's block
++        assert_eq!(shown(&other_world), Some(BlockState::AIR));
++        // the entry keeps the server's block
++        assert_eq!(h.server_block_state(&world, POS), Some(BlockState::AIR));
+     }
+ 
+     #[test]
+@@ -578,14 +577,13 @@ mod prediction_tests {
+         let mut h = BlockStatePredictionHandler::default();
+         let seq = h.start_predicting();
+         predict(&mut h, &world, stone(), Vec3::ZERO);
+-        // the server's update arrives while the cell is retained: it writes the shared world and
+-        // the retained state
+-        world.set_block_state(POS, stone());
+-        assert!(h.update_known_server_state(POS, stone()));
++        // the server's update arrives while the cell is pending: it changes the entry only
++        h.set_server_verified(&world, &[(POS, stone())]);
++        assert_eq!(h.server_block_state(&world, POS), Some(stone()));
+         assert_eq!(end_prediction_up_to(&mut h, seq, &world, Some(&far_box())), None);
+-        assert_eq!(shown(&h, &world), Some(stone()));
++        assert_eq!(shown(&world), Some(stone()));
+         assert_eq!(h.acked_seq(), seq);
+-        // settled: the cell is not retained any more
++        // settled: the cell is not pending any more
+         assert!(!h.update_known_server_state(POS, dirt()));
+     }
+ 
+@@ -595,16 +593,16 @@ mod prediction_tests {
+         let mut h = BlockStatePredictionHandler::default();
+         let seq = h.start_predicting();
+         predict(&mut h, &world, stone(), Vec3::ZERO);
+-        // no update came: the server refused, so the ack drops the prediction
++        // no update came: the server refused, so the ack writes the kept state back
+         assert_eq!(end_prediction_up_to(&mut h, seq, &world, Some(&far_box())), None);
+-        assert_eq!(shown(&h, &world), Some(BlockState::AIR));
++        assert_eq!(shown(&world), Some(BlockState::AIR));
+         // the server put something else there before the ack
+         let seq = h.start_predicting();
+         predict(&mut h, &world, stone(), Vec3::ZERO);
+-        world.set_block_state(POS, dirt());
+-        h.update_known_server_state(POS, dirt());
++        h.set_server_verified(&world, &[(POS, dirt())]);
++        assert_eq!(shown(&world), Some(stone()), "an update for a pending cell does not write the level");
+         end_prediction_up_to(&mut h, seq, &world, Some(&far_box()));
+-        assert_eq!(shown(&h, &world), Some(dirt()));
++        assert_eq!(shown(&world), Some(dirt()));
+     }
+ 
+     #[test]
+@@ -615,11 +613,34 @@ mod prediction_tests {
+         predict(&mut h, &world, stone(), Vec3::ZERO);
+         let s2 = h.start_predicting();
+         predict(&mut h, &world, dirt(), Vec3::new(9.0, 9.0, 9.0));
+-        // an ack for the first sequence leaves the cell retained (its sequence was refreshed)
++        // an ack for the first sequence leaves the cell pending (its sequence was refreshed)
+         end_prediction_up_to(&mut h, s1, &world, None);
+-        assert_eq!(shown(&h, &world), Some(dirt()));
++        assert_eq!(shown(&world), Some(dirt()));
+         end_prediction_up_to(&mut h, s2, &world, None);
+-        assert_eq!(shown(&h, &world), Some(BlockState::AIR));
++        assert_eq!(shown(&world), Some(BlockState::AIR));
++    }
++
++    // Same cell twice: the first ack leaves the cell pending, the second settles it against the
++    // first old state, and the player position kept is the first one.
++    #[test]
++    fn the_same_cell_twice_settles_at_the_second_ack_against_the_first_old_state() {
++        let (world, _keep) = world();
++        let mut h = BlockStatePredictionHandler::default();
++        let first_pos = Vec3::new(2.5, 66.0, 2.5);
++        world.set_block_state(POS, stone());
++        let s1 = h.start_predicting();
++        predict(&mut h, &world, BlockState::AIR, first_pos);
++        let s2 = h.start_predicting();
++        predict(&mut h, &world, dirt(), Vec3::new(9.0, 9.0, 9.0));
++        assert_eq!(end_prediction_up_to(&mut h, s1, &world, Some(&far_box())), None);
++        assert!(h.is_pending(POS), "the first ack does not settle the cell");
++        assert_eq!(h.server_block_state(&world, POS), Some(stone()), "the first old state");
++        // the second ack: the cell shows dirt, the kept state is stone; a player standing in the
++        // kept state's shape is moved to where he stood at the first write
++        let inside_stone = Aabb { min: Vec3::new(2.2, 64.2, 2.2), max: Vec3::new(2.8, 66.0, 2.8) };
++        assert_eq!(end_prediction_up_to(&mut h, s2, &world, Some(&inside_stone)), Some(first_pos));
++        assert!(!h.is_pending(POS));
++        assert_eq!(shown(&world), Some(stone()));
+     }
+ 
+     #[test]
+@@ -633,42 +654,78 @@ mod prediction_tests {
+         predict(&mut h, &world, BlockState::AIR, before);
+         let inside = Aabb { min: Vec3::new(2.2, 64.2, 2.2), max: Vec3::new(2.8, 66.0, 2.8) };
+         assert_eq!(end_prediction_up_to(&mut h, seq, &world, Some(&inside)), Some(before));
+-        assert_eq!(shown(&h, &world), Some(stone()));
++        assert_eq!(shown(&world), Some(stone()));
+         // standing beside it: no snap
+         let seq = h.start_predicting();
+         predict(&mut h, &world, BlockState::AIR, before);
+         assert_eq!(end_prediction_up_to(&mut h, seq, &world, Some(&far_box())), None);
+-        assert_eq!(shown(&h, &world), Some(stone()));
++        assert_eq!(shown(&world), Some(stone()));
+     }
+ 
+-    // Edge case a: this bot's chunk packet re-sent while a cell is pending (vanilla
+-    // `ClientPacketListener#updateLevelChunk` replaces the chunk, so the packet's block wins).
++    // Edge case a (vanilla result): this bot's chunk packet re-sent while a cell is pending.
++    // `ClientPacketListener#updateLevelChunk` replaces the chunk, so the packet's block shows until
++    // the ack; the ack then writes the kept state over it (`ClientLevel#syncBlockState`).
+     #[test]
+-    fn a_resent_chunk_turns_the_override_off_and_keeps_the_retained_state() {
+-        let (world, _keep) = world();
++    fn a_resent_chunk_shows_until_the_ack_which_writes_the_kept_state() {
++        let (mut world, mut partial) = world();
++        world.set_block_state(POS, dirt());
+         let mut h = BlockStatePredictionHandler::default();
+         let seq = h.start_predicting();
+         predict(&mut h, &world, stone(), Vec3::ZERO);
+-        h.clear_predictions_in_chunk(ChunkPos::new(0, 0));
+-        assert_eq!(shown(&h, &world), Some(BlockState::AIR), "the packet's block wins");
+-        // the retained state is still there for the ack
+-        assert!(h.update_known_server_state(POS, BlockState::AIR));
++        // the chunk packet: the chunk is replaced by one with air at POS
++        partial.set(&ChunkPos::new(0, 0), None, &mut world.chunks);
++        partial.set(&ChunkPos::new(0, 0), Some(Chunk::default()), &mut world.chunks);
++        assert_eq!(shown(&world), Some(BlockState::AIR), "the packet's block shows");
++        assert!(h.is_pending(POS), "the entry stays");
+         end_prediction_up_to(&mut h, seq, &world, None);
+-        assert!(!h.update_known_server_state(POS, BlockState::AIR));
++        assert_eq!(shown(&world), Some(dirt()), "the ack writes the kept state over the packet's block");
++    }
++
++    // Forgotten chunk: the level reads nothing for the cell, so the ack finds it different, the
++    // write does nothing, and the snap test still runs.
++    #[test]
++    fn a_forgotten_chunk_at_the_ack_writes_nothing_and_the_snap_still_runs() {
++        let (mut world, mut partial) = world();
++        world.set_block_state(POS, stone());
++        let mut h = BlockStatePredictionHandler::default();
++        let seq = h.start_predicting();
++        let before = Vec3::new(2.5, 66.0, 2.5);
++        predict(&mut h, &world, BlockState::AIR, before);
++        partial.set(&ChunkPos::new(0, 0), None, &mut world.chunks);
++        assert_eq!(shown(&world), None);
++        let inside = Aabb { min: Vec3::new(2.2, 64.2, 2.2), max: Vec3::new(2.8, 66.0, 2.8) };
++        assert_eq!(end_prediction_up_to(&mut h, seq, &world, Some(&inside)), Some(before), "the snap runs");
++        assert_eq!(shown(&world), None, "the write did nothing: there is no chunk");
++        assert!(!h.is_pending(POS));
++        // the chunk comes back later with air: the settled cell is not written again
++        partial.set(&ChunkPos::new(0, 0), Some(Chunk::default()), &mut world.chunks);
++        assert_eq!(shown(&world), Some(BlockState::AIR));
+     }
+ 
+-    // Edge case b: a cell in another chunk is not touched, and a forgotten chunk's cell is not
+-    // shown again.
++    // Judgement: with a later prediction in the cell, the server's state is the entry's, not the
++    // level's.
+     #[test]
+-    fn clearing_one_chunk_leaves_other_chunks_alone() {
++    fn server_block_state_reads_the_entry_when_a_later_prediction_is_in_the_cell() {
+         let (world, _keep) = world();
+         let mut h = BlockStatePredictionHandler::default();
+         h.start_predicting();
+         predict(&mut h, &world, stone(), Vec3::ZERO);
+-        h.clear_predictions_in_chunk(ChunkPos::new(5, 5));
+-        assert_eq!(shown(&h, &world), Some(stone()));
+-        h.clear_predictions_in_chunk(ChunkPos::new(0, 0));
+-        assert_eq!(shown(&h, &world), Some(BlockState::AIR));
++        h.start_predicting();
++        predict(&mut h, &world, dirt(), Vec3::ZERO);
++        assert_eq!(shown(&world), Some(dirt()));
++        assert_eq!(h.server_block_state(&world, POS), Some(BlockState::AIR));
++        // a cell that is not pending reads the level
++        assert_eq!(h.server_block_state(&world, POS.up(1)), Some(BlockState::AIR));
++    }
++
++    // Rule 1: a write that changes nothing keeps nothing (`ClientLevel#setBlock` returns false).
++    #[test]
++    fn a_write_that_changes_nothing_is_not_kept() {
++        let (world, _keep) = world();
++        let mut h = BlockStatePredictionHandler::default();
++        h.start_predicting();
++        assert!(!h.predict_block(&world, POS, BlockState::AIR, Vec3::ZERO));
++        assert!(!h.is_pending(POS));
+     }
+ 
+     // Edge case d (unit part): a new level starts with a new handler.
+@@ -679,7 +736,7 @@ mod prediction_tests {
+         h.start_predicting();
+         predict(&mut h, &world, stone(), Vec3::ZERO);
+         h.reset();
+-        assert_eq!(shown(&h, &world), Some(BlockState::AIR));
++        assert!(!h.is_pending(POS));
+         assert_eq!(h.seq(), 0);
+     }
+ }
+diff --git a/azalea-client/src/plugins/interact/pick.rs b/azalea-client/src/plugins/interact/pick.rs
+index 42bfc5e..b4d53fb 100644
+--- a/azalea-client/src/plugins/interact/pick.rs
++++ b/azalea-client/src/plugins/interact/pick.rs
+@@ -19,7 +19,7 @@ use azalea_physics::{
+     collision::VoxelShape,
+     collision::entity_collisions::{AabbQuery, get_entities},
+ };
+-use azalea_world::{BlockStatePredictionHandler, BlockView, BotWorld, WorldName, Worlds};
++use azalea_world::{BlockView, World, WorldName, Worlds};
+ use bevy_ecs::prelude::*;
+ use derive_more::{Deref, DerefMut};
+ 
+@@ -61,7 +61,6 @@ pub fn update_hit_result_component(
+             &WorldName,
+             &Physics,
+             &Attributes,
+-            &BlockStatePredictionHandler,
+         ),
+         With<LocalEntity>,
+     >,
+@@ -69,7 +68,7 @@ pub fn update_hit_result_component(
+     aabb_query: AabbQuery,
+     pickable_query: MaybePickableEntityQuery,
+ ) {
+-    for (entity, hit_result_ref, position, dimensions, look_direction, world_name, physics, attributes, pending) in
++    for (entity, hit_result_ref, position, dimensions, look_direction, world_name, physics, attributes) in
+         &mut query
+     {
+         let Some(hit_result) = cast_hit_result(
+@@ -80,7 +79,6 @@ pub fn update_hit_result_component(
+             world_name,
+             physics,
+             attributes,
+-            pending,
+             &worlds,
+             &aabb_query,
+             &pickable_query,
+@@ -113,7 +111,6 @@ pub fn insert_initial_hit_result_component(
+             &WorldName,
+             &Physics,
+             &Attributes,
+-            &BlockStatePredictionHandler,
+         ),
+         (With<LocalEntity>, Without<HitResultComponent>),
+     >,
+@@ -121,7 +118,7 @@ pub fn insert_initial_hit_result_component(
+     aabb_query: AabbQuery,
+     pickable_query: MaybePickableEntityQuery,
+ ) {
+-    for (entity, position, dimensions, look_direction, world_name, physics, attributes, pending) in &query {
++    for (entity, position, dimensions, look_direction, world_name, physics, attributes) in &query {
+         if let Some(hit_result) = cast_hit_result(
+             entity,
+             position,
+@@ -130,7 +127,6 @@ pub fn insert_initial_hit_result_component(
+             world_name,
+             physics,
+             attributes,
+-            pending,
+             &worlds,
+             &aabb_query,
+             &pickable_query,
+@@ -151,7 +147,6 @@ fn cast_hit_result(
+     world_name: &WorldName,
+     physics: &Physics,
+     attributes: &Attributes,
+-    pending: &BlockStatePredictionHandler,
+     worlds: &Worlds,
+     aabb_query: &AabbQuery,
+     pickable_query: &MaybePickableEntityQuery,
+@@ -161,7 +156,6 @@ fn cast_hit_result(
+     let eye_position = position.up(dimensions.eye_height.into());
+     let world_lock = worlds.get(world_name)?;
+     let world = world_lock.read();
+-    let world = BotWorld::new(&world, pending);
+     Some(pick(PickOpts {
+         source_entity: entity,
+         look_direction: *look_direction,
+@@ -207,7 +201,7 @@ pub struct PickOpts<'world, 'state, 'a, 'b, 'c> {
+     pub look_direction: LookDirection,
+     pub eye_position: Vec3,
+     pub aabb: &'a Aabb,
+-    pub world: &'a BotWorld<'a>,
++    pub world: &'a World,
+     pub entity_pick_range: f64,
+     pub block_pick_range: f64,
+     pub aabb_query: &'a AabbQuery<'world, 'state, 'b>,
+@@ -283,7 +277,7 @@ pub fn pick(opts: PickOpts<'_, '_, '_, '_, '_>) -> HitResult {
+         source_entity: opts.source_entity,
+         eye_position: opts.eye_position,
+         end_position,
+-        world: opts.world.world,
++        world: opts.world,
+         pick_range_squared: max_range_squared,
+         predicate: &is_pickable,
+         aabb: &pick_aabb,
+diff --git a/azalea-client/src/plugins/mining.rs b/azalea-client/src/plugins/mining.rs
+index 1ed97db..9d971bf 100644
+--- a/azalea-client/src/plugins/mining.rs
++++ b/azalea-client/src/plugins/mining.rs
+@@ -8,7 +8,7 @@ use azalea_inventory::ItemStack;
+ use azalea_physics::{PhysicsSystems, collision::BlockWithShape};
+ use azalea_protocol::packets::game::s_player_action::{self, ServerboundPlayerAction};
+ use azalea_registry::builtin::{BlockKind, ItemKind};
+-use azalea_world::{BotWorld, WorldName, Worlds};
++use azalea_world::{WorldName, Worlds};
+ use bevy_app::{App, Plugin, Update};
+ use bevy_ecs::prelude::*;
+ use derive_more::{Deref, DerefMut};
+@@ -272,7 +272,7 @@ pub fn handle_mining_queued(
+ 
+         let world = world_holder.shared.read();
+         if check_is_interaction_restricted(
+-            &BotWorld::new(&world, &sequence_number),
++            &world,
+             mining_queued.position,
+             &game_mode.current,
+             inventory,
+@@ -338,7 +338,7 @@ pub fn handle_mining_queued(
+                 ));
+             }
+ 
+-            let target_block_state = BotWorld::new(&world, &sequence_number)
++            let target_block_state = world
+                 .get_block_state(mining_queued.position)
+                 .unwrap_or_default();
+ 
+@@ -531,7 +531,7 @@ pub fn handle_finish_mining_block_observer(
+     let world_lock = worlds.get(world_name).unwrap();
+     let world = world_lock.read();
+     if check_is_interaction_restricted(
+-        &BotWorld::new(&world, &prediction_handler),
++        &world,
+         event.position,
+         &game_mode.current,
+         inventory,
+@@ -548,7 +548,7 @@ pub fn handle_finish_mining_block_observer(
+         }
+     }
+ 
+-    let Some(block_state) = BotWorld::new(&world, &prediction_handler).get_block_state(event.position) else {
++    let Some(block_state) = world.get_block_state(event.position) else {
+         return;
+     };
+ 
+@@ -568,12 +568,10 @@ pub fn handle_finish_mining_block_observer(
+     // when we break a waterlogged block we want to keep the water there
+     let fluid_state = FluidState::from(block_state);
+     let block_state_for_fluid = BlockState::from(fluid_state);
+-    // Null: the predicted break goes into this bot's own handler, never the shared world (patch 53).
+-    let old_state = BotWorld::new(&world, &prediction_handler)
+-        .get_block_state(event.position)
+-        .unwrap_or_default();
+-    prediction_handler.retain_known_server_state(event.position, old_state, **player_pos);
+-    prediction_handler.set_predicted(event.position, block_state_for_fluid);
++    // `ClientLevel#setBlock` inside the prediction scope: the break is written to this bot's own
++    // world and the old state is kept for the ack (patch 76).
++    // Spec: specs/B6-placement-breaking.md §4.10 (write and roll back)
++    prediction_handler.predict_block(&world, event.position, block_state_for_fluid, **player_pos);
+ }
+ 
+ /// Abort mining a block.
+@@ -650,17 +648,17 @@ pub struct MineDelayTicked;
+ pub fn swing_in_mine_delay(
+     mut commands: Commands,
+     query: Query<
+-        (Entity, &HitResultComponent, &WorldName, Has<crate::movement::ItemInUse>, &BlockStatePredictionHandler),
++        (Entity, &HitResultComponent, &WorldName, Has<crate::movement::ItemInUse>),
+         With<MineDelayTicked>,
+     >,
+     worlds: Res<Worlds>,
+ ) {
+-    for (entity, hit_result, world_name, using, pending) in &query {
++    for (entity, hit_result, world_name, using) in &query {
+         commands.entity(entity).remove::<MineDelayTicked>();
+         let on_block = hit_result.as_block_hit_result_if_not_miss().is_some_and(|hit| {
+             worlds
+                 .get(world_name)
+-                .and_then(|w| BotWorld::new(&w.read(), pending).get_block_state(hit.block_pos))
++                .and_then(|w| w.read().get_block_state(hit.block_pos))
+                 .is_some_and(|state| !state.is_air())
+         });
+         if on_block && !using {
+@@ -752,7 +750,7 @@ pub fn continue_mining_block(
+             trace!("continue mining block at {:?}", mining.pos);
+             let world_lock = worlds.get(world_name).unwrap();
+             let world = world_lock.read();
+-            let target_block_state = BotWorld::new(&world, &prediction_handler)
++            let target_block_state = world
+                 .get_block_state(mining.pos)
+                 .unwrap_or_default();
+ 
+diff --git a/azalea-client/src/plugins/movement.rs b/azalea-client/src/plugins/movement.rs
+index 605836d..e646821 100644
+--- a/azalea-client/src/plugins/movement.rs
++++ b/azalea-client/src/plugins/movement.rs
+@@ -31,7 +31,7 @@ use azalea_protocol::{
+     },
+ };
+ use azalea_registry::builtin::{EntityKind, MobEffect};
+-use azalea_world::{BlockStatePredictionHandler, BotWorld};
++use azalea_world::World;
+ use bevy_app::{App, Plugin, Update};
+ use bevy_ecs::prelude::*;
+ 
+@@ -341,7 +341,7 @@ pub fn local_player_ai_step(
+             &mut Crouching,
+             &mut Attributes,
+             Has<ItemInUse>,
+-            (&ActiveEffects, &BlockStatePredictionHandler),
++            &ActiveEffects,
+         ),
+         (With<HasClientLoaded>, With<LocalEntity>),
+     >,
+@@ -363,7 +363,7 @@ pub fn local_player_ai_step(
+         mut crouching,
+         mut attributes,
+         item_in_use,
+-        (active_effects, pending),
++        active_effects,
+     ) in query.iter_mut()
+     {
+         // server ai step
+@@ -374,7 +374,6 @@ pub fn local_player_ai_step(
+         let is_sleeping = sleeping_pos.is_some();
+ 
+         let world = world_holder.shared.read();
+-        let world = BotWorld::new(&world, pending);
+         let ctx = CanPlayerFitCtx {
+             world: &world,
+             entity,
+@@ -632,17 +631,15 @@ pub fn update_pose(
+         &LocalGameMode,
+         &WorldHolder,
+         &Position,
+-        &BlockStatePredictionHandler,
+     )>,
+     aabb_query: AabbQuery,
+     collidable_entity_query: CollidableEntityQuery,
+ ) {
+-    for (entity, mut pose, physics, physics_state, game_mode, world_holder, position, pending) in
++    for (entity, mut pose, physics, physics_state, game_mode, world_holder, position) in
+         query.iter_mut()
+     {
+         let world = world_holder.shared.read();
+-        let world = BotWorld::new(&world, pending);
+-        let world = &world;
++        let world = &*world;
+         let ctx = CanPlayerFitCtx {
+             world,
+             entity,
+@@ -687,7 +684,7 @@ pub fn update_pose(
+ }
+ 
+ struct CanPlayerFitCtx<'world, 'state, 'a, 'b> {
+-    world: &'a BotWorld<'a>,
++    world: &'a World,
+     entity: Entity,
+     position: Position,
+     aabb_query: &'a AabbQuery<'world, 'state, 'b>,
+diff --git a/azalea-client/src/plugins/packet/game/mod.rs b/azalea-client/src/plugins/packet/game/mod.rs
+index 2d32635..7c630cc 100644
+--- a/azalea-client/src/plugins/packet/game/mod.rs
++++ b/azalea-client/src/plugins/packet/game/mod.rs
+@@ -1367,15 +1367,15 @@ impl GamePacketHandler<'_> {
+     pub fn forget_level_chunk(&mut self, p: &ClientboundForgetLevelChunk) {
+         debug!("Got forget level chunk packet {p:?}");
+ 
+-        as_system::<Query<(&WorldHolder, &mut BlockStatePredictionHandler)>>(self.ecs, |mut query| {
+-            let (local_player, mut prediction) = query.get_mut(self.player).unwrap();
++        // The handler does not change: a pending cell in the chunk stays, and the ack settles it
++        // against the missing chunk (`ClientLevel#syncBlockState`; patch 76).
++        // Spec: specs/B6-placement-breaking.md §4.10
++        as_system::<Query<&WorldHolder>>(self.ecs, |query| {
++            let local_player = query.get(self.player).unwrap();
+ 
+             let mut partial_world = local_player.partial.write();
+ 
+             partial_world.chunks.limited_set(&p.pos, None);
+-            // a forgotten chunk must not show this bot's pending cells again
+-            // Spec: specs/B6-placement-breaking.md §4.10
+-            prediction.clear_predictions_in_chunk(p.pos);
+         });
+     }
+ 
+diff --git a/azalea-client/src/plugins/unmodelled_disconnect.rs b/azalea-client/src/plugins/unmodelled_disconnect.rs
+index a84ab12..dfe3c17 100644
+--- a/azalea-client/src/plugins/unmodelled_disconnect.rs
++++ b/azalea-client/src/plugins/unmodelled_disconnect.rs
+@@ -86,12 +86,11 @@ pub fn derive_unmodelled_contacts(
+             Option<&WorldBorderState>,
+             Option<&mut UnmodelledContacts>,
+             Option<&FallFlying>,
+-            &azalea_world::BlockStatePredictionHandler,
+         ),
+         With<LocalEntity>,
+     >,
+ ) {
+-    for (entity, physics, world_holder, ticks, vehicle, border, contacts, fall_flying, pending) in &mut query {
++    for (entity, physics, world_holder, ticks, vehicle, border, contacts, fall_flying) in &mut query {
+         let mut list = Vec::new();
+         if vehicle.is_some() {
+             list.push(UnmodelledInput::Passenger);
+@@ -103,7 +102,7 @@ pub fn derive_unmodelled_contacts(
+         }
+         list.extend({
+             let world = world_holder.shared.read();
+-            unmodelled_block_contacts(&azalea_world::BotWorld::new(&world, pending), &physics.bounding_box)
++            unmodelled_block_contacts(&world, &physics.bounding_box)
+         });
+         match contacts {
+             Some(mut c) => {
+diff --git a/azalea-client/src/test_utils/simulation.rs b/azalea-client/src/test_utils/simulation.rs
+index dfeaa9a..e08eaa7 100644
+--- a/azalea-client/src/test_utils/simulation.rs
++++ b/azalea-client/src/test_utils/simulation.rs
+@@ -236,16 +236,17 @@ impl Simulation {
+             .get_block_state(pos)
+     }
+ 
+-    /// The block as this client reads it: shared server data plus the client's own pending
+-    /// predictions (patch 53). [`Self::get_block_state`] reads the shared world alone.
+-    pub fn bot_block_state(&self, pos: BlockPos) -> Option<BlockState> {
++    /// The block as the server has it: the pending cell's kept state, else the client's level
++    /// (patch 76). [`Self::get_block_state`] reads the client's level, which shows its own
++    /// predictions.
++    pub fn server_block_state(&self, pos: BlockPos) -> Option<BlockState> {
+         let world = self.app.world();
+         let holder = world.get::<WorldHolder>(self.entity).unwrap();
+         let pending = world
+             .get::<azalea_world::BlockStatePredictionHandler>(self.entity)
+             .unwrap();
+         let shared = holder.shared.read();
+-        azalea_world::BotWorld::new(&shared, pending).get_block_state(pos)
++        pending.server_block_state(&shared, pos)
+     }
+ 
+     pub fn disconnect(&mut self) {
+diff --git a/azalea-client/tests/simulation/mine_block_rollback.rs b/azalea-client/tests/simulation/mine_block_rollback.rs
+index 17a5a33..98440f7 100644
+--- a/azalea-client/tests/simulation/mine_block_rollback.rs
++++ b/azalea-client/tests/simulation/mine_block_rollback.rs
+@@ -24,7 +24,7 @@ fn test_mine_block_rollback() {
+         block_state: BlockKind::Tnt.into(),
+     });
+     simulation.tick();
+-    assert_eq!(simulation.bot_block_state(pos), Some(BlockKind::Tnt.into()));
++    assert_eq!(simulation.get_block_state(pos), Some(BlockKind::Tnt.into()));
+     println!("set serverside tnt");
+ 
+     simulation.write_message(StartMiningBlockEvent {
+@@ -33,12 +33,12 @@ fn test_mine_block_rollback() {
+         force: true,
+     });
+     simulation.tick();
+-    assert_eq!(simulation.bot_block_state(pos), Some(BlockKind::Air.into()));
++    assert_eq!(simulation.get_block_state(pos), Some(BlockKind::Air.into()));
+     println!("set clientside air");
+ 
+     // server didn't send the new block, so the change should be rolled back
+     simulation.receive_packet(ClientboundBlockChangedAck { seq: 1 });
+     simulation.tick();
+-    assert_eq!(simulation.bot_block_state(pos), Some(BlockKind::Tnt.into()));
++    assert_eq!(simulation.get_block_state(pos), Some(BlockKind::Tnt.into()));
+     println!("reset serverside tnt");
+ }
+diff --git a/azalea-client/tests/simulation/mine_block_without_rollback.rs b/azalea-client/tests/simulation/mine_block_without_rollback.rs
+index b6d633a..71f360c 100644
+--- a/azalea-client/tests/simulation/mine_block_without_rollback.rs
++++ b/azalea-client/tests/simulation/mine_block_without_rollback.rs
+@@ -24,7 +24,7 @@ fn test_mine_block_without_rollback() {
+         block_state: BlockKind::Tnt.into(),
+     });
+     simulation.tick();
+-    assert_eq!(simulation.bot_block_state(pos), Some(BlockKind::Tnt.into()));
++    assert_eq!(simulation.get_block_state(pos), Some(BlockKind::Tnt.into()));
+ 
+     simulation.write_message(StartMiningBlockEvent {
+         entity: simulation.entity,
+@@ -32,7 +32,7 @@ fn test_mine_block_without_rollback() {
+         force: true,
+     });
+     simulation.tick();
+-    assert_eq!(simulation.bot_block_state(pos), Some(BlockKind::Air.into()));
++    assert_eq!(simulation.get_block_state(pos), Some(BlockKind::Air.into()));
+ 
+     // server acknowledged our change by sending a BlockUpdate + BlockChangedAck, so
+     // no rollback
+@@ -42,5 +42,5 @@ fn test_mine_block_without_rollback() {
+     });
+     simulation.receive_packet(ClientboundBlockChangedAck { seq: 1 });
+     simulation.tick();
+-    assert_eq!(simulation.bot_block_state(pos), Some(BlockKind::Air.into()));
++    assert_eq!(simulation.get_block_state(pos), Some(BlockKind::Air.into()));
+ }
+diff --git a/azalea-client/tests/simulation/place_prediction_like_vanilla.rs b/azalea-client/tests/simulation/place_prediction_like_vanilla.rs
+index a8b93c4..8a0b095 100644
+--- a/azalea-client/tests/simulation/place_prediction_like_vanilla.rs
++++ b/azalea-client/tests/simulation/place_prediction_like_vanilla.rs
+@@ -86,10 +86,10 @@ fn a_placed_block_is_written_at_once_and_follows_the_server_after_the_ack() {
+     insert(&mut s, PlaceBlockQueued { position: floor, direction: Direction::Up, auto_crouch: false });
+     s.tick();
+     assert_eq!(used_item_on(&sent), 1);
+-    assert_eq!(s.bot_block_state(target), Some(BlockKind::Dirt.into()), "written in the tick of the click");
++    assert_eq!(s.get_block_state(target), Some(BlockKind::Dirt.into()), "written in the tick of the click");
+     s.receive_packet(ClientboundBlockChangedAck { seq: 1 });
+     s.tick();
+-    assert_eq!(s.bot_block_state(target), Some(BlockState::AIR), "rolled back to the server's state");
++    assert_eq!(s.get_block_state(target), Some(BlockState::AIR), "rolled back to the server's state");
+     let r = s.component::<BlockActionResults>().last_place.unwrap();
+     assert_eq!(r.outcome, BlockActionOutcome::Refused);
+     assert_eq!(r.refusal, None);
+@@ -98,11 +98,11 @@ fn a_placed_block_is_written_at_once_and_follows_the_server_after_the_ack() {
+     look_at(&mut s, floor, Direction::Up);
+     insert(&mut s, PlaceBlockQueued { position: floor, direction: Direction::Up, auto_crouch: false });
+     s.tick();
+-    assert_eq!(s.bot_block_state(target), Some(BlockKind::Dirt.into()));
++    assert_eq!(s.get_block_state(target), Some(BlockKind::Dirt.into()));
+     s.receive_packet(ClientboundBlockUpdate { pos: target, block_state: BlockKind::Dirt.into() });
+     s.receive_packet(ClientboundBlockChangedAck { seq: 2 });
+     s.tick();
+-    assert_eq!(s.bot_block_state(target), Some(BlockKind::Dirt.into()));
++    assert_eq!(s.get_block_state(target), Some(BlockKind::Dirt.into()));
+     assert_eq!(s.component::<BlockActionResults>().last_place.unwrap().outcome, BlockActionOutcome::Accepted);
+ }
+ 
+@@ -124,7 +124,7 @@ fn inside_the_movement_zone_a_place_that_cannot_be_predicted_is_refused_and_noth
+     insert(&mut s, PlaceBlockQueued { position: floor, direction: Direction::Up, auto_crouch: false });
+     s.tick();
+     assert_eq!(used_item_on(&sent), 0);
+-    assert_eq!(s.bot_block_state(floor.up(1)), Some(BlockState::AIR));
++    assert_eq!(s.get_block_state(floor.up(1)), Some(BlockState::AIR));
+     let r = s.component::<BlockActionResults>().last_place.unwrap();
+     assert_eq!((r.outcome, r.refusal), (BlockActionOutcome::Refused, Some(BlockActionRefusal::PlaceNotPredicted)));
+     assert!(r.evidence.is_some(), "a refusal carries its evidence (patch 28)");
+@@ -160,7 +160,7 @@ fn a_sneaking_bot_walks_onto_the_block_it_just_placed() {
+     s.tick();
+     let r = s.component::<BlockActionResults>().last_place.unwrap();
+     assert_eq!((r.outcome, r.refusal), (BlockActionOutcome::Pending, None), "{r:?}");
+-    assert_eq!(s.bot_block_state(support.north(1)), Some(BlockKind::Dirt.into()));
++    assert_eq!(s.get_block_state(support.north(1)), Some(BlockKind::Dirt.into()));
+     // no server update yet: the bot still walks on, onto the block it wrote
+     s.with_component_mut::<ClientMovementState>(|m| m.move_direction = WalkDirection::Backward);
+     for _ in 0..40 {
+@@ -356,7 +356,7 @@ fn break_tnt(s: &mut Simulation, cell: BlockPos) {
+     insert(s, BreakBlockQueued { position: cell });
+     s.tick();
+     s.tick();
+-    assert_eq!(s.bot_block_state(cell), Some(BlockState::AIR), "the bot's own prediction");
++    assert_eq!(s.get_block_state(cell), Some(BlockState::AIR), "the bot's own prediction");
+     assert!(s.component::<BlockActionResults>().last_break.unwrap().seq.is_some(), "the break was sent");
+ }
+ 
+@@ -386,8 +386,39 @@ fn a_break_with_no_ack_is_refused_while_the_view_shows_the_prediction() {
+     for _ in 0..=ACK_TIMEOUT_TICKS {
+         s.tick();
+     }
+-    assert_eq!(s.bot_block_state(floor), Some(BlockState::AIR), "the prediction still shows");
++    assert_eq!(s.get_block_state(floor), Some(BlockState::AIR), "the prediction still shows");
+     let r = s.component::<BlockActionResults>().last_break.unwrap();
+     assert_eq!(r.outcome, BlockActionOutcome::Refused);
+     assert_eq!(r.refusal, Some(BlockActionRefusal::NoAck));
+ }
++
++// Spec: specs/B6-placement-breaking.md §4.6 (the judgement reads `server_block_state`, patch 76)
++// A break is sent (seq 1). The server answers with air. Before its ack arrives, a later write of
++// the same bot lands in the same cell (seq 2). The ack of seq 1 does not settle the cell. EXPECTED:
++// the break is judged on the server's state (air), not on the level's later prediction.
++#[test]
++fn a_break_is_judged_on_the_servers_state_when_a_later_prediction_is_in_the_cell() {
++    use azalea_client::interact::BlockStatePredictionHandler;
++    let _lock = init();
++    let floor = BlockPos::new(1, FLOOR_Y, 0);
++    let (mut s, _sent) = setup(&[BlockPos::new(0, FLOOR_Y, 0), floor], Vec3::new(0.5, 120., 0.5));
++    break_tnt(&mut s, floor);
++    let seq = s.component::<BlockActionResults>().last_break.unwrap().seq.unwrap();
++    s.receive_packet(ClientboundBlockUpdate { pos: floor, block_state: BlockState::AIR });
++    s.tick();
++    // a later prediction of this bot in the same cell
++    {
++        let shared = s.component::<azalea_client::local_player::WorldHolder>().shared.clone();
++        let e = s.entity;
++        let mut h = s.app.world_mut().entity_mut(e);
++        let mut h = h.get_mut::<BlockStatePredictionHandler>().unwrap();
++        h.start_predicting();
++        assert!(h.predict_block(&shared.read(), floor, BlockKind::Dirt.into(), Vec3::ZERO));
++    }
++    s.receive_packet(ClientboundBlockChangedAck { seq });
++    s.tick();
++    assert_eq!(s.get_block_state(floor), Some(BlockKind::Dirt.into()), "the level shows the later prediction");
++    assert_eq!(s.server_block_state(floor), Some(BlockState::AIR), "the server's state is air");
++    let r = s.component::<BlockActionResults>().last_break.unwrap();
++    assert_eq!(r.outcome, BlockActionOutcome::Accepted, "judged on air, not on the prediction");
++}
+diff --git a/azalea-client/tests/simulation/shared_world_prediction.rs b/azalea-client/tests/simulation/shared_world_prediction.rs
+index e9fd524..0a5dce9 100644
+--- a/azalea-client/tests/simulation/shared_world_prediction.rs
++++ b/azalea-client/tests/simulation/shared_world_prediction.rs
+@@ -20,9 +20,10 @@ use bevy_ecs::prelude::*;
+ use uuid::Uuid;
+ 
+ // Spec: specs/plans/SHARED_WORLD_TEST.md (the code fact; the expected result changed with patch 53)
+-// Two bots of one swarm share one World. A breaks an instant-break block (tnt) under B and the
+-// server sends nothing. Before patch 53 B read A's unconfirmed air and fell. EXPECTED now: the
+-// shared world holds server data only, so B keeps standing on the block and A alone shows air.
++// Two bots of one swarm. A breaks an instant-break block (tnt) under B and the server sends
++// nothing. Before patch 53 B read A's unconfirmed air and fell. EXPECTED now (patch 76): each bot
++// has its own World and A's prediction is a write into A's world, so B keeps standing on the
++// block and A alone shows air.
+ 
+ const CELL: BlockPos = BlockPos::new(8, 63, 8);
+ 
+@@ -79,8 +80,9 @@ fn test_bot_b_does_not_read_bot_a_unconfirmed_break() {
+     // A predicted air; the server has said nothing, so A's prediction is pending.
+     let pending = s.app.world().get::<BlockStatePredictionHandler>(a).unwrap();
+     assert!(pending.seq() > pending.acked_seq(), "A's prediction is unconfirmed");
+-    // The shared world, and so B, still hold the server's block.
+-    assert_eq!(s.get_block_state(CELL), Some(BlockKind::Tnt.into()), "B's world shows the server's block");
++    // A's own world shows the prediction; B's world still holds the server's block.
++    assert_eq!(s.get_block_state(CELL), Some(BlockState::AIR), "A's world shows its own break");
++    assert_eq!(view(&s, b, CELL), Some(BlockKind::Tnt.into()), "B's world shows the server's block");
+     s.tick();
+     s.tick();
+     assert_eq!(b_y(&s, b), 64.0, "B stays on the block the server still has");
+@@ -104,30 +106,25 @@ fn test_bot_b_stays_on_the_block_when_a_predicts_nothing() {
+ }
+ 
+ // ---------------------------------------------------------------------------------------------
+-// Patch 53: the per-bot prediction overlay. The shared world holds server data only; A's
+-// prediction is read by A alone.
++// Patch 53 (reworked by patch 76): A's prediction is read by A alone, because it is a write into
++// A's own world.
+ // Spec: specs/B6-placement-breaking.md §4.10
+ 
++/// A prediction of `new` at `pos` in `who`'s own world; `old` is what the world must hold now.
+ fn make_pending(s: &mut Simulation, who: Entity, pos: BlockPos, old: BlockState, new: BlockState) {
+-    s.app
+-        .world_mut()
+-        .entity_mut(who)
+-        .get_mut::<BlockStatePredictionHandler>()
+-        .map(|mut h| {
+-            h.start_predicting();
+-            h.retain_known_server_state(pos, old, Vec3::ZERO);
+-            h.set_predicted(pos, new);
+-        })
+-        .unwrap();
++    let shared = s.app.world().get::<azalea_client::local_player::WorldHolder>(who).unwrap().shared.clone();
++    assert_eq!(shared.read().get_block_state(pos), Some(old));
++    let mut h = s.app.world_mut().entity_mut(who);
++    let mut h = h.get_mut::<BlockStatePredictionHandler>().unwrap();
++    h.start_predicting();
++    h.predict_block(&shared.read(), pos, new, Vec3::ZERO);
+ }
+ 
+-/// What `who` reads at `pos` through its own view.
++/// What `who` reads at `pos` in its own world.
+ fn view(s: &Simulation, who: Entity, pos: BlockPos) -> Option<BlockState> {
+     let w = s.app.world();
+     let holder = w.get::<azalea_client::local_player::WorldHolder>(who).unwrap();
+-    let pending = w.get::<BlockStatePredictionHandler>(who).unwrap();
+-    let shared = holder.shared.read();
+-    azalea_world::BotWorld::new(&shared, pending).get_block_state(pos)
++    holder.shared.read().get_block_state(pos)
+ }
+ 
+ fn teleport_both_over(s: &mut Simulation, b: Entity, id: u32, x: f64, y: f64, z: f64) {
+@@ -157,7 +154,7 @@ fn test_a_collides_with_its_own_prediction_and_b_does_not() {
+     for _ in 0..5 {
+         s.tick();
+     }
+-    assert_eq!(s.get_block_state(floor), Some(BlockState::AIR), "the shared world holds server data only");
++    assert_eq!(s.server_block_state(floor), Some(BlockState::AIR), "A's kept server state is air");
+     assert_eq!(view(&s, a, floor), Some(BlockKind::Stone.into()), "A reads its own prediction");
+     assert_eq!(view(&s, b, floor), Some(BlockState::AIR), "B does not");
+     assert_eq!(b_y(&s, a), 64.0, "A stands on its predicted block");
+@@ -220,19 +217,21 @@ fn single_bot_over_air() -> Simulation {
+ }
+ 
+ // Edge case a: this bot's own chunk packet arrives while a cell is pending. Vanilla
+-// (`ClientPacketListener#updateLevelChunk`) replaces the chunk, so the packet's block wins for
+-// reads. EXPECTED: the bot stands on its predicted block until the chunk is re-sent, then falls;
+-// the cell stays retained until the ack, which settles it without a panic.
++// (`ClientPacketListener#updateLevelChunk`) replaces the chunk, so the packet's block shows; the
++// entry stays. EXPECTED (vanilla result, patch 76): the bot stands on its predicted block until the
++// chunk is re-sent, then falls; at the ack the kept state (the server's dirt, which the packet
++// did not hold) is written over the packet's block.
+ #[test]
+ fn test_a_resent_chunk_beats_the_pending_prediction() {
+     let _lock = init();
+     let mut s = single_bot_over_air();
+     let a = s.entity;
+     let floor = BlockPos::new(3, 63, 3);
++    s.receive_packet(ClientboundBlockUpdate { pos: floor, block_state: BlockKind::Dirt.into() });
+     for _ in 0..3 {
+         s.tick();
+     }
+-    make_pending(&mut s, a, floor, BlockState::AIR, BlockKind::Stone.into());
++    make_pending(&mut s, a, floor, BlockKind::Dirt.into(), BlockKind::Stone.into());
+     s.receive_packet(ClientboundPlayerPosition {
+         id: 2,
+         change: PositionMoveRotation { pos: Vec3::new(3.5, 64., 3.5), delta: Vec3::ZERO, look_direction: LookDirection::default() },
+@@ -245,18 +244,19 @@ fn test_a_resent_chunk_beats_the_pending_prediction() {
+     s.receive_packet(make_basic_empty_chunk(ChunkPos::new(0, 0), (384 + 64) / 16));
+     s.tick();
+     assert_eq!(view(&s, a, floor), Some(BlockState::AIR), "the packet's block wins");
++    assert!(s.component::<BlockStatePredictionHandler>().is_pending(floor), "the entry stays");
+     s.tick();
+     s.tick();
+     assert!(b_y(&s, a) < 64.0, "the bot falls once the packet's block is read");
+-    // the retained state is still there: the ack settles it
++    // the ack writes the kept state over the packet's block
+     s.receive_packet(ClientboundBlockChangedAck { seq: 1 });
+     s.tick();
+     assert_eq!(s.component::<BlockStatePredictionHandler>().acked_seq(), 1);
+-    assert_eq!(view(&s, a, floor), Some(BlockState::AIR));
++    assert_eq!(view(&s, a, floor), Some(BlockKind::Dirt.into()), "the kept state is written at the ack");
+ }
+ 
+ // Edge case b: a chunk this bot forgets. EXPECTED: its pending cell is not read again, even if
+-// the chunk comes back (an overlay hit must not bring back a cell in a chunk the bot lost).
++// the chunk comes back (the level holds no block for a chunk the bot lost).
+ #[test]
+ fn test_a_forgotten_chunk_does_not_come_back_through_the_overlay() {
+     let _lock = init();
+@@ -270,7 +270,7 @@ fn test_a_forgotten_chunk_does_not_come_back_through_the_overlay() {
+     assert_eq!(view(&s, a, floor), Some(BlockKind::Stone.into()));
+     s.receive_packet(ClientboundForgetLevelChunk { pos: ChunkPos::new(0, 0) });
+     s.tick();
+-    assert_eq!(view(&s, a, floor), None, "no chunk, no block: the overlay does not invent one");
++    assert_eq!(view(&s, a, floor), None, "no chunk, no block");
+     s.receive_packet(make_basic_empty_chunk(ChunkPos::new(0, 0), (384 + 64) / 16));
+     s.tick();
+     assert_eq!(view(&s, a, floor), Some(BlockState::AIR), "the chunk is back with the server's block");
+@@ -293,10 +293,13 @@ fn test_a_dimension_change_clears_the_pending_cells_and_a_same_dimension_respawn
+     s.receive_packet(make_basic_respawn_packet(DimensionKind::new_raw(0), Identifier::new("minecraft:overworld")));
+     s.tick();
+     assert_eq!(s.component::<BlockStatePredictionHandler>().seq(), 1, "same dimension: the level and its handler stay");
+-    assert_eq!(view(&s, a, floor), Some(BlockKind::Stone.into()));
++    // the cell stays pending. (The respawn handler still drops the bot's chunks in the same
++    // dimension, so the level no longer shows the prediction: OPEN §4 parity gaps.)
++    assert!(s.component::<BlockStatePredictionHandler>().is_pending(floor));
++    let _ = a;
+     s.receive_packet(make_basic_respawn_packet(DimensionKind::new_raw(0), Identifier::new("azalea:other")));
+     s.tick();
+     let h = s.component::<BlockStatePredictionHandler>();
+     assert_eq!(h.seq(), 0, "another dimension: a new handler, the sequence restarts");
+-    assert!(!h.has_override_in(BlockPos::new(-1000, -100, -1000), BlockPos::new(1000, 400, 1000)));
++    assert!(!h.is_pending(floor), "the pending cells are gone");
+ }
+diff --git a/azalea-entity/src/plugin/mod.rs b/azalea-entity/src/plugin/mod.rs
+index df993a6..d644439 100644
+--- a/azalea-entity/src/plugin/mod.rs
++++ b/azalea-entity/src/plugin/mod.rs
+@@ -11,7 +11,7 @@ use azalea_core::{
+     tick::GameTick,
+ };
+ use azalea_registry::{builtin::BlockKind, tags};
+-use azalea_world::{BlockStatePredictionHandler, BlockView, BotWorld, WorldName, Worlds};
++use azalea_world::{BlockView, World, WorldName, Worlds};
+ use bevy_app::{App, Plugin, PostUpdate, Update};
+ use bevy_ecs::prelude::*;
+ pub use components::*;
+@@ -115,7 +115,6 @@ pub fn update_fluid_on_eyes(
+             &Position,
+             &EntityDimensions,
+             &WorldName,
+-            Option<&BlockStatePredictionHandler>,
+         ),
+         (With<metadata::AbstractLiving>, With<LocalEntity>),
+     >,
+@@ -123,17 +122,13 @@ pub fn update_fluid_on_eyes(
+ ) {
+     query
+         .par_iter_mut()
+-        .for_each(|(mut fluid_on_eyes, position, dimensions, world_name, pending)| {
++        .for_each(|(mut fluid_on_eyes, position, dimensions, world_name)| {
+             let Some(world) = worlds.get(world_name) else {
+                 return;
+             };
+ 
+             let world = world.read();
+-            let world = match pending {
+-                Some(pending) => BotWorld::new(&world, pending),
+-                None => BotWorld::truth(&world),
+-            };
+-            **fluid_on_eyes = fluid_kind_on_eyes(&world, **position, dimensions.eye_height);
++            **fluid_on_eyes = fluid_kind_on_eyes(&*world, **position, dimensions.eye_height);
+         });
+ }
+ 
+@@ -152,12 +147,12 @@ pub fn fluid_kind_on_eyes(world: &impl BlockView, position: Vec3, eye_height: f3
+ 
+ pub fn update_on_climbable(
+     mut query: Query<
+-        (&mut OnClimbable, &Position, &WorldName, Option<&BlockStatePredictionHandler>),
++        (&mut OnClimbable, &Position, &WorldName),
+         With<LocalEntity>,
+     >,
+     worlds: Res<Worlds>,
+ ) {
+-    for (mut on_climbable, position, world_name, pending) in query.iter_mut() {
++    for (mut on_climbable, position, world_name) in query.iter_mut() {
+         // TODO: there's currently no gamemode component that can be accessed from here,
+         // maybe LocalGameMode should be replaced with two components, maybe called
+         // EntityGameMode and PreviousGameMode?
+@@ -171,7 +166,6 @@ pub fn update_on_climbable(
+         };
+ 
+         let world = world.read();
+-        let world = BotWorld::of(&world, pending);
+ 
+         let block_pos = BlockPos::from(position);
+         let block_at_feet = world.get_block_state(block_pos).unwrap_or_default();
+@@ -187,7 +181,7 @@ pub fn update_on_climbable(
+ fn is_trapdoor_usable_as_ladder(
+     block_state: BlockState,
+     block_pos: BlockPos,
+-    world: &BotWorld,
++    world: &World,
+ ) -> bool {
+     // trapdoor must be open
+     if !block_state
+@@ -419,7 +413,7 @@ mod tests {
+                 .get_block_state(BlockPos::new(0, 1, 0))
+                 .unwrap_or_default(),
+             BlockPos::new(0, 1, 0),
+-            &azalea_world::BotWorld::truth(&world),
++            &world,
+         );
+ 
+         assert!(trapdoor_matches_ladder);
+@@ -447,7 +441,7 @@ mod tests {
+         // a source cell is 8/9 high; the eye at 63.95 is above its surface (63.889), so the eye is
+         // dry. An 0.1111 offset samples 63.84, below the surface, and wrongly reports water.
+         let (_keep, world) = water_world(&[(63, water(0))]);
+-        let at = |y: f64| fluid_kind_on_eyes(&azalea_world::BotWorld::truth(&world), Vec3::new(8.5, y, 8.5), 0.0);
++        let at = |y: f64| fluid_kind_on_eyes(&world, Vec3::new(8.5, y, 8.5), 0.0);
+         assert_eq!(at(63.95), FluidKind::Empty);
+         assert_eq!(at(63.85), FluidKind::Water);
+     }
+@@ -457,10 +451,10 @@ mod tests {
+         // flowing level 1 under another water cell reaches the top of its cell (patch 64), so an eye
+         // at 64.95 is in water; the cell's own height (8/9) would leave it dry.
+         let (_keep, world) = water_world(&[(64, water(1)), (65, water(1))]);
+-        let w = azalea_world::BotWorld::truth(&world);
+-        assert_eq!(fluid_kind_on_eyes(&w, Vec3::new(8.5, 64.95, 8.5), 0.0), FluidKind::Water);
++        let w = &world;
++        assert_eq!(fluid_kind_on_eyes(w, Vec3::new(8.5, 64.95, 8.5), 0.0), FluidKind::Water);
+         let (_keep2, alone) = water_world(&[(64, water(1))]);
+-        let w = azalea_world::BotWorld::truth(&alone);
+-        assert_eq!(fluid_kind_on_eyes(&w, Vec3::new(8.5, 64.95, 8.5), 0.0), FluidKind::Empty);
++        let w = &alone;
++        assert_eq!(fluid_kind_on_eyes(w, Vec3::new(8.5, 64.95, 8.5), 0.0), FluidKind::Empty);
+     }
+ }
+diff --git a/azalea-physics/benches/collision_queries.rs b/azalea-physics/benches/collision_queries.rs
+index a02d87a..305e8fd 100644
+--- a/azalea-physics/benches/collision_queries.rs
++++ b/azalea-physics/benches/collision_queries.rs
+@@ -1,4 +1,4 @@
+-//! Collision queries with and without pending cells (Null fork patch 53).
++//! Collision queries with and without pending cells (Null fork patches 53 and 76).
+ // Spec: specs/B6-placement-breaking.md §4.10
+ //
+ // "nothing_pending" is the case every physics tick pays for. "pending_elsewhere" and
+@@ -7,14 +7,13 @@
+ 
+ use std::hint::black_box;
+ 
+-use azalea_block::BlockState;
+ use azalea_core::{
+     aabb::Aabb,
+     position::{BlockPos, ChunkBlockPos, ChunkPos, Vec3},
+ };
+ use azalea_physics::collision::world_collisions::get_block_collisions;
+ use azalea_registry::builtin::BlockKind;
+-use azalea_world::{BlockStatePredictionHandler, BotWorld, Chunk, PartialChunkStorage, World};
++use azalea_world::{BlockStatePredictionHandler, Chunk, PartialChunkStorage, World};
+ use criterion::{Criterion, criterion_group, criterion_main};
+ 
+ fn make_world() -> (World, PartialChunkStorage) {
+@@ -46,8 +45,8 @@ fn make_world() -> (World, PartialChunkStorage) {
+ }
+ 
+ #[inline(never)]
+-fn query(world: &World, pending: &BlockStatePredictionHandler, aabb: &Aabb) -> usize {
+-    get_block_collisions(&BotWorld::new(world, pending), aabb).len()
++fn query(world: &World, aabb: &Aabb) -> usize {
++    get_block_collisions(world, aabb).len()
+ }
+ 
+ fn boxes() -> Vec<Aabb> {
+@@ -63,47 +62,30 @@ fn boxes() -> Vec<Aabb> {
+ fn bench(c: &mut Criterion) {
+     let (world, _keep) = make_world();
+     let boxes = boxes();
+-    let nothing = BlockStatePredictionHandler::default();
+ 
+     c.bench_function("collision_queries/nothing_pending", |b| {
+         b.iter(|| {
+             let mut n = 0;
+             for aabb in &boxes {
+-                n += query(black_box(&world), black_box(&nothing), aabb);
++                n += query(black_box(&world), aabb);
+             }
+             black_box(n)
+         })
+     });
+ 
+-    // one pending cell far from every box
+-    let mut elsewhere = BlockStatePredictionHandler::default();
+-    let far = BlockPos::new(30, 2, 30);
+-    elsewhere.start_predicting();
+-    elsewhere.retain_known_server_state(far, BlockState::AIR, Vec3::ZERO);
+-    elsewhere.set_predicted(far, BlockKind::Stone.into());
+-    c.bench_function("collision_queries/pending_elsewhere", |b| {
+-        b.iter(|| {
+-            let mut n = 0;
+-            for aabb in &boxes {
+-                n += query(black_box(&world), black_box(&elsewhere), aabb);
+-            }
+-            black_box(n)
+-        })
+-    });
+-
+-    // a pending cell in the middle of the walk, so some boxes take the slow path
++    // eight predicted cells in the middle of the walk: they are in the world, so the query
++    // reads them as it reads any block
+     let mut inside = BlockStatePredictionHandler::default();
+     inside.start_predicting();
+     for i in 0..8 {
+         let p = BlockPos::new(-10 + i, 2, -10 + i);
+-        inside.retain_known_server_state(p, BlockState::AIR, Vec3::ZERO);
+-        inside.set_predicted(p, BlockKind::Stone.into());
++        inside.predict_block(&world, p, BlockKind::Stone.into(), Vec3::ZERO);
+     }
+     c.bench_function("collision_queries/pending_in_box", |b| {
+         b.iter(|| {
+             let mut n = 0;
+             for aabb in &boxes {
+-                n += query(black_box(&world), black_box(&inside), aabb);
++                n += query(black_box(&world), aabb);
+             }
+             black_box(n)
+         })
+diff --git a/azalea-physics/src/collision/mod.rs b/azalea-physics/src/collision/mod.rs
+index a6112a9..872be79 100644
+--- a/azalea-physics/src/collision/mod.rs
++++ b/azalea-physics/src/collision/mod.rs
+@@ -23,7 +23,7 @@ use azalea_entity::{
+     metadata::Sprinting,
+ };
+ use azalea_registry::builtin::BlockKind;
+-use azalea_world::{BlockView, BotWorld};
++use azalea_world::{BlockView, World};
+ use bevy_ecs::{entity::Entity, world::Mut};
+ pub use blocks::BlockWithShape;
+ pub use offset::{BlockShapeAt, block_offset};
+@@ -53,7 +53,7 @@ pub enum MoverType {
+ fn collide(ctx: &MoveCtx, movement: Vec3) -> Vec3 {
+     let entity_bounding_box = ctx.physics.bounding_box;
+     let entity_collisions = get_entity_collisions(
+-        ctx.world.world,
++        ctx.world,
+         &entity_bounding_box.expand_towards(movement),
+         Some(ctx.source_entity),
+         ctx.aabb_query,
+@@ -175,7 +175,7 @@ fn candidate_step_up_heights(
+ /// override: no factor while flying).
+ // Spec: specs/B1-movement.md §4.2
+ pub fn block_speed_factor(
+-    world: &BotWorld,
++    world: &World,
+     position: Vec3,
+     abilities: Option<&PlayerAbilities>,
+ ) -> f32 {
+@@ -203,7 +203,7 @@ pub fn block_speed_factor(
+ 
+ pub struct MoveCtx<'world, 'state, 'a, 'b> {
+     pub mover_type: MoverType,
+-    pub world: &'a BotWorld<'a>,
++    pub world: &'a World,
+     pub position: Mut<'a, Position>,
+     pub physics: &'a mut Physics,
+     pub source_entity: Entity,
+@@ -455,7 +455,7 @@ fn is_above_ground(ctx: &CanFallAtLeastCtx, max_up_step: f32) -> bool {
+ 
+ pub struct CanFallAtLeastCtx<'world, 'state, 'a, 'b> {
+     physics: &'a Physics,
+-    world: &'a BotWorld<'a>,
++    world: &'a World,
+     source_entity: Entity,
+     aabb_query: &'a AabbQuery<'world, 'state, 'b>,
+     collidable_entity_query: &'a CollidableEntityQuery<'world, 'state>,
+diff --git a/azalea-physics/src/collision/world_collisions.rs b/azalea-physics/src/collision/world_collisions.rs
+index 96d2d59..ffff67d 100644
+--- a/azalea-physics/src/collision/world_collisions.rs
++++ b/azalea-physics/src/collision/world_collisions.rs
+@@ -7,34 +7,28 @@ use azalea_core::{
+     position::{BlockPos, ChunkBlockPos, ChunkPos, ChunkSectionBlockPos, ChunkSectionPos, Vec3},
+ };
+ use azalea_inventory::ItemStack;
+-use azalea_world::{BotWorld, Chunk, World};
++use azalea_world::{Chunk, World};
+ use bevy_ecs::entity::Entity;
+ use parking_lot::RwLock;
+ 
+ use super::{BLOCK_SHAPE, Shapes};
+ use crate::collision::{Aabb, BlockWithShape, VoxelShape};
+ 
+-pub fn get_block_collisions(world: &BotWorld, aabb: &Aabb) -> Vec<VoxelShape> {
++pub fn get_block_collisions(world: &World, aabb: &Aabb) -> Vec<VoxelShape> {
+     collisions(world, aabb, EntityCollisionContext::of(None))
+ }
+ 
+-pub fn get_block_and_liquid_collisions(world: &BotWorld, aabb: &Aabb) -> Vec<VoxelShape> {
++pub fn get_block_and_liquid_collisions(world: &World, aabb: &Aabb) -> Vec<VoxelShape> {
+     collisions(world, aabb, EntityCollisionContext::of(None).with_include_liquids(true))
+ }
+ 
+ // Spec: specs/B6-placement-breaking.md §4.10
+-fn collisions(world: &BotWorld, aabb: &Aabb, context: EntityCollisionContext) -> Vec<VoxelShape> {
+-    let mut state = BlockCollisionsState::new(world.world, aabb, context);
++fn collisions(world: &World, aabb: &Aabb, context: EntityCollisionContext) -> Vec<VoxelShape> {
++    let mut state = BlockCollisionsState::new(world, aabb, context);
+     let mut block_collisions = Vec::new();
+ 
+-    // A per-query test, not a per-cell one: a bot with no pending cell in the box takes the
+-    // unchanged path below, with its section cache.
+-    if world.has_override_in(state.origin, state.end) {
+-        return collisions_with_overrides(world, state);
+-    }
+-
+     let initial_chunk_pos = ChunkPos::from(state.cursor.origin());
+-    let initial_chunk = world.world.chunks.get(&initial_chunk_pos);
++    let initial_chunk = world.chunks.get(&initial_chunk_pos);
+     let initial_chunk = initial_chunk.as_deref().map(RwLock::read);
+ 
+     while let Some(item) = state.cursor.next() {
+@@ -49,22 +43,6 @@ fn collisions(world: &BotWorld, aabb: &Aabb, context: EntityCollisionContext) ->
+     block_collisions
+ }
+ 
+-/// The slow path: reads every cell through the bot's overlay. Kept out of line so the
+-/// nothing-pending path compiles as it did before patch 53.
+-#[cold]
+-#[inline(never)]
+-fn collisions_with_overrides(world: &BotWorld, mut state: BlockCollisionsState) -> Vec<VoxelShape> {
+-    let mut block_collisions = Vec::new();
+-    while let Some(item) = state.cursor.next() {
+-        if item.iteration_type == CursorIterationType::Corner {
+-            continue;
+-        }
+-        let block_state = world.get_block_state(item.pos).unwrap_or(BlockState::AIR);
+-        state.collide_block(item.pos, block_state, &mut block_collisions);
+-    }
+-    block_collisions
+-}
+-
+ pub struct BlockCollisionsState<'a> {
+     pub world: &'a World,
+     pub aabb: &'a Aabb,
+diff --git a/azalea-physics/src/fluids.rs b/azalea-physics/src/fluids.rs
+index 84376e0..a84a00a 100644
+--- a/azalea-physics/src/fluids.rs
++++ b/azalea-physics/src/fluids.rs
+@@ -8,7 +8,7 @@ use azalea_core::{
+ };
+ use azalea_entity::{HasClientLoaded, LocalEntity, Physics, Position};
+ use azalea_registry::builtin::BlockKind;
+-use azalea_world::{BlockStatePredictionHandler, BlockView, BotWorld, WorldName, Worlds};
++use azalea_world::{BlockView, World, WorldName, Worlds};
+ use bevy_ecs::prelude::*;
+ 
+ use crate::collision::{BlockWithShape, legacy_blocks_motion};
+@@ -16,17 +16,16 @@ use crate::collision::{BlockWithShape, legacy_blocks_motion};
+ #[allow(clippy::type_complexity)]
+ pub fn update_in_water_state_and_do_fluid_pushing(
+     mut query: Query<
+-        (&mut Physics, &Position, &WorldName, Option<&BlockStatePredictionHandler>),
++        (&mut Physics, &Position, &WorldName),
+         (With<LocalEntity>, With<HasClientLoaded>),
+     >,
+     worlds: Res<Worlds>,
+ ) {
+-    for (mut physics, position, world_name, pending) in &mut query {
++    for (mut physics, position, world_name) in &mut query {
+         let Some(world_lock) = worlds.get(world_name) else {
+             continue;
+         };
+         let world = world_lock.read();
+-        let world = BotWorld::of(&world, pending);
+ 
+         // reset the heights since they're going to be set in
+         // update_in_water_state_and_do_water_current_pushing
+@@ -39,7 +38,6 @@ pub fn update_in_water_state_and_do_fluid_pushing(
+         // is very inefficient, so for now we're doing this instead
+ 
+         let is_ultrawarm = world
+-            .world
+             .registries
+             .dimension_type
+             .map
+@@ -62,7 +60,7 @@ pub fn update_in_water_state_and_do_fluid_pushing(
+ }
+ fn update_in_water_state_and_do_water_current_pushing(
+     physics: &mut Physics,
+-    world: &BotWorld,
++    world: &World,
+     _position: Position,
+ ) {
+     // TODO: implement vehicles and boats
+@@ -88,7 +86,7 @@ fn update_in_water_state_and_do_water_current_pushing(
+ 
+ fn update_fluid_height_and_do_fluid_pushing(
+     physics: &mut Physics,
+-    world: &BotWorld,
++    world: &World,
+     checking_fluid: FluidKind,
+     fluid_push_factor: f64,
+ ) -> bool {
+@@ -182,7 +180,7 @@ pub fn update_swimming() {
+ }
+ 
+ // FlowingFluid.getFlow
+-pub fn get_fluid_flow(fluid: &FluidState, world: &BotWorld, pos: BlockPos) -> Vec3 {
++pub fn get_fluid_flow(fluid: &FluidState, world: &World, pos: BlockPos) -> Vec3 {
+     let mut z_flow: f64 = 0.;
+     let mut x_flow: f64 = 0.;
+ 
+@@ -246,7 +244,7 @@ pub fn get_fluid_flow(fluid: &FluidState, world: &BotWorld, pos: BlockPos) -> Ve
+ // i don't really get what this is for
+ fn is_solid_face(
+     fluid: &FluidState,
+-    world: &BotWorld,
++    world: &World,
+     adjacent_pos: BlockPos,
+     direction: Direction,
+ ) -> bool {
+@@ -276,7 +274,7 @@ fn is_solid_face(
+ // Spec: specs/B1-movement.md §4.6 (Falls, swimming, climbing)
+ fn is_face_sturdy(
+     block_state: BlockState,
+-    _world: &BotWorld,
++    _world: &World,
+     _pos: BlockPos,
+     direction: Direction,
+ ) -> bool {
+diff --git a/azalea-physics/src/lib.rs b/azalea-physics/src/lib.rs
+index 5e4c0cd..eb8e35b 100644
+--- a/azalea-physics/src/lib.rs
++++ b/azalea-physics/src/lib.rs
+@@ -23,7 +23,7 @@ use azalea_entity::{
+     dimensions::EntityDimensions, metadata::Sprinting, move_relative,
+ };
+ use azalea_registry::builtin::{BlockKind, EntityKind, MobEffect};
+-use azalea_world::{BlockStatePredictionHandler, BotWorld, WorldName, Worlds};
++use azalea_world::{World, WorldName, Worlds};
+ use bevy_app::{App, Plugin, Update};
+ use bevy_ecs::prelude::*;
+ use clip::box_traverse_blocks;
+@@ -80,7 +80,6 @@ pub fn ai_step(
+             &WorldName,
+             &EntityKindComponent,
+             &ClientMovementState,
+-            Option<&BlockStatePredictionHandler>,
+         ),
+         (With<LocalEntity>, With<HasClientLoaded>),
+     >,
+@@ -97,7 +96,6 @@ pub fn ai_step(
+         world_name,
+         entity_kind,
+         client_movement,
+-        pending,
+     ) in &mut query
+     {
+         let is_player = **entity_kind == EntityKind::Player;
+@@ -164,7 +162,6 @@ pub fn ai_step(
+                             *sprinting,
+                             world_name,
+                             &worlds,
+-                            pending,
+                             active_effects,
+                             attributes,
+                         );
+@@ -202,7 +199,6 @@ pub fn apply_effects_from_blocks(
+             &Position,
+             &EntityDimensions,
+             &WorldName,
+-            Option<&BlockStatePredictionHandler>,
+             &ActiveEffects,
+             Option<&PlayerAbilities>,
+         ),
+@@ -210,12 +206,11 @@ pub fn apply_effects_from_blocks(
+     >,
+     worlds: Res<Worlds>,
+ ) {
+-    for (mut physics, position, dimensions, world_name, pending, active_effects, abilities) in &mut query {
++    for (mut physics, position, dimensions, world_name, active_effects, abilities) in &mut query {
+         let Some(world_lock) = worlds.get(world_name) else {
+             continue;
+         };
+         let world = world_lock.read();
+-        let world = BotWorld::of(&world, pending);
+ 
+         // if !is_affected_by_blocks {
+         //     continue
+@@ -272,7 +267,7 @@ pub fn apply_effects_from_blocks(
+ fn check_inside_blocks(
+     physics: &mut Physics,
+     dimensions: &EntityDimensions,
+-    world: &BotWorld,
++    world: &World,
+     movements: &[EntityMovement],
+     active_effects: &ActiveEffects,
+     abilities: Option<&PlayerAbilities>,
+@@ -400,7 +395,7 @@ fn collided_with_shape_moving_from(
+ 
+ // BlockBehavior.entityInside
+ fn handle_entity_inside_block(
+-    world: &BotWorld,
++    world: &World,
+     block: BlockState,
+     block_pos: BlockPos,
+     physics: &mut Physics,
+@@ -484,7 +479,6 @@ pub fn jump_from_ground(
+     sprinting: Sprinting,
+     world_name: &WorldName,
+     worlds: &Worlds,
+-    pending: Option<&BlockStatePredictionHandler>,
+     active_effects: &ActiveEffects,
+     attributes: &Attributes,
+ ) {
+@@ -492,7 +486,6 @@ pub fn jump_from_ground(
+         .get(world_name)
+         .expect("All entities should be in a valid world");
+     let world = world_lock.read();
+-    let world = BotWorld::of(&world, pending);
+ 
+     let base_jump = jump_power(&world, position, attributes);
+     let jump_power = base_jump + jump_boost_power(active_effects);
+@@ -584,7 +577,7 @@ fn handle_on_climbable(
+     velocity: Vec3,
+     on_climbable: OnClimbable,
+     position: Position,
+-    world: &BotWorld,
++    world: &World,
+     pose: Option<Pose>,
+ ) -> Vec3 {
+     if !*on_climbable {
+@@ -635,7 +628,7 @@ fn get_friction_influenced_speed(
+ 
+ /// Returns the what the entity's jump should be multiplied by based on the
+ /// block they're standing on.
+-fn block_jump_factor(world: &BotWorld, position: Position) -> f32 {
++fn block_jump_factor(world: &World, position: Position) -> f32 {
+     let block_at_pos = world.get_block_state(position.into());
+     let block_below = world
+         .get_block_state(get_block_pos_below_that_affects_movement(position));
+@@ -662,7 +655,7 @@ fn block_jump_factor(world: &BotWorld, position: Position) -> f32 {
+ // public double getJumpBoostPower() {
+ //     return this.hasEffect(MobEffects.JUMP) ? (double)(0.1F *
+ // (float)(this.getEffect(MobEffects.JUMP).getAmplifier() + 1)) : 0.0D; }
+-fn jump_power(world: &BotWorld, position: Position, attributes: &Attributes) -> f32 {
++fn jump_power(world: &World, position: Position, attributes: &Attributes) -> f32 {
+     attributes.jump_strength.calculate() as f32 * block_jump_factor(world, position)
+ }
+ 
+diff --git a/azalea-physics/src/travel.rs b/azalea-physics/src/travel.rs
+index f33d4f2..55147eb 100644
+--- a/azalea-physics/src/travel.rs
++++ b/azalea-physics/src/travel.rs
+@@ -9,7 +9,7 @@ use azalea_entity::{
+ };
+ use azalea_inventory::components::EquipmentSlot;
+ use azalea_registry::builtin::{ItemKind, MobEffect};
+-use azalea_world::{BlockStatePredictionHandler, BotWorld, WorldName, Worlds};
++use azalea_world::{World, WorldName, Worlds};
+ use bevy_ecs::prelude::*;
+ 
+ use crate::{
+@@ -43,7 +43,7 @@ pub fn travel(
+             &mut Physics,
+             &mut LookDirection,
+             &mut Position,
+-            (Option<&BlockStatePredictionHandler>, Has<InLoadedChunk>),
++            Has<InLoadedChunk>,
+         ),
+         (With<LocalEntity>, With<HasClientLoaded>),
+     >,
+@@ -66,14 +66,13 @@ pub fn travel(
+         mut physics,
+         direction,
+         position,
+-        (pending, in_loaded_chunk),
++        in_loaded_chunk,
+     ) in &mut query
+     {
+         let Some(world_lock) = worlds.get(world_name) else {
+             continue;
+         };
+         let world = world_lock.read();
+-        let world = BotWorld::of(&world, pending);
+ 
+         let sprinting = *sprinting.unwrap_or(&Sprinting(false));
+ 
+@@ -146,7 +145,7 @@ fn travel_in_air(ctx: &mut MoveCtx) {
+     } else if !ctx.own_chunk_loaded {
+         // patch 38: the chunk under the feet has not arrived, so there is no gravity. Patch 65: the
+         // bot's own level decides (`Level#hasChunkAt`), not the shared one (a swarm mate may hold it).
+-        movement.y = unloaded_chunk_vertical_speed(ctx.position.y, ctx.world.world.chunks.min_y());
++        movement.y = unloaded_chunk_vertical_speed(ctx.position.y, ctx.world.chunks.min_y());
+     } else {
+         // `getEffectiveGravity` reads the speed at this point, after the move step.
+         movement.y -= effective_gravity(
+@@ -289,7 +288,7 @@ fn get_fluid_falling_adjusted_movement(
+ }
+ 
+ fn is_free(
+-    world: &BotWorld,
++    world: &World,
+     source_entity: Entity,
+     aabb_query: &AabbQuery,
+     collidable_entity_query: &CollidableEntityQuery,
+@@ -311,7 +310,7 @@ fn is_free(
+ }
+ 
+ pub fn no_collision(
+-    world: &BotWorld,
++    world: &World,
+     source_entity: Option<Entity>,
+     aabb_query: &AabbQuery,
+     collidable_entity_query: &CollidableEntityQuery,
+@@ -332,7 +331,7 @@ pub fn no_collision(
+     }
+ 
+     if !get_entity_collisions(
+-        world.world,
++        world,
+         aabb,
+         source_entity,
+         aabb_query,
+@@ -361,7 +360,7 @@ fn border_collision(_entity_physics: &Physics, _aabb: &Aabb) -> Option<Aabb> {
+     None
+ }
+ 
+-fn contains_any_liquid(world: &BotWorld, bounding_box: Aabb) -> bool {
++fn contains_any_liquid(world: &World, bounding_box: Aabb) -> bool {
+     let min = bounding_box.min.to_block_pos_floor();
+     let max = bounding_box.max.to_block_pos_ceil();
+ 
+diff --git a/azalea-physics/src/unmodelled_contacts.rs b/azalea-physics/src/unmodelled_contacts.rs
+index 135e05a..c91bb3a 100644
+--- a/azalea-physics/src/unmodelled_contacts.rs
++++ b/azalea-physics/src/unmodelled_contacts.rs
+@@ -6,7 +6,7 @@ use azalea_entity::unmodelled::{
+     UnmodelledInput, honey_touches_side, is_unmodelled_block,
+ };
+ use azalea_registry::builtin::BlockKind;
+-use azalea_world::BotWorld;
++use azalea_world::World;
+ 
+ /// How far past the box a block still counts as touched. A bot that stands on a slime block or
+ /// a bed has its feet exactly on the top face, and one that walks along a honey block has its
+@@ -20,7 +20,7 @@ const TOUCH_MARGIN: f64 = 1e-3;
+ /// (`PistonMovingBlockEntity#moveCollidedEntities`) and honey touched from the side
+ /// (`HoneyBlock#entityInside`). Unloaded chunks add nothing.
+ // Spec: specs/B1-movement.md §4.3
+-pub fn unmodelled_block_contacts(world: &BotWorld, bb: &Aabb) -> Vec<UnmodelledInput> {
++pub fn unmodelled_block_contacts(world: &World, bb: &Aabb) -> Vec<UnmodelledInput> {
+     let probe = bb.inflate_all(TOUCH_MARGIN);
+     let min = probe.min.to_block_pos_floor();
+     let max = probe.max.to_block_pos_floor();
+diff --git a/azalea-physics/tests/physics.rs b/azalea-physics/tests/physics.rs
+index 71cf422..3e456fb 100644
+--- a/azalea-physics/tests/physics.rs
++++ b/azalea-physics/tests/physics.rs
+@@ -558,7 +558,7 @@ fn test_falling_water_beside_a_wall_flows_down() {
+     let flow_at = |pos: BlockPos| {
+         let world = world_lock.read();
+         let fluid = world.get_fluid_state(pos).unwrap();
+-        azalea_physics::fluids::get_fluid_flow(&fluid, &azalea_world::BotWorld::truth(&world), pos)
++        azalea_physics::fluids::get_fluid_flow(&fluid, &world, pos)
+     };
+     let open = flow_at(pos);
+     assert!(open.y == 0. && open.x < -0.9, "no wall: a plain horizontal flow, got {open:?}");
+@@ -594,7 +594,7 @@ fn test_falling_water_wall_face_decides_not_the_full_cube() {
+     let flow_at = || {
+         let world = world_lock.read();
+         let fluid = world.get_fluid_state(pos).unwrap();
+-        azalea_physics::fluids::get_fluid_flow(&fluid, &azalea_world::BotWorld::truth(&world), pos)
++        azalea_physics::fluids::get_fluid_flow(&fluid, &world, pos)
+     };
+     let stairs = |facing: &str| {
+         let mut b: Box<dyn azalea_block::BlockTrait> = azalea_registry::builtin::BlockKind::StoneStairs.into();
+@@ -1218,26 +1218,33 @@ mod unloaded_chunk {
+     }
+ }
+ 
+-// Patch 53. A bot's pending cell shows in its own collision query and in nobody else's.
+-// EXPECTED: a box over a predicted stone meets one shape through the bot's view and none through
+-// shared truth; a predicted air over real stone removes the shape for that bot only; a box far
+-// from every pending cell takes the unchanged path and gets the same answer as shared truth.
++// Patch 76 (was patch 53). A bot's pending cell is in its own world, so its collision query meets
++// it, and another bot's world does not.
++// EXPECTED: a box over a predicted stone meets one shape in A's world and none in B's; a predicted
++// air over real stone removes the shape in A's world only; a box far from every pending cell gets
++// the same answer in both.
+ // Spec: specs/B6-placement-breaking.md §4.10
+ #[test]
+ fn collision_reads_the_bots_own_pending_cells() {
+     use azalea_block::BlockState;
+     use azalea_core::aabb::Aabb;
+     use azalea_physics::collision::world_collisions::get_block_collisions;
+-    use azalea_world::{BlockStatePredictionHandler, BotWorld};
+-
+-    let mut world = World::default();
+-    world.chunks = azalea_world::ChunkStorage::new(384, -64);
+-    let mut partial = PartialWorld::default();
+-    partial.chunks.set(&ChunkPos::new(0, 0), Some(Chunk::default()), &mut world.chunks);
++    use azalea_world::BlockStatePredictionHandler;
++
++    let make = || {
++        let mut world = World::default();
++        world.chunks = azalea_world::ChunkStorage::new(384, -64);
++        let mut partial = PartialWorld::default();
++        partial.chunks.set(&ChunkPos::new(0, 0), Some(Chunk::default()), &mut world.chunks);
++        (world, partial)
++    };
++    let (mine, _keep_a) = make();
++    let (other, _keep_b) = make();
+ 
+     let predicted = BlockPos::new(2, 63, 2);
+     let real = BlockPos::new(8, 63, 8);
+-    world.chunks.set_block_state(real, BlockKind::Stone.into());
++    mine.chunks.set_block_state(real, BlockKind::Stone.into());
++    other.chunks.set_block_state(real, BlockKind::Stone.into());
+     let over = |c: BlockPos| Aabb {
+         min: Vec3::new(c.x as f64 + 0.2, c.y as f64 + 0.9, c.z as f64 + 0.2),
+         max: Vec3::new(c.x as f64 + 0.8, c.y as f64 + 2.8, c.z as f64 + 0.8),
+@@ -1245,14 +1252,9 @@ fn collision_reads_the_bots_own_pending_cells() {
+ 
+     let mut a = BlockStatePredictionHandler::default();
+     a.start_predicting();
+-    a.retain_known_server_state(predicted, BlockState::AIR, Vec3::ZERO);
+-    a.set_predicted(predicted, BlockKind::Stone.into());
+-    a.retain_known_server_state(real, BlockKind::Stone.into(), Vec3::ZERO);
+-    a.set_predicted(real, BlockState::AIR);
+-    let nothing = BlockStatePredictionHandler::default();
+-
+-    let mine = BotWorld::new(&world, &a);
+-    let other = BotWorld::new(&world, &nothing);
++    assert!(a.predict_block(&mine, predicted, BlockKind::Stone.into(), Vec3::ZERO));
++    assert!(a.predict_block(&mine, real, BlockState::AIR, Vec3::ZERO));
++
+     assert_eq!(get_block_collisions(&mine, &over(predicted)).len(), 1, "A stands on its prediction");
+     assert_eq!(get_block_collisions(&other, &over(predicted)).len(), 0, "B does not");
+     assert_eq!(get_block_collisions(&mine, &over(real)).len(), 0, "A broke the real block");
+diff --git a/azalea-world/src/lib.rs b/azalea-world/src/lib.rs
+index 9c768cb..625f89f 100644
+--- a/azalea-world/src/lib.rs
++++ b/azalea-world/src/lib.rs
+@@ -13,7 +13,7 @@ mod world;
+ pub use bit_storage::BitStorage;
+ pub use chunk::{Chunk, Section, partial::PartialChunkStorage, storage::ChunkStorage};
+ pub use container::{WorldName, Worlds};
+-pub use prediction::{BlockStatePredictionHandler, BlockView, BotWorld};
++pub use prediction::{BlockStatePredictionHandler, BlockView};
+ pub use world::*;
+ 
+ #[deprecated = "renamed to `WorldName`."]
+diff --git a/azalea-world/src/prediction.rs b/azalea-world/src/prediction.rs
+index d1f3699..361367a 100644
+--- a/azalea-world/src/prediction.rs
++++ b/azalea-world/src/prediction.rs
+@@ -1,19 +1,20 @@
+-//! Per-bot block prediction (Null fork patch 53).
++//! Block prediction as vanilla's `ClientLevel` does it (Null fork patch 76).
+ //!
+-//! The shared [`World`] holds server data only. Each bot keeps its own predicted blocks in its
+-//! [`BlockStatePredictionHandler`] and reads them first through a [`BotWorld`].
++//! A prediction is a write into the bot's own [`World`]. The [`BlockStatePredictionHandler`]
++//! keeps, per pending cell, the state the server last told the bot about, so the ack can settle
++//! the cell. Design: specs/proposals/CLIENT_LEVEL_MODEL.md.
+ // Spec: specs/B6-placement-breaking.md §4.10
+ 
+ use std::collections::HashMap;
+ 
+ use azalea_block::{BlockState, fluid_state::FluidState};
+-use azalea_core::position::{BlockPos, ChunkPos, Vec3};
++use azalea_core::position::{BlockPos, Vec3};
+ use bevy_ecs::component::Component;
+ 
+ use crate::{ChunkStorage, World};
+ 
+-/// A read-only source of block states: shared truth (`ChunkStorage`) or one bot's view of it
+-/// (`BotWorld`). Read paths that must see a bot's own predictions are handed a `BotWorld`.
++/// A read-only source of block states: a bot's `World`, or its chunk storage. The bot's own
++/// predictions are in the `World`, so every reader sees them, as vanilla's readers do.
+ pub trait BlockView {
+     fn get_block_state(&self, pos: BlockPos) -> Option<BlockState>;
+ 
+@@ -46,10 +47,11 @@ impl BlockView for World {
+     }
+ }
+ 
+-/// A component that contains information about our local block state predictions.
++/// A component that contains information about our local block state predictions
++/// (vanilla `BlockStatePredictionHandler`, one per `ClientLevel`).
+ ///
+-/// Vanilla keeps this per `ClientLevel` (`BlockStatePredictionHandler`); Null keeps it per bot,
+-/// and it also holds the predicted block itself, because the shared world must not.
++/// The predicted block itself is in the bot's own [`World`]; the handler keeps what the server
++/// last said about each pending cell.
+ #[derive(Clone, Component, Debug, Default)]
+ pub struct BlockStatePredictionHandler {
+     /// The total number of changes that this client has made to blocks.
+@@ -63,14 +65,12 @@ pub struct BlockStatePredictionHandler {
+ #[derive(Clone, Debug)]
+ struct ServerVerifiedState {
+     seq: u32,
+-    /// The last block the server told us about (the state the ack settles against).
++    /// The last block the server told us about (the state the ack writes back when the cell
++    /// shows something else).
+     block_state: BlockState,
+     /// Used for teleporting the player back if we're colliding with the block
+     /// that got placed back.
+     player_pos: Vec3,
+-    /// The block this bot shows itself. `None`: the override is off (the cell's chunk was
+-    /// re-sent or forgotten) but the retained state stays for the ack.
+-    predicted: Option<BlockState>,
+ }
+ 
+ impl BlockStatePredictionHandler {
+@@ -91,43 +91,48 @@ impl BlockStatePredictionHandler {
+         self.seq
+     }
+ 
+-    /// Should be called right before the client updates a block with its prediction
+-    /// (`ClientLevel#setBlock` while predicting). `old_state` is what the bot sees now.
+-    ///
+-    /// The retained state lets the ack settle the cell when the server sends no update.
+-    pub fn retain_known_server_state(
++    /// A block write inside a prediction scope (`ClientLevel#setBlock` while predicting): write
++    /// the bot's world, and when the write changed the cell, keep the old state for the ack
++    /// (`BlockStatePredictionHandler#retainKnownServerState`). A cell that is already pending
++    /// keeps its first old state and takes the current sequence. Returns whether the cell changed.
++    // Spec: specs/B6-placement-breaking.md §4.10 (write and roll back)
++    pub fn predict_block(
+         &mut self,
++        world: &World,
+         pos: BlockPos,
+-        old_state: BlockState,
++        state: BlockState,
+         player_pos: Vec3,
+-    ) {
++    ) -> bool {
++        let Some(old_state) = world.set_block_state(pos, state) else {
++            return false;
++        };
++        if old_state == state {
++            return false;
++        }
+         self.server_state
+             .entry(pos)
+             .and_modify(|s| s.seq = self.seq)
+-            .or_insert(ServerVerifiedState {
+-                seq: self.seq,
+-                block_state: old_state,
+-                player_pos,
+-                predicted: None,
+-            });
++            .or_insert(ServerVerifiedState { seq: self.seq, block_state: old_state, player_pos });
++        true
+     }
+ 
+-    /// Show `state` at `pos` to this bot only. The cell must be retained first.
+-    pub fn set_predicted(&mut self, pos: BlockPos, state: BlockState) {
+-        if let Some(s) = self.server_state.get_mut(&pos) {
+-            s.predicted = Some(state);
++    /// Server block updates (`ClientLevel#setServerVerifiedBlockState`): a pending cell takes the
++    /// state as the server's last word and the world is not written; any other cell is written.
++    /// The edits go in together, one section copy per section.
++    // Spec: specs/B6-placement-breaking.md §4.10 (write and roll back)
++    pub fn set_server_verified(&mut self, world: &World, edits: &[(BlockPos, BlockState)]) {
++        let mut to_write = Vec::with_capacity(edits.len());
++        for &(pos, state) in edits {
++            if !self.update_known_server_state(pos, state) {
++                to_write.push((pos, state));
++            }
+         }
++        world.chunks.set_block_states(&to_write);
+     }
+ 
+-    /// The block this bot predicted at `pos`, if its override is on.
+-    pub fn predicted(&self, pos: BlockPos) -> Option<BlockState> {
+-        self.server_state.get(&pos).and_then(|s| s.predicted)
+-    }
+-
+-    /// Save this update as the correct server state so when the server sends a
+-    /// `ClientboundBlockChangedAck` we don't roll back this new update
+-    /// (`ClientLevel#setServerVerifiedBlockState`). Returns whether the cell is retained.
+-    /// The caller still writes the update to the shared world.
++    /// Save this update as the server's last word on a pending cell
++    /// (`BlockStatePredictionHandler#updateKnownServerState`). Returns whether the cell is
++    /// pending. The caller writes the world when it is not.
+     pub fn update_known_server_state(&mut self, pos: BlockPos, state: BlockState) -> bool {
+         if let Some(s) = self.server_state.get_mut(&pos) {
+             s.block_state = state;
+@@ -137,14 +142,19 @@ impl BlockStatePredictionHandler {
+         }
+     }
+ 
+-    /// Turn the overrides in a chunk off, keeping the retained states for the ack. Used when
+-    /// this bot's chunk packet arrives (vanilla `ClientPacketListener#updateLevelChunk` replaces
+-    /// the chunk, so the packet's blocks win) and when it forgets the chunk.
+-    pub fn clear_predictions_in_chunk(&mut self, chunk: ChunkPos) {
+-        for (pos, s) in self.server_state.iter_mut() {
+-            if ChunkPos::from(*pos) == chunk {
+-                s.predicted = None;
+-            }
++    /// Whether a cell is pending (predicted, not yet acked).
++    pub fn is_pending(&self, pos: BlockPos) -> bool {
++        self.server_state.contains_key(&pos)
++    }
++
++    /// The state of a cell as the server has it: the kept state if the cell is pending, else the
++    /// world's. The world shows this bot's own prediction while the cell is pending, so Null's
++    /// judgement of a sent place or break reads here (B6 §4.6). Vanilla has no such reader.
++    // Spec: specs/B6-placement-breaking.md §4.6 (settle from the ack and the block left behind)
++    pub fn server_block_state(&self, world: &World, pos: BlockPos) -> Option<BlockState> {
++        match self.server_state.get(&pos) {
++            Some(s) => Some(s.block_state),
++            None => world.get_block_state(pos),
+         }
+     }
+ 
+@@ -153,26 +163,14 @@ impl BlockStatePredictionHandler {
+         *self = Self::default();
+     }
+ 
+-    /// Whether an override lies inside the block range `min..=max` (both corners included).
+-    /// This is one `is_empty` check when nothing is pending.
+-    pub fn has_override_in(&self, min: BlockPos, max: BlockPos) -> bool {
+-        !self.server_state.is_empty()
+-            && self.server_state.iter().any(|(p, s)| {
+-                s.predicted.is_some()
+-                    && (min.x..=max.x).contains(&p.x)
+-                    && (min.y..=max.y).contains(&p.y)
+-                    && (min.z..=max.z).contains(&p.z)
+-            })
+-    }
+-
+-    /// Settle every retained cell up to `seq` (vanilla `BlockStatePredictionHandler#endPredictionsUpTo`
+-    /// then the compare in `ClientLevel#syncBlockState`) and return the cells whose shown state
+-    /// differs from the retained one, oldest first, as `(cell, retained state, player position
+-    /// when first retained)`. The bot's shown state is its prediction, else the shared block.
+-    /// Nothing is written: the shared world already holds the server's block, so dropping the
+-    /// prediction is the rollback. The caller does the player snap-back.
++    /// `BlockStatePredictionHandler#endPredictionsUpTo`: remove every pending cell up to `seq`;
++    /// where the world shows something else than the kept state, write the kept state
++    /// (`ClientLevel#syncBlockState`). Returns the cells that differed, oldest first, as
++    /// `(cell, kept state, player position when first kept)`: the caller does the player snap-back
++    /// test. A cell in a chunk the bot has forgotten reads as missing, so it differs, and the write
++    /// does nothing.
+     // Spec: specs/B6-placement-breaking.md §4.10 (write and roll back)
+-    pub fn settle_up_to(&mut self, seq: u32, world: &World) -> Vec<(BlockPos, BlockState, Vec3)> {
++    pub fn end_predictions_up_to(&mut self, seq: u32, world: &World) -> Vec<(BlockPos, BlockState, Vec3)> {
+         self.acked_seq = self.acked_seq.max(seq);
+         // oldest first, so the newest prediction decides the snap when several cells collide
+         let mut settled: Vec<(BlockPos, ServerVerifiedState)> = self
+@@ -185,74 +183,11 @@ impl BlockStatePredictionHandler {
+         let mut changed = Vec::new();
+         for (pos, state) in settled {
+             self.server_state.remove(&pos);
+-            let client_block_state = state
+-                .predicted
+-                .unwrap_or_else(|| world.get_block_state(pos).unwrap_or_default());
+-            if client_block_state != state.block_state {
++            if world.get_block_state(pos) != Some(state.block_state) {
++                world.set_block_state(pos, state.block_state);
+                 changed.push((pos, state.block_state, state.player_pos));
+             }
+         }
+         changed
+     }
+ }
+-
+-/// The world as one bot sees it: shared server data plus this bot's pending cells.
+-#[derive(Clone, Copy)]
+-pub struct BotWorld<'a> {
+-    /// Shared server truth. Use it for chunk presence, height, entities and registries, never
+-    /// to read a block that the bot's own predictions must show.
+-    pub world: &'a World,
+-    pending: &'a BlockStatePredictionHandler,
+-}
+-
+-impl<'a> BotWorld<'a> {
+-    pub fn new(world: &'a World, pending: &'a BlockStatePredictionHandler) -> Self {
+-        Self { world, pending }
+-    }
+-
+-    /// Whether any of this bot's overrides lies in the block range (`min` and `max` included).
+-    pub fn has_override_in(&self, min: BlockPos, max: BlockPos) -> bool {
+-        self.pending.has_override_in(min, max)
+-    }
+-}
+-
+-impl BlockView for BotWorld<'_> {
+-    fn get_block_state(&self, pos: BlockPos) -> Option<BlockState> {
+-        // `server_state` empty is the common case: one check, then the shared read
+-        if let Some(predicted) = self.pending.predicted(pos) {
+-            return Some(predicted);
+-        }
+-        self.world.chunks.get_block_state(pos)
+-    }
+-}
+-
+-impl BotWorld<'_> {
+-    pub fn get_block_state(&self, pos: BlockPos) -> Option<BlockState> {
+-        BlockView::get_block_state(self, pos)
+-    }
+-
+-    pub fn get_fluid_state(&self, pos: BlockPos) -> Option<FluidState> {
+-        BlockView::get_fluid_state(self, pos)
+-    }
+-}
+-
+-static NOTHING_PENDING: std::sync::LazyLock<BlockStatePredictionHandler> =
+-    std::sync::LazyLock::new(BlockStatePredictionHandler::default);
+-
+-impl<'a> BotWorld<'a> {
+-    /// A view with no pending cells: shared truth. For entities that are not a bot of ours and
+-    /// for readers (pathfinder, block search) that keep to shared truth.
+-    pub fn truth(world: &'a World) -> Self {
+-        Self { world, pending: &NOTHING_PENDING }
+-    }
+-}
+-
+-impl<'a> BotWorld<'a> {
+-    /// The view for an entity that may have no handler (a physics-only entity): shared truth then.
+-    pub fn of(world: &'a World, pending: Option<&'a BlockStatePredictionHandler>) -> Self {
+-        match pending {
+-            Some(pending) => Self::new(world, pending),
+-            None => Self::truth(world),
+-        }
+-    }
+-}
+diff --git a/azalea/src/client_impl/mod.rs b/azalea/src/client_impl/mod.rs
+index c319507..637a9eb 100644
+--- a/azalea/src/client_impl/mod.rs
++++ b/azalea/src/client_impl/mod.rs
+@@ -350,16 +350,23 @@ impl Client {
+         Ok(world_holder.shared.clone())
+     }
+ 
+-    /// The block at `pos` as this bot sees it: the shared world with this bot's own pending
+-    /// predictions on top (`BotWorld`). Use this, not `world().read().get_block_state`, when the
+-    /// bot decides something from a block it may just have placed or broken. `None` when the
+-    /// chunk is not loaded.
++    /// The block at `pos` as this bot sees it: its own level, which holds its pending
++    /// predictions (as vanilla's `ClientLevel` does). `None` when the chunk is not loaded.
+     // Spec: specs/F5-version-layer.md §4.6 (each bot reads its own view, not shared truth)
+     pub fn own_block_state(&self, pos: azalea_core::position::BlockPos) -> AzaleaResult<Option<azalea_block::BlockState>> {
+         let world = self.world()?;
+         let world = world.read();
+-        let pending = self.component::<azalea_world::BlockStatePredictionHandler>().ok();
+-        Ok(azalea_world::BotWorld::of(&world, pending.as_deref()).get_block_state(pos))
++        Ok(world.get_block_state(pos))
++    }
++
++    /// The block at `pos` as the server has it: the kept state of a pending cell, else the
++    /// level's. For judging what a sent place or break left (B6 §4.6); vanilla has no such read.
++    // Spec: specs/B6-placement-breaking.md §4.6 (settle from the ack and the block left behind)
++    pub fn server_block_state(&self, pos: azalea_core::position::BlockPos) -> AzaleaResult<Option<azalea_block::BlockState>> {
++        let world = self.world()?;
++        let world = world.read();
++        let pending = self.component::<azalea_world::BlockStatePredictionHandler>()?;
++        Ok(pending.server_block_state(&world, pos))
+     }
+ 
+     /// Get an `RwLock` with a reference to the world that this client has
+@@ -596,7 +603,7 @@ mod own_view_tests {
+ 
+     // Spec: specs/F5-version-layer.md §4.6 (each bot reads its own view, not shared truth)
+     #[test]
+-    fn own_block_state_shows_the_bots_prediction_and_the_world_does_not() {
++    fn own_block_state_shows_the_bots_prediction_and_server_block_state_does_not() {
+         let mut ecs = bevy_ecs::world::World::new();
+         let shared = Arc::new(RwLock::new(World::default()));
+         let partial = Arc::new(RwLock::new(PartialWorld::default()));
+@@ -609,13 +616,12 @@ mod own_view_tests {
+         }
+         let mut handler = BlockStatePredictionHandler::default();
+         handler.start_predicting();
+-        handler.retain_known_server_state(pos, BlockState::from(BlockKind::Stone), azalea_core::position::Vec3::ZERO);
+-        handler.set_predicted(pos, BlockState::AIR);
++        handler.predict_block(&shared.read(), pos, BlockState::AIR, azalea_core::position::Vec3::ZERO);
+         let entity = ecs
+             .spawn((azalea_client::local_player::WorldHolder { partial, shared: shared.clone() }, handler))
+             .id();
+         let client = Client::new(entity, Arc::new(RwLock::new(ecs)));
+         assert_eq!(client.own_block_state(pos).unwrap(), Some(BlockState::AIR), "own prediction");
+-        assert_eq!(shared.read().get_block_state(pos), Some(BlockState::from(BlockKind::Stone)), "shared truth");
++        assert_eq!(client.server_block_state(pos).unwrap(), Some(BlockState::from(BlockKind::Stone)), "the server's state");
+     }
+ }

@@ -29,6 +29,7 @@ ignore = [
   "azalea:codegen/", "azalea:docs-rs/", "azalea:target/", "azalea:.github/",
   "azalea:*/tests/*", "azalea:*/tests.rs", "azalea:*/benches/*",
   "azalea:CHANGELOG*", "azalea:LICENSE*", "azalea:typos.toml", "azalea:rustfmt.toml",
+  "azalea:azalea-physics/src/collision/vanilla_move_cases.rs",  # patch 75: a #[cfg(test)] module, never built into a run
 ]
 
 # ---- Null: build, bot API, adapter, harness --------------------------------------------------

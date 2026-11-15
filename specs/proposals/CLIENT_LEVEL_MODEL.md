@@ -1,6 +1,6 @@
 # Client level model: the bot's `World` is its `ClientLevel`
 
-> **Status (2026-11-10): adopted by Allen, not built.** Allen, 2026-11-10: adopt the design, and land it as one fork patch directly after the own-worlds patch (burst number 81), before the next pair. Nothing here has run. The vanilla facts were read in `~/Desktop/null-reference/vanilla-1.21.11-src/`; the fork facts on branch `patch-stack-burst` (`ee7d418`). When built, the rules move into B6 §4.10 and this file becomes a record.
+> **Status (2026-11-15): built in fork patches 76 and 77** (stack `patch-stack-burst`, not pushed). Allen adopted the design on 2026-11-10. Patch 76 is the level model; patch 77 keeps the level on a same-dimension respawn. The rules now live in B6 §4.10 and §4.6; this file is the record of the design. Offline tests only, no live run yet.
 
 ## 1. Why
 
@@ -96,6 +96,10 @@ The patch maps to `--scenario all`, so the pair that follows covers it.
 
 Live: the pair. SW1 must draw zero alerts.
 
-## 9. Docs to change when built
+## 9. Docs changed when built (2026-11-15)
 
-B6 §4.10 (write and roll back) and §4.6 (the judgement reads `server_block_state`); the ledger row for patch 53 (replaced) and a new row; OPEN §4 edge a (closed); `plans/LOAD_CONTRACT.md` design item 1; F5 §4.6 if it names the overlay.
+- B6 §4.10 "Write and roll back": the four rules, the scopes and the respawn rule (patches 76 and 77) replace the overlay text.
+- B6 §4.6: the patch 54 judgement reads `server_block_state`.
+- Ledger: rows 76 and 77 are new; row 76 supersedes row 53.
+- `plans/LOAD_CONTRACT.md` design item 1: the overlay is gone, and the own-world uuid index is named.
+- OPEN §4: edge a is closed; the gaps this audit found (break neighbours, break side writes, block use, item use, place second parts) stay listed there.

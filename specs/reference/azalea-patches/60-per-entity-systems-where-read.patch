@@ -1,4 +1,4 @@
-From bbd9adb5a8e7f0eebba178744f65dec8a962c112 Mon Sep 17 00:00:00 2001
+From eeb086412805f4eb20d70248ea3e10b6606fc942 Mon Sep 17 00:00:00 2001
 From: bench <bench@local>
 Date: Tue, 10 Nov 2026 00:56:11 +0800
 Subject: [PATCH] null patch: 60-per-entity-systems-where-read
@@ -136,6 +136,3 @@ index 767fd74..e39facb 100644
      worlds: Res<Worlds>,
  ) {
      for (entity, world_name, position, last_in_loaded_chunk) in &query {
--- 
-2.56.0
-

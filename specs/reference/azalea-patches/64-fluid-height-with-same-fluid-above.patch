@@ -1,4 +1,4 @@
-From 0ad5e4955ee2a9c0243a0260c69aa4627c34b928 Mon Sep 17 00:00:00 2001
+From 13ae19f6f8e19f204acd390d934f194bc1c1b704 Mon Sep 17 00:00:00 2001
 From: bench <bench@local>
 Date: Tue, 10 Nov 2026 00:28:22 +0800
 Subject: [PATCH] null patch: 64-fluid-height-with-same-fluid-above
@@ -47,7 +47,7 @@ index 86bb9b7..16229a2 100644
                      continue;
                  }
 diff --git a/azalea-physics/tests/physics.rs b/azalea-physics/tests/physics.rs
-index e183ee8..ad339c3 100644
+index e183ee8..5a12209 100644
 --- a/azalea-physics/tests/physics.rs
 +++ b/azalea-physics/tests/physics.rs
 @@ -480,6 +480,50 @@ fn test_falling_water_pushes_a_neighbour_away() {
@@ -56,7 +56,7 @@ index e183ee8..ad339c3 100644
  
 +// A fluid cell with the same fluid above is a full block high (`FlowingFluid#getHeight`,
 +// `hasSameAbove`), so the bot's fluid height counts to the top of the cell, not the surface it would
-+// have alone. Spec: specs/B1-movement.md §4.6 (patch 61)
++// have alone. Spec: specs/B1-movement.md §4.6 (patch 64)
 +#[test]
 +fn test_fluid_height_counts_a_full_cell_when_the_same_fluid_is_above() {
 +    let mut app = make_test_app();
@@ -102,7 +102,7 @@ index e183ee8..ad339c3 100644
  // is normalised, then 6 down is added, then the sum is normalised). Spec: specs/B1-movement.md §4.6
  #[test]
 diff --git a/azalea-world/src/prediction.rs b/azalea-world/src/prediction.rs
-index 51f1dea..80c186d 100644
+index 51f1dea..d1f3699 100644
 --- a/azalea-world/src/prediction.rs
 +++ b/azalea-world/src/prediction.rs
 @@ -20,6 +20,18 @@ pub trait BlockView {
@@ -113,7 +113,7 @@ index 51f1dea..80c186d 100644
 +    /// `FluidState#getHeight(BlockGetter, BlockPos)` for the fluid at `pos`: a full block when the
 +    /// cell above holds the same fluid (`FlowingFluid#getHeight`, `hasSameAbove`), else its own
 +    /// height. The flow code (`FlowingFluid#getFlow`) uses the own height instead.
-+    // Spec: specs/B1-movement.md §4.6 (patch 61: fluid height with the fluid above)
++    // Spec: specs/B1-movement.md §4.6 (patch 64: fluid height with the fluid above)
 +    fn fluid_height_at(&self, pos: BlockPos, fluid: &FluidState) -> f32 {
 +        let above = self.get_fluid_state(pos.up(1));
 +        match above {
@@ -124,6 +124,3 @@ index 51f1dea..80c186d 100644
  }
  
  impl BlockView for ChunkStorage {
--- 
-2.56.0
-
