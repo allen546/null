@@ -5,7 +5,7 @@
 # --repeat N runs the check N times on one server start (repro runs of a flaky module); the run log holds all N.
 # Logs: logs/<prefix>_<kind>_run.log and _monitor.log. Spec: specs/plans/ABILITY_CHECK.md §How to run
 import os, re, resource, subprocess, sys, threading, time
-H = '/mnt/pi-data/null-harness'
+H = os.environ.get('NULL_HARNESS', '/mnt/pi-data/null-harness')  # the GitHub runner sets it (scripts/ci/)
 sys.path.insert(0, H + '/skeleton-server/scripts')
 import rcon
 
