@@ -8,7 +8,7 @@
 //! A probe in the `GameTick` of every bot logs, before and after the physics step, each watched
 //! bot's view of the cell, A's pending prediction (seq above acked seq), and B's position and
 //! on-ground state. Server truth is read by RCON; Grim alerts of B's account are read from the
-//! server log only. Since patch 53 (per-bot prediction overlay) SW1 passes when the action was reached
+//! server log only. Since patch 53 (per-bot prediction, now in the bot's own level) SW1 passes when the action was reached
 //! and B drew zero Grim alerts and zero server-log warnings (`NO HARM`); any alert or warning fails it
 //! (`HARM`). Before the fix it drew `Simulation` x4 and `GroundSpoof` x1 (`chance1.log`), so the bar can fail.
 //! SW1C (control) still passes on the action reached and A pending; it has no harm bar. Area: corner (1100, 342); floor y=199.
@@ -243,7 +243,7 @@ pub fn sw1(cx: &mut Ctx) -> Vec<Outcome> {
         let (a_warns, a_grim) = scan_log(&text.lines().filter(|l| !l.contains(&b)).collect::<Vec<_>>().join("\n"), &a);
         let v = verdict(&t, &a, &b);
         // The bar: the break was done (not refused), the cell is air on the server, and at least one
-        // sample shows A pending while B still reads TNT and stands on it (the window that tests the overlay).
+        // sample shows A pending while B still reads TNT and stands on it (the window that tests the prediction).
         let done = matches!(&act.info, Info::Action(a) if a.outcome == BlockOutcome::Done);
         let b_on_tnt_while_a_pending = t
             .iter()

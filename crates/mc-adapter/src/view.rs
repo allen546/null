@@ -63,8 +63,6 @@ pub struct ViewParts<'a> {
     pub contacts: Option<&'a azalea::entity::unmodelled::UnmodelledContacts>,
     /// Set when the fork closed the connection for a `Movement` entry (patch 30).
     pub disconnect: Option<(&'a azalea::unmodelled_disconnect::UnmodelledDisconnect, Option<&'a azalea::unmodelled_disconnect::PacketsAfterUnmodelledDisconnect>)>,
-    /// The bot's own pending block predictions (patch 53): a block read shows them, as the bot sees them.
-    pub pending: Option<&'a azalea::interact::BlockStatePredictionHandler>,
 }
 
 /// Other entities, for `BotView::entities`.
@@ -346,18 +344,17 @@ impl BotView for AzaleaView<'_, '_, '_> {
         })
     }
     fn is_solid(&self, pos: api::BlockPos) -> bool {
-        let w = self.p.world.shared.read();
-        azalea::world::BotWorld::of(&w, self.p.pending)
+        self.p.world.shared.read()
             .get_block_state(azalea::BlockPos::new(pos.x, pos.y, pos.z))
             .is_some_and(azalea::pathfinder::world::is_block_state_solid)
     }
     // Spec: specs/B6-placement-breaking.md §4.6 (read back the block the server left)
     fn block_at(&self, pos: api::BlockPos) -> Option<String> {
-        crate::blocks::block_name(&azalea::world::BotWorld::of(&self.p.world.shared.read(), self.p.pending), pos)
+        crate::blocks::block_name(&self.p.world.shared.read(), pos)
     }
     // Spec: specs/B4-gathering.md §4.8 (natural check: leaves' `persistent` property)
     fn block_property(&self, pos: api::BlockPos, name: &str) -> Option<String> {
-        crate::blocks::block_property(&azalea::world::BotWorld::of(&self.p.world.shared.read(), self.p.pending), pos, name)
+        crate::blocks::block_property(&self.p.world.shared.read(), pos, name)
     }
     // Spec: specs/F5-version-layer.md §4.6 (inputs the client does not model)
     fn unmodelled_inputs(&self) -> Vec<api::UnmodelledInput> {
@@ -384,8 +381,7 @@ impl BotView for AzaleaView<'_, '_, '_> {
     }
     // Spec: specs/B6-placement-breaking.md §4.2 (crouch handling)
     fn block_uses_click(&self, pos: api::BlockPos) -> bool {
-        let w = self.p.world.shared.read();
-        azalea::world::BotWorld::of(&w, self.p.pending)
+        self.p.world.shared.read()
             .get_block_state(azalea::BlockPos::new(pos.x, pos.y, pos.z))
             .is_some_and(azalea::block::state_uses_click)
     }

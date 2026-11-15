@@ -14,7 +14,7 @@ use azalea::{
         inventory::Inventory,
         metadata::Health,
     },
-    interact::{BlockStatePredictionHandler, handle_start_use_item_queued},
+    interact::handle_start_use_item_queued,
     inventory::{
         ClickResults, CloseContainerEvent, ContainerClickEvent, OpenInventoryEvent, OpenScreen,
         ensure_has_sent_carried_item,
@@ -428,7 +428,6 @@ fn decide(
                 Option<&UnmodelledContacts>,
                 Option<&UnmodelledDisconnect>,
                 Option<&PacketsAfterUnmodelledDisconnect>,
-                Option<&BlockStatePredictionHandler>,
             ),
         ),
         (With<LocalEntity>, With<HasClientLoaded>),
@@ -439,7 +438,7 @@ fn decide(
     mut reflex_off: MessageWriter<ReflexDisabled>,
 ) {
     let now = tick.0;
-    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, attackers, tags, screen, movement, respawn_log, connected, death_screen, attributes, effects, contacts, disconnect, packets_after, pending)) in
+    for (entity, mut bb, position, physics, look, health, hunger, using, atk, inv, world, wname, pf, exec, (flags, attackers, tags, screen, movement, respawn_log, connected, death_screen, attributes, effects, contacts, disconnect, packets_after)) in
         &mut bots
     {
         let bb = &mut *bb;
@@ -502,7 +501,6 @@ fn decide(
                 effects,
                 contacts,
                 disconnect: disconnect.map(|d| (d, packets_after)),
-                pending,
             },
             &others,
         );
