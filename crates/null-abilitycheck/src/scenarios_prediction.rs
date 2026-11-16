@@ -486,22 +486,22 @@ fn break_outside_border_refused(cx: &mut Ctx) -> Outcome {
 
 // Spec: specs/B6-placement-breaking.md §4.10 (the safety rule: inside the zone, predicted or refused)
 fn unknown_family_in_zone_refused(cx: &mut Ctx) -> Outcome {
-    plain_scene(cx, "oak_fence");
+    plain_scene(cx, "repeater");
     let clicked = pos(COL.0 + 1, FLOOR_Y, COL.1);
     let target = pos(COL.0 + 1, FLOOR_Y + 1, COL.1);
     cx.run("A22", "unknown_family_in_zone_refused", |cx| {
-        let before = cx.count("oak_fence");
+        let before = cx.count("repeater");
         let a = match placed(cx, clicked, Face::Up) {
             Ok(a) => a,
             Err(e) => return (false, e),
         };
         std::thread::sleep(std::time::Duration::from_millis(400));
         let air = cx.block_is(target, "air");
-        let after = cx.count("oak_fence");
+        let after = cx.count("repeater");
         (
             a.outcome == BlockOutcome::Refused && a.ack_tick.is_none() && a.reason.is_some_and(|r| r.contains("cannot be predicted")) && air && after == before,
             format!(
-                "fence one block from the bot's feet: outcome {:?}, client refusal {:?}, acked {} (want Refused on the client, no ack, so nothing was sent); server: air at the target {air}, fences {before} -> {after} (want unchanged: a valid place would have been accepted)",
+                "repeater one block from the bot's feet: outcome {:?}, client refusal {:?}, acked {} (want Refused on the client, no ack, so nothing was sent); server: air at the target {air}, repeaters {before} -> {after} (want unchanged: a valid place would have been accepted)",
                 a.outcome,
                 a.reason,
                 a.ack_tick.is_some()
@@ -512,22 +512,22 @@ fn unknown_family_in_zone_refused(cx: &mut Ctx) -> Outcome {
 
 // Spec: specs/B6-placement-breaking.md §4.10 (outside the zone a place stage 1 cannot compute is sent as before)
 fn unknown_family_outside_zone_sent(cx: &mut Ctx) -> Outcome {
-    plain_scene(cx, "oak_fence");
+    plain_scene(cx, "repeater");
     let clicked = pos(COL.0 + 3, FLOOR_Y, COL.1);
     let target = pos(COL.0 + 3, FLOOR_Y + 1, COL.1);
     cx.run("A22", "unknown_family_outside_zone_sent_unpredicted", |cx| {
-        let before = cx.count("oak_fence");
+        let before = cx.count("repeater");
         let a = match placed(cx, clicked, Face::Up) {
             Ok(a) => a,
             Err(e) => return (false, e),
         };
         std::thread::sleep(std::time::Duration::from_millis(400));
-        let fence = cx.block_is(target, "oak_fence");
-        let after = cx.count("oak_fence");
+        let repeater = cx.block_is(target, "repeater");
+        let after = cx.count("repeater");
         (
-            a.outcome == BlockOutcome::Done && a.reason.is_none() && fence && after == before - 1,
+            a.outcome == BlockOutcome::Done && a.reason.is_none() && repeater && after == before - 1,
             format!(
-                "fence three blocks from the bot (outside its movement zone): outcome {:?}, client refusal {:?} (want Done, not refused); server: fence at the target {fence}, fences {before} -> {after} (want one fewer)",
+                "repeater three blocks from the bot (outside its movement zone): outcome {:?}, client refusal {:?} (want Done, not refused); server: repeater at the target {repeater}, repeaters {before} -> {after} (want one fewer)",
                 a.outcome, a.reason
             ),
         )
@@ -587,7 +587,7 @@ pub(crate) fn prepare_row(cx: &mut Ctx, row: &str) {
                 cx.wait_block(p, "minecraft:stone");
             }
         }
-        "unknown_family_in_zone_refused" | "unknown_family_outside_zone_sent_unpredicted" => plain_scene(cx, "oak_fence"),
+        "unknown_family_in_zone_refused" | "unknown_family_outside_zone_sent_unpredicted" => plain_scene(cx, "repeater"),
         "place_beside_a_fence_in_zone_refused" => fence_scene(cx),
         _ => panic!("no A22 scene for row {row}"),
     }
